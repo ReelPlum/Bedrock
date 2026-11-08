@@ -67,6 +67,8 @@ cd apps/web && npm install && npx playwright install chromium && npm test   # br
 The browser tests drive the real app in headless Chromium with synthetic
 Pointer Events shaped like Apple Pencil input: pressure, tilt, coalesced and
 predicted samples, palm rejection, gestures, autosave and reload, file round
-trips, damaged files, and an input-to-frame latency budget of 40 ms.
+trips, damaged files, and a latency budget: handling and drawing a pen sample
+must take under 8 ms (half a frame), so pen-to-pixel time stays under the
+~40 ms people notice.
 
 Project rule: when a bug is found, add a test that reproduces it first.

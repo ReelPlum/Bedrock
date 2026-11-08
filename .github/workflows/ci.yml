@@ -46,8 +46,4 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Browser tests
         working-directory: apps/web
-        env:
-          # CI machines render with a software GPU; the strict 40 ms budget is
-          # checked on real hardware, CI only catches big regressions.
-          BEDROCK_LATENCY_BUDGET_MS: "60"
         run: npm test
