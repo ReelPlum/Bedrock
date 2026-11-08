@@ -75,7 +75,7 @@ impl ChunkMesh {
     /// World-space bounds of everything in the chunk.
     pub fn bounds(&self) -> Rect {
         let mut r = Rect::EMPTY;
-        for g in self.segments.chunks_exact(SEGMENT_FLOATS) {
+        for g in self.segments.as_chunks::<SEGMENT_FLOATS>().0 {
             for (x, y, rad) in [(g[0], g[1], g[4]), (g[2], g[3], g[5])] {
                 let c = Vec2::new(x as f64 + self.origin.x, y as f64 + self.origin.y);
                 let rad = rad as f64;
