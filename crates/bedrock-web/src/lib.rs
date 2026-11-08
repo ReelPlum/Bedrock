@@ -129,7 +129,9 @@ impl Canvas {
     /// Predicted samples, flat `[x, y, pressure, altitude, azimuth, time, ...]`.
     pub fn pointer_predicted(&mut self, id: i32, samples: &[f64]) {
         let s: Vec<ScreenSample> = samples
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .map(|c| ScreenSample {
                 x: c[0],
                 y: c[1],
