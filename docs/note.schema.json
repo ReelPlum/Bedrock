@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ReelPlum/Bedrock/docs/note.schema.json",
+  "title": "Bedrock note (note.json)",
+  "type": "object",
+  "required": ["format", "strokes"],
+  "properties": {
+    "format": { "const": "bedrock-note" },
+    "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string" },
+    "created": { "type": "number", "description": "Unix time, ms" },
+    "modified": { "type": "number", "description": "Unix time, ms" },
+    "background": { "$ref": "#/$defs/color" },
+    "paper": { "type": "string", "examples": ["plain", "dots", "grid", "lines"] },
+    "units": { "const": "px" },
+    "channels": {
+      "type": "array",
+      "items": { "type": "string" },
+      "allOf": [{ "contains": { "const": "x" } }, { "contains": { "const": "y" } }],
+      "default": ["x", "y", "pressure", "altitude", "azimuth", "t"]
+    },
+    "strokes": { "type": "array", "items": { "$ref": "#/$defs/stroke" } },
+    "recognition": {
+      "description": "Only in standalone .json/.svg; inside .bedrock this is recognized.json",
+      "type": "array",
+      "items": { "$ref": "#/$defs/recognized" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
+    "strokeId": { "type": "string", "pattern": "^[0-9a-f]{1,16}$" },
+    "stroke": {
+      "type": "object",
+      "required": ["id", "brush", "points"],
+      "properties": {
+        "id": { "$ref": "#/$defs/strokeId" },
+        "brush": {
+          "type": "object",
+          "required": ["kind", "color", "size"],
+          "properties": {
+            "kind": { "enum": ["pen", "pencil", "fountain", "marker", "highlighter"] },
+            "color": { "$ref": "#/$defs/color" },
+            "size": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "device": { "enum": ["pen", "mouse", "touch"] },
+        "start": { "type": "number", "description": "Unix time of the first sample, ms" },
+        "derivedFrom": { "type": "array", "items": { "$ref": "#/$defs/strokeId" } },
+        "points": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Flat list, channels.length numbers per sample"
+        }
+      }
+    },
+    "recognized": {
+      "type": "object",
+      "required": ["id", "text", "strokes"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" } },
+        "alternatives": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "language": { "type": "string" },
+        "engine": { "type": "string" }
+      }
+    }
+  }
+}

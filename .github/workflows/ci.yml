@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Unit, replay and format tests
+        run: cargo test --workspace
+      - name: 100 000-stroke performance budget
+        run: cargo test --release -p bedrock-core --test perf -- --ignored --nocapture
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build WebAssembly
+        run: ./scripts/build-web.sh
+      - name: Install Playwright
+        working-directory: apps/web
+        run: |
+          npm install --no-package-lock
+          npx playwright install --with-deps chromium
+      - name: Browser tests
+        working-directory: apps/web
+        env:
+          # CI machines render with a software GPU; the strict 40 ms budget is
+          # checked on real hardware, CI only catches big regressions.
+          BEDROCK_LATENCY_BUDGET_MS: "60"
+        run: npm test

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bedrock">
+  <meta name="theme-color" content="#fbfaf6">
+  <meta name="description" content="Bedrock: handwritten notes on an infinite canvas, made for Apple Pencil.">
+  <title>Bedrock</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage" aria-label="Drawing canvas">
+    <canvas id="base"></canvas>
+    <canvas id="overlay"></canvas>
+  </main>
+
+  <header class="topbar" id="topbar">
+    <button class="icon" id="btn-library" title="Notes" aria-label="Notes">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <input id="title" class="title" placeholder="Untitled note" aria-label="Note title" autocomplete="off" spellcheck="false">
+    <span id="save-state" class="save-state" role="status" aria-live="polite">Saved</span>
+    <button class="icon" id="btn-undo" title="Undo (two-finger tap)" aria-label="Undo">
+      <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+    </button>
+    <button class="icon" id="btn-redo" title="Redo (three-finger tap)" aria-label="Redo">
+      <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>
+    </button>
+    <button class="icon" id="btn-menu" title="More" aria-label="More" aria-haspopup="true">
+      <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
+    </button>
+  </header>
+
+  <nav class="toolbar" id="toolbar" aria-label="Tools">
+    <div class="tools" role="radiogroup" aria-label="Brush">
+      <button class="tool" data-brush="pen" title="Pen (1)" aria-label="Pen"><svg viewBox="0 0 24 24"><path d="m4 20 1-4L16 5l3 3L8 19z"/><path d="m14 7 3 3"/></svg></button>
+      <button class="tool" data-brush="pencil" title="Pencil (2) – tilt to shade" aria-label="Pencil"><svg viewBox="0 0 24 24"><path d="m4 20 2-5 10-10 3 3-10 10z"/><path d="m4 20 2-5 3 3z" class="fill"/></svg></button>
+      <button class="tool" data-brush="fountain" title="Fountain pen (3)" aria-label="Fountain pen"><svg viewBox="0 0 24 24"><path d="M12 3c3 4 5 7 5 10l-5 8-5-8c0-3 2-6 5-10z"/><path d="M12 13v8"/></svg></button>
+      <button class="tool" data-brush="marker" title="Marker (4)" aria-label="Marker"><svg viewBox="0 0 24 24"><path d="m6 18 9-12 4 3-9 12H6z"/><path d="M4 21h8"/></svg></button>
+      <button class="tool" data-brush="highlighter" title="Highlighter (5)" aria-label="Highlighter"><svg viewBox="0 0 24 24"><path d="m9 15 7-11 4 3-7 11z"/><path d="M9 15v4h4"/><path d="M3 21h9" class="hl"/></svg></button>
+      <button class="tool" data-tool="eraser" title="Eraser (E) – tap again to switch whole stroke / partial" aria-label="Eraser"><svg viewBox="0 0 24 24"><path d="m7 21-4-4L14 6l6 6-9 9z"/><path d="M7 21h13"/><path d="m9 11 6 6"/></svg><span class="badge" id="eraser-mode">S</span></button>
+    </div>
+    <div class="sep"></div>
+    <div class="colors" id="colors" role="radiogroup" aria-label="Color"></div>
+    <label class="color-custom" title="Custom color"><input type="color" id="color-input" aria-label="Custom color"></label>
+    <div class="sep"></div>
+    <label class="size" title="Size">
+      <span class="dot" id="size-dot"></span>
+      <input type="range" id="size" min="0.5" max="30" step="0.5" aria-label="Brush size">
+    </label>
+  </nav>
+
+  <div class="menu" id="menu" hidden role="menu">
+    <button role="menuitem" data-action="new">New note</button>
+    <button role="menuitem" data-action="open">Open file… (iCloud Drive, Files)</button>
+    <button role="menuitem" data-action="save">Save to iCloud Drive / Files…</button>
+    <button role="menuitem" data-action="export-svg">Export as SVG image</button>
+    <button role="menuitem" data-action="export-all">Export all notes (.zip)</button>
+    <hr>
+    <button role="menuitem" data-action="fit">Show all ink</button>
+    <label class="row">Paper
+      <select id="paper">
+        <option value="dots">Dots</option>
+        <option value="grid">Grid</option>
+        <option value="lines">Lines</option>
+        <option value="plain">Plain</option>
+      </select>
+    </label>
+    <label class="row"><input type="checkbox" id="finger-draw"> Draw with finger</label>
+    <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
+  </div>
+
+  <aside class="library" id="library" hidden aria-label="Notes">
+    <div class="library-head">
+      <h2>Notes</h2>
+      <button class="text" data-action="new">New</button>
+    </div>
+    <ul id="note-list"></ul>
+  </aside>
+
+  <div id="hud" class="hud" hidden></div>
+  <div id="toast" class="toast" role="alert" hidden></div>
+  <input type="file" id="file-input" hidden>
+
+  <noscript>Bedrock needs JavaScript and WebAssembly.</noscript>
+  <div id="fatal" class="fatal" hidden></div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+[package]
+name = "bedrock-web"
+description = "WebAssembly bindings and WebGL2 renderer for the Bedrock canvas."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bedrock-core = { path = "../bedrock-core" }
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"
+serde_json = "1"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "HtmlCanvasElement",
+  "WebGl2RenderingContext",
+  "WebGlBuffer",
+  "WebGlProgram",
+  "WebGlShader",
+  "WebGlUniformLocation",
+  "WebGlVertexArrayObject",
+  "console",
+]

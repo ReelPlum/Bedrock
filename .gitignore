@@ -1,0 +1,4 @@
+/target
+apps/web/pkg/
+node_modules/
+*.log
