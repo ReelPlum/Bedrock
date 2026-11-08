@@ -14,6 +14,7 @@ use bedrock_core::document::{Change, Document};
 use bedrock_core::engine::{Engine, PointerKind, ScreenSample, Tool};
 use bedrock_core::format;
 use bedrock_core::geom::Vec2;
+use bedrock_core::mirror;
 use bedrock_core::scene::{ChunkMesh, Scene};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -382,6 +383,24 @@ impl Canvas {
         format::to_json(&self.engine.doc)
     }
 
+    /// Note fields other than strokes (title, paper, times, ...) as note JSON.
+    pub fn meta_json(&self) -> String {
+        format::to_json(&mirror::meta_only(&self.engine.doc))
+    }
+
+    /// Position of a stroke in drawing order, or -1.
+    pub fn stroke_index(&self, id: &str) -> i32 {
+        bedrock_core::stroke::StrokeId::parse(id)
+            .and_then(|id| self.engine.doc.strokes().iter().position(|s| s.id == id))
+            .map_or(-1, |i| i as i32)
+    }
+
+    /// Fingerprint of the strokes (ids, order and sample counts), to check
+    /// that the background saver's copy matches.
+    pub fn content_hash(&self) -> String {
+        mirror::content_hash(&self.engine.doc)
+    }
+
     /// Open a `.bedrock`, Bedrock `.svg` or note `.json`. Returns warnings
     /// about damaged data that was skipped (empty for a healthy file).
     pub fn load(&mut self, bytes: &[u8], seed_hi: u32, seed_lo: u32) -> Result<js_sys::Array, JsValue> {
@@ -420,4 +439,48 @@ impl ZipBuilder {
 #[wasm_bindgen]
 pub fn peek_title(bytes: &[u8]) -> Option<String> {
     format::load_bytes(bytes, 0).ok().map(|l| l.doc.title)
+}
+
+/// The background saver's copy of a note (see `bedrock_core::mirror`). It
+/// lives in a Web Worker, so writing a large note never stalls drawing.
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct NoteMirror {
+    inner: mirror::Mirror,
+}
+
+#[wasm_bindgen]
+impl NoteMirror {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> NoteMirror {
+        NoteMirror::default()
+    }
+
+    /// Replace the copy with a whole note (`.bedrock`, SVG or JSON bytes).
+    pub fn reset(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner.reset(bytes).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// See `bedrock_core::mirror::Mirror::apply`.
+    pub fn apply(
+        &mut self,
+        meta: Option<String>,
+        touched: Vec<String>,
+        added: &str,
+        index: &[u32],
+    ) -> Result<(), JsValue> {
+        self.inner.apply(meta.as_deref(), &touched, added, index).map_err(|e| JsValue::from_str(&e))
+    }
+
+    pub fn content_hash(&self) -> String {
+        mirror::content_hash(self.inner.doc())
+    }
+
+    pub fn stroke_count(&self) -> usize {
+        self.inner.doc().len()
+    }
+
+    pub fn export_bedrock(&self) -> Vec<u8> {
+        format::to_bedrock(self.inner.doc())
+    }
 }

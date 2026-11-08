@@ -108,7 +108,14 @@ pub struct Scene {
     chunks: HashMap<u64, ChunkInfo>,
     order: Vec<u64>,
     revision: Option<u64>,
+    /// Geometry of strokes in recently rebuilt chunks. Strokes never change
+    /// once committed (erasing makes new ones), so finishing a stroke only
+    /// tessellates that stroke; the rest of its chunk comes from here.
+    cache: HashMap<StrokeId, tessellate::Mesh>,
 }
+
+/// Keep at most this many strokes' geometry cached between syncs.
+const CACHE_STROKES: usize = 4096;
 
 fn fnv(hash: &mut u64, v: u64) {
     for b in v.to_le_bytes() {
@@ -203,8 +210,19 @@ impl Scene {
             let mut mesh = ChunkMesh::default();
             let mut bounds = Rect::EMPTY;
             for &i in &idxs {
-                mesh.append(&strokes[i]);
-                bounds = bounds.union(&strokes[i].bounds());
+                let s = &strokes[i];
+                match self.cache.get(&s.id) {
+                    Some(m) => mesh.append_mesh(m, s),
+                    None => {
+                        let m = tessellate::mesh(s);
+                        mesh.append_mesh(&m, s);
+                        // Cache the newest strokes: that is where writing happens.
+                        if i + CACHE_STROKES >= strokes.len() {
+                            self.cache.insert(s.id, m);
+                        }
+                    }
+                }
+                bounds = bounds.union(&s.bounds());
             }
             let info = ChunkInfo { key, bounds, translucent, stroke_count: idxs.len() };
             self.chunks.insert(key, info.clone());
@@ -218,7 +236,18 @@ impl Scene {
             keep
         });
         self.order = new_order;
+        if self.cache.len() > CACHE_STROKES {
+            // Drop strokes that are no longer among the newest (or are gone).
+            let keep: HashSet<StrokeId> =
+                strokes[strokes.len().saturating_sub(CACHE_STROKES)..].iter().map(|s| s.id).collect();
+            self.cache.retain(|id, _| keep.contains(id));
+        }
         diff
+    }
+
+    /// Strokes with cached geometry (for tests).
+    pub fn cached_strokes(&self) -> usize {
+        self.cache.len()
     }
 
     /// Ids drawn per chunk is not stored (only geometry); this helper is for tests.
@@ -301,6 +330,38 @@ mod tests {
         assert!(chunks[0].translucent, "highlighter first");
         assert_eq!(chunks.iter().filter(|c| c.translucent).count(), 2);
         assert_eq!(sc.total_strokes(), 4);
+    }
+
+    #[test]
+    fn finishing_a_stroke_reuses_the_rest_of_its_chunk() {
+        let mut d = Document::new(5);
+        for i in 0..30 {
+            add(&mut d, BrushKind::Pen, i as f64 * 10.0);
+        }
+        let mut sc = Scene::new();
+        let first: Vec<_> = sc.sync(&d).added.into_iter().map(|(_, m)| m.segments).collect();
+        assert_eq!(sc.cached_strokes(), 30);
+        // A rebuilt chunk from cached geometry is identical to a fresh one.
+        add(&mut d, BrushKind::Pen, 999.0);
+        sc.sync(&d);
+        let mut fresh = Scene::new();
+        let a: Vec<f32> = fresh.sync(&d).added.into_iter().flat_map(|(_, m)| m.segments).collect();
+        let mut again = Scene::new();
+        again.cache = sc.cache.clone();
+        let b: Vec<f32> = again.sync(&d).added.into_iter().flat_map(|(_, m)| m.segments).collect();
+        assert_eq!(a, b);
+        assert!(!first.is_empty());
+    }
+
+    #[test]
+    fn cache_stays_bounded() {
+        let mut d = Document::new(6);
+        for i in 0..(CACHE_STROKES + 500) {
+            add(&mut d, BrushKind::Pen, i as f64 * 3.0);
+        }
+        let mut sc = Scene::new();
+        sc.sync(&d);
+        assert!(sc.cached_strokes() <= CACHE_STROKES, "{}", sc.cached_strokes());
     }
 
     #[test]

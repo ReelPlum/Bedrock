@@ -125,6 +125,75 @@ async function main() {
   }
 
   // ----- notes: load / save -------------------------------------------------
+  // ----- background saving --------------------------------------------------
+  // The .bedrock file is written in a worker that keeps its own copy of the
+  // note, updated with only the strokes that changed. Building the file on
+  // the main thread took ~0.8 s for a 1500-stroke note and froze the pen.
+  const saveStats = { background: 0, resyncs: 0, direct: 0 };
+  const saver = (() => {
+    let worker = null;
+    let seq = 0;
+    const waiting = new Map();
+    const fail = () => {
+      worker = null;
+      for (const resolve of waiting.values()) resolve({ error: 'saver stopped' });
+      waiting.clear();
+    };
+    try {
+      worker = new Worker(new URL('./save-worker.js', import.meta.url), { type: 'module' });
+      worker.onmessage = (e) => {
+        const resolve = waiting.get(e.data.seq);
+        waiting.delete(e.data.seq);
+        resolve?.(e.data);
+      };
+      worker.onerror = fail;
+    } catch (_) {
+      worker = null; // no module workers: save on the main thread instead
+    }
+    const call = (msg, transfer = []) => new Promise((resolve) => {
+      if (!worker) return resolve({ error: 'no saver' });
+      msg.seq = ++seq;
+      waiting.set(msg.seq, resolve);
+      worker.postMessage(msg, transfer);
+    });
+    /** Send the whole note (after opening one, or if the copies disagree). */
+    const reset = (withExport) => {
+      canvas.take_changes();
+      const hash = canvas.content_hash();
+      const bytes = new TextEncoder().encode(canvas.export_json());
+      return call({ reset: bytes, export: withExport }, [bytes.buffer]).then((r) => ({ ...r, expected: hash }));
+    };
+    return {
+      get available() { return !!worker; },
+      reset,
+      /** The .bedrock bytes of the current note, built off the main thread. */
+      async build() {
+        const touched = [...new Set(Array.from(canvas.take_changes(), (c) => c.id))];
+        const added = [];
+        const index = [];
+        for (const id of touched) {
+          const i = canvas.stroke_index(id);
+          if (i >= 0) { added.push(canvas.stroke_json(id)); index.push(i); }
+        }
+        const expected = canvas.content_hash();
+        let r = await call({ ops: { meta: canvas.meta_json(), touched, added: `[${added.join(',')}]`, index }, export: true });
+        if (!r.error && r.hash === expected) { saveStats.background++; return r.data; }
+        saveStats.resyncs++;
+        r = await reset(true);
+        if (!r.error && r.hash === r.expected) return r.data;
+        throw new Error(r.error || 'saved copy does not match');
+      },
+    };
+  })();
+
+  async function buildNoteFile() {
+    if (saver.available) {
+      try { return await saver.build(); } catch (e) { console.warn('background save failed, saving directly', e); }
+    }
+    saveStats.direct++;
+    return canvas.export_bedrock();
+  }
+
   async function saveNow() {
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -134,11 +203,13 @@ async function main() {
     const now = Date.now();
     note.modified = now;
     canvas.set_times(note.created, now);
-    const data = canvas.export_bedrock();
-    const record = { id: note.id, title: canvas.title(), created: note.created, modified: now, data };
+    const id = note.id, created = note.created, title = canvas.title();
     setSaveState('Saving…');
     saveCamera();
-    saving = saving.then(() => store.put(record)).then(() => {
+    saving = saving.then(async () => {
+      const data = await buildNoteFile();
+      await store.put({ id, title, created, modified: now, data });
+    }).then(() => {
       savedRevision = rev;
       setSaveState(canvas.revision() === rev ? 'Saved' : 'Saving…');
       settings.lastNote = note.id;
@@ -167,7 +238,7 @@ async function main() {
   function applyDocToUi() {
     $('title').value = canvas.title();
     $('paper').value = canvas.paper();
-    canvas.take_changes();
+    if (saver.available) saver.reset(false); else canvas.take_changes();
     savedRevision = canvas.revision();
     setSaveState('Saved');
     updateUndo();
@@ -650,7 +721,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, store, saveNow, openNote, newNote, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

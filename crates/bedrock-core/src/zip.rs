@@ -4,6 +4,10 @@
 
 use std::fmt;
 
+/// Fast compression: autosave runs after every stroke, and level 2 is several
+/// times faster than the default 6 for only slightly larger files.
+const DEFLATE_LEVEL: u8 = 2;
+
 #[derive(Debug, PartialEq)]
 pub struct ZipError(pub String);
 
@@ -52,7 +56,7 @@ pub fn write(files: &[(&str, &[u8])]) -> Vec<u8> {
     // 1980-01-01 00:00 in DOS format; we deliberately don't embed clock time.
     let (dos_time, dos_date) = (0u16, (1 << 5) | 1);
     for (name, data) in files {
-        let compressed = miniz_oxide::deflate::compress_to_vec(data, 6);
+        let compressed = miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL);
         let (method, body): (u16, &[u8]) = if compressed.len() < data.len() { (8, &compressed) } else { (0, data) };
         let crc = crc32(data);
         let offset = out.len() as u32;

@@ -92,7 +92,7 @@ impl Mesh {
 }
 
 fn circle_segments(r: f64, sweep: f64) -> usize {
-    let full = (r * 6.0).clamp(24.0, 96.0);
+    let full = (r * 4.0).clamp(16.0, 64.0);
     ((full * sweep.abs() / (2.0 * PI)).ceil() as usize).max(2)
 }
 
@@ -208,6 +208,15 @@ pub fn samples(stroke: &Stroke) -> Vec<Sample> {
 /// Like [`samples`] but for an explicit point list (used for live strokes
 /// with predicted points appended).
 pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
+    samples_with_step(stroke, points, 1.0)
+}
+
+/// Coarser samples (`scale` times the normal spacing), e.g. for thumbnails.
+pub fn samples_coarse(stroke: &Stroke, scale: f64) -> Vec<Sample> {
+    samples_with_step(stroke, &stroke.points, scale)
+}
+
+fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<Sample> {
     let stabilized;
     let points = if stroke.brush.stabilizer > 0.0 {
         stabilized = stabilize(points, stroke.brush.stabilizer);
@@ -216,7 +225,9 @@ pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
         points
     };
     let smoothed = smooth(points);
-    let step = (stroke.brush.size as f64 * 0.35).clamp(0.35, 2.0);
+    // Dense resampling: capsules are cheap on the GPU and long straight runs
+    // are merged again afterwards, so curves can be finely sampled.
+    let step = (stroke.brush.size as f64 * 0.15).clamp(0.15, 0.75) * scale.max(1.0);
     let pts = resample(&smoothed, step);
     // Drop duplicates so tangents are well defined.
     let mut dedup: Vec<InputPoint> = Vec::with_capacity(pts.len());
@@ -419,9 +430,9 @@ pub fn pieces(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Sample>> {
 /// How far (world units) a merged capsule may stray from the samples it
 /// replaces. Invisible even zoomed in 10x, and it keeps long straight or
 /// gently curved runs to a few capsules.
-const MERGE_TOLERANCE: f64 = 0.03;
+const MERGE_TOLERANCE: f64 = 0.015;
 /// Longest run of samples merged into one capsule.
-const MAX_MERGE: usize = 24;
+const MAX_MERGE: usize = 32;
 
 pub fn mesh_from_samples(s: &[Sample]) -> Mesh {
     let mut m = Mesh { origin: s.first().map(|s| s.pos).unwrap_or_default(), ..Default::default() };
@@ -468,8 +479,29 @@ pub fn outline(stroke: &Stroke) -> Vec<Vec2> {
 
 /// Outline polygons of every visible piece (dashes / dots) of a stroke.
 pub fn outlines(stroke: &Stroke) -> Vec<Vec<Vec2>> {
-    let s = samples(stroke);
-    pieces(stroke, &s).iter().map(|p| outline_from_samples(p)).filter(|o| !o.is_empty()).collect()
+    outlines_for(stroke, &samples(stroke))
+}
+
+/// Points closer together than this (world units) are dropped from SVG
+/// outlines: invisible, and it keeps files small and fast to write.
+const OUTLINE_MIN_STEP: f64 = 0.2;
+
+/// Like [`outlines`] for samples already computed.
+pub fn outlines_for(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Vec2>> {
+    pieces(stroke, s)
+        .iter()
+        .map(|p| {
+            let o = outline_from_samples(p);
+            let mut out: Vec<Vec2> = Vec::with_capacity(o.len());
+            for q in o {
+                if out.last().is_none_or(|l| l.distance(q) >= OUTLINE_MIN_STEP) {
+                    out.push(q);
+                }
+            }
+            out
+        })
+        .filter(|o| !o.is_empty())
+        .collect()
 }
 
 pub fn outline_from_samples(s: &[Sample]) -> Vec<Vec2> {

@@ -75,6 +75,10 @@ fn round(v: f64, decimals: i32) -> f64 {
 
 /// Serialise the note data as JSON (the payload embedded in the SVG).
 pub fn to_json(doc: &Document) -> String {
+    json_with(doc, true)
+}
+
+fn json_with(doc: &Document, recognition: bool) -> String {
     let mut root = Map::new();
     root.insert("format".into(), FORMAT_NAME.into());
     root.insert("version".into(), FORMAT_VERSION.into());
@@ -112,7 +116,9 @@ pub fn to_json(doc: &Document) -> String {
         })
         .collect();
     root.insert("strokes".into(), strokes.into());
-    root.insert("recognition".into(), serde_json::to_value(&doc.recognition).expect("recognition serialises"));
+    if recognition {
+        root.insert("recognition".into(), serde_json::to_value(&doc.recognition).expect("recognition serialises"));
+    }
     for (k, v) in &doc.extra {
         root.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -298,6 +304,10 @@ fn path_data(points: &[crate::geom::Vec2]) -> String {
 
 /// Write the note as a self-contained SVG with the note JSON embedded.
 pub fn to_svg(doc: &Document) -> String {
+    svg_with(doc, true)
+}
+
+fn svg_with(doc: &Document, embed_data: bool) -> String {
     let b = doc.bounds();
     let b = if b.is_empty() {
         crate::geom::Rect::new(crate::geom::Vec2::ZERO, crate::geom::Vec2::new(800.0, 600.0))
@@ -315,11 +325,13 @@ pub fn to_svg(doc: &Document) -> String {
         xml_escape(if doc.title.is_empty() { "Bedrock note" } else { &doc.title })
     ));
     // "]]>" can only occur inside JSON strings, where ">" is equivalent.
-    let json = to_json(doc).replace("]]>", "]]\\u003e");
-    out.push_str(METADATA_OPEN);
-    out.push_str("<![CDATA[");
-    out.push_str(&json);
-    out.push_str("]]></metadata>\n");
+    if embed_data {
+        let json = to_json(doc).replace("]]>", "]]\\u003e");
+        out.push_str(METADATA_OPEN);
+        out.push_str("<![CDATA[");
+        out.push_str(&json);
+        out.push_str("]]></metadata>\n");
+    }
     out.push_str(&format!(
         "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"{}\"/>\n",
         doc.background.to_hex_rgb()
@@ -328,12 +340,14 @@ pub fn to_svg(doc: &Document) -> String {
     for (group, highlight) in [("highlights", true), ("ink", false)] {
         out.push_str(&format!("<g id=\"{group}\">\n"));
         for s in doc.strokes().iter().filter(|s| (s.brush.kind == BrushKind::Highlighter) == highlight) {
-            let samples = tessellate::samples(s);
+            // The preview is a thumbnail: a coarser outline is plenty and
+            // keeps saving fast. The full SVG export keeps every detail.
+            let samples = if embed_data { tessellate::samples(s) } else { tessellate::samples_coarse(s, 4.0) };
             if samples.is_empty() {
                 continue;
             }
             let opacity = samples.iter().map(|s| s.opacity as f64).sum::<f64>() / samples.len() as f64;
-            let d: String = tessellate::outlines(s).iter().map(|o| path_data(o)).collect();
+            let d: String = tessellate::outlines_for(s, &samples).iter().map(|o| path_data(o)).collect();
             out.push_str(&format!("<path id=\"s{}\" d=\"{}\" fill=\"{}\"", s.id, d, s.brush.color.to_hex_rgb()));
             if opacity < 0.999 {
                 out.push_str(&format!(" fill-opacity=\"{}\"", round(opacity, 3)));
@@ -390,20 +404,12 @@ pub fn recognition_json(doc: &Document) -> String {
 
 /// Note JSON without the recognition block (which goes to `recognized.json`).
 fn note_json_for_container(doc: &Document) -> String {
-    let mut v: Value = serde_json::from_str(&to_json(doc)).expect("valid json");
-    if let Some(o) = v.as_object_mut() {
-        o.remove("recognition");
-    }
-    v.to_string()
+    json_with(doc, false)
 }
 
 /// SVG preview without the embedded data (the container already has it).
 pub fn to_preview_svg(doc: &Document) -> String {
-    let svg = to_svg(doc);
-    match (svg.find(METADATA_OPEN), svg.find("</metadata>\n")) {
-        (Some(a), Some(b)) => format!("{}{}", &svg[..a], &svg[b + "</metadata>\n".len()..]),
-        _ => svg,
-    }
+    svg_with(doc, false)
 }
 
 /// Write a `.bedrock` file (ZIP: note.json, recognized.json, preview.svg, README.txt).

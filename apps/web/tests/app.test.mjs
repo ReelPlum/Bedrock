@@ -483,6 +483,53 @@ test('notes autosave locally and reopen where you left off', async () => {
   await context.close();
 });
 
+test('saving happens in the background and the saved note matches exactly', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page } = await openApp(env, { context });
+  const r = await page.evaluate(async () => {
+    const c = bedrock.canvas;
+    // A big note: 800 handwriting-sized strokes.
+    let id = 100;
+    for (let s = 0; s < 800; s++) {
+      const x0 = 40 + (s % 40) * 22, y0 = 80 + Math.floor(s / 40) * 28;
+      t.ev('pointerdown', id, 'pen', x0, y0, { pressure: 0.5 });
+      for (let i = 1; i < 50; i++) t.ev('pointermove', id, 'pen', x0 + i * 0.3 + Math.sin(i / 3) * 4, y0 + Math.cos(i / 4) * 6, { pressure: 0.5 });
+      t.ev('pointerup', id, 'pen', x0 + 15, y0, { pressure: 0 });
+      id++;
+    }
+    await bedrock.saveNow();
+    // Now edit: a new stroke, an erase, an undo, and measure the main thread
+    // while the next save runs.
+    await t.line(100, 700, 600, 700);
+    document.querySelector('[data-tool="eraser"]').click();
+    await t.line(52, 60, 52, 120);
+    c.undo();
+    document.querySelector('[data-brush="pen"]').click();
+    const longest = { ms: 0 };
+    const obs = typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('longtask')
+      ? new PerformanceObserver((l) => { for (const e of l.getEntries()) longest.ms = Math.max(longest.ms, e.duration); })
+      : null;
+    obs?.observe({ type: 'longtask' });
+    const t0 = performance.now();
+    const p = bedrock.saveNow();
+    const sync = performance.now() - t0; // main-thread part before the worker takes over
+    await p;
+    await new Promise((res) => setTimeout(res, 50));
+    obs?.disconnect();
+    const saved = await bedrock.store.get(bedrock.noteId);
+    const back = new bedrock.canvas.constructor(document.createElement('canvas'), document.createElement('canvas'), 1, 2);
+    back.load(saved.data, 1, 2);
+    return { stats: bedrock.saveStats, background: bedrock.backgroundSaving, sync, longest: longest.ms, same: back.export_json() === c.export_json(), strokes: back.stroke_count() };
+  });
+  assert.ok(r.background, 'saver worker is running');
+  assert.deepEqual({ ...r.stats, background: r.stats.background > 0 }, { background: true, resyncs: 0, direct: 0 }, 'saved from the worker copy, no fallbacks');
+  assert.ok(r.same, 'the saved file has exactly the strokes on screen');
+  assert.equal(r.strokes, 801);
+  assert.ok(r.sync < 30, `main thread spent ${r.sync.toFixed(1)} ms starting the save`);
+  assert.ok(r.longest < 50, `longest main-thread task during the save: ${r.longest} ms`);
+  await context.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
