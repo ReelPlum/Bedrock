@@ -18,89 +18,81 @@ pub struct Sample {
     pub opacity: f32,
 }
 
-/// One mesh vertex. Besides position and opacity it carries what the GPU
-/// needs for analytic antialiasing (independent of the browser's MSAA, which
-/// iOS Safari does not reliably provide):
-/// * `dir`: unit direction pointing out of the stroke at this vertex,
-/// * `edge`: 0 on the centre line, ±1 on the outline,
-/// * `half_width`: the stroke's half width here, in world units.
+/// One piece of a stroke: a tapered capsule, i.e. every point within a
+/// linearly varying radius of the segment `a`..`b` (a single round dab when
+/// `a == b`). A stroke is drawn as the union of its capsules.
 ///
-/// The shader pushes outline vertices half a pixel outwards along `dir` and
-/// fades coverage over that pixel, giving smooth edges at any zoom.
+/// The GPU computes the exact distance to each capsule per pixel, so ends
+/// are perfect circles and edges are smooth and antialiased at any zoom,
+/// with no triangles to see and nothing that can fold over on sharp turns.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MeshVertex {
-    pub pos: [f32; 2],
-    pub dir: [f32; 2],
-    pub edge: f32,
-    pub half_width: f32,
-    pub alpha: f32,
+pub struct Segment {
+    /// Endpoints relative to the mesh origin.
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// Radius (half width) at `a` and `b`, world units.
+    pub ra: f32,
+    pub rb: f32,
+    /// Opacity at `a` and `b` (0..=1).
+    pub alpha_a: f32,
+    pub alpha_b: f32,
 }
 
-/// Triangle mesh in coordinates relative to `origin` (keeps `f32` precise
-/// anywhere on the infinite canvas).
+/// A stroke's capsules, in coordinates relative to `origin` (keeps `f32`
+/// precise anywhere on the infinite canvas).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mesh {
     pub origin: Vec2,
-    pub vertices: Vec<MeshVertex>,
-    pub indices: Vec<u32>,
+    pub segments: Vec<Segment>,
 }
 
 impl Mesh {
-    pub fn triangle_count(&self) -> usize {
-        self.indices.len() / 3
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
     }
 
     pub fn bounds(&self) -> Rect {
         let mut r = Rect::EMPTY;
-        for v in &self.vertices {
-            r.include(Vec2::new(v.pos[0] as f64 + self.origin.x, v.pos[1] as f64 + self.origin.y));
+        for g in &self.segments {
+            for (p, rad) in [(g.a, g.ra), (g.b, g.rb)] {
+                let c = Vec2::new(p[0] as f64 + self.origin.x, p[1] as f64 + self.origin.y);
+                let rad = rad as f64;
+                r.include(c - Vec2::new(rad, rad));
+                r.include(c + Vec2::new(rad, rad));
+            }
         }
         r
     }
 
     /// Append another mesh (re-based onto this mesh's origin).
     pub fn append(&mut self, other: &Mesh) {
-        if self.vertices.is_empty() {
+        if self.segments.is_empty() {
             self.origin = other.origin;
         }
-        let base = self.vertices.len() as u32;
         let dx = (other.origin.x - self.origin.x) as f32;
         let dy = (other.origin.y - self.origin.y) as f32;
-        self.vertices.extend(other.vertices.iter().map(|v| MeshVertex { pos: [v.pos[0] + dx, v.pos[1] + dy], ..*v }));
-        self.indices.extend(other.indices.iter().map(|i| i + base));
+        self.segments.extend(other.segments.iter().map(|g| Segment {
+            a: [g.a[0] + dx, g.a[1] + dy],
+            b: [g.b[0] + dx, g.b[1] + dy],
+            ..*g
+        }));
     }
 
-    fn vertex(&mut self, p: Vec2, dir: Vec2, edge: f32, half_width: f64, alpha: f32) -> u32 {
-        let i = self.vertices.len() as u32;
-        self.vertices.push(MeshVertex {
-            pos: [(p.x - self.origin.x) as f32, (p.y - self.origin.y) as f32],
-            dir: [dir.x as f32, dir.y as f32],
-            edge,
-            half_width: half_width as f32,
-            alpha,
+    fn push(&mut self, a: &Sample, b: &Sample) {
+        let rel = |p: Vec2| [(p.x - self.origin.x) as f32, (p.y - self.origin.y) as f32];
+        self.segments.push(Segment {
+            a: rel(a.pos),
+            b: rel(b.pos),
+            ra: (a.width / 2.0) as f32,
+            rb: (b.width / 2.0) as f32,
+            alpha_a: a.opacity.clamp(0.0, 1.0),
+            alpha_b: b.opacity.clamp(0.0, 1.0),
         });
-        i
-    }
-
-    /// Fan of triangles approximating a circle arc around `c` from angle `a0`
-    /// sweeping `sweep` radians.
-    fn fan(&mut self, c: Vec2, r: f64, a0: f64, sweep: f64, alpha: f32) {
-        let segs = circle_segments(r, sweep);
-        let center = self.vertex(c, Vec2::ZERO, 0.0, r, alpha);
-        let d0 = Vec2::new(a0.cos(), a0.sin());
-        let mut prev = self.vertex(c + d0 * r, d0, 1.0, r, alpha);
-        for i in 1..=segs {
-            let a = a0 + sweep * i as f64 / segs as f64;
-            let d = Vec2::new(a.cos(), a.sin());
-            let v = self.vertex(c + d * r, d, 1.0, r, alpha);
-            self.indices.extend_from_slice(&[center, prev, v]);
-            prev = v;
-        }
     }
 }
 
 fn circle_segments(r: f64, sweep: f64) -> usize {
-    let full = (r * 3.0).clamp(12.0, 48.0);
+    let full = (r * 6.0).clamp(24.0, 96.0);
     ((full * sweep.abs() / (2.0 * PI)).ceil() as usize).max(2)
 }
 
@@ -235,16 +227,88 @@ pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
     }
     let alpha = stroke.brush.stroke_alpha();
     let n = dedup.len();
-    (0..n)
+    if n == 0 {
+        return Vec::new();
+    }
+    // Arc length at each point.
+    let mut arc = Vec::with_capacity(n);
+    let mut acc = 0.0;
+    for i in 0..n {
+        if i > 0 {
+            acc += dedup[i].pos().distance(dedup[i - 1].pos());
+        }
+        arc.push(acc);
+    }
+    // Direction of travel, measured over a short stretch of line rather than
+    // between neighbouring points: when the pen moves slowly the points are a
+    // fraction of a unit apart and their direction is mostly digitiser noise,
+    // which made direction-sensitive nibs flicker between thin and fat.
+    let size = stroke.brush.size.max(0.1) as f64;
+    let reach = (size * 0.75).clamp(1.0, 6.0);
+    let (mut lo, mut hi) = (0usize, 0usize);
+    let angles: Vec<f32> = (0..n)
         .map(|i| {
-            let prev = dedup[i.saturating_sub(1)].pos();
-            let next = dedup[(i + 1).min(n - 1)].pos();
-            let d = next - prev;
-            let angle = if d.length() > 0.0 { d.y.atan2(d.x) as f32 } else { 0.0 };
-            let Footprint { width, opacity } = stroke.brush.footprint(&dedup[i], angle);
+            while arc[i] - arc[lo] > reach {
+                lo += 1;
+            }
+            hi = hi.max(i);
+            while hi + 1 < n && arc[hi] - arc[i] < reach {
+                hi += 1;
+            }
+            let d = dedup[hi].pos() - dedup[lo].pos();
+            if d.length() > 0.0 {
+                d.y.atan2(d.x) as f32
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let mut out: Vec<Sample> = (0..n)
+        .map(|i| {
+            let Footprint { width, opacity } = stroke.brush.footprint(&dedup[i], angles[i]);
             Sample { pos: dedup[i].pos(), width: width as f64, opacity: opacity * alpha }
         })
-        .collect()
+        .collect();
+    calm_widths(&mut out, &arc, size);
+    out
+}
+
+/// Keep width and opacity changes gradual along the line.
+///
+/// Pressure and tilt from a real pen are noisy, and a single spike, or a
+/// pause where the pen presses harder, used to show up as a blob. Two
+/// passes fix that without dulling deliberate swells and tapers:
+/// * a light forward-backward smoothing over about one brush size of line,
+/// * a slope limit: the radius may grow at most ~0.35 units per unit of
+///   line, so the stroke can't balloon in a short distance.
+fn calm_widths(s: &mut [Sample], arc: &[f64], size: f64) {
+    let n = s.len();
+    if n < 3 {
+        return;
+    }
+    let span = (size * 0.8).clamp(0.6, 8.0);
+    for pass in 0..2 {
+        let idx: Vec<usize> = if pass == 0 { (0..n).collect() } else { (0..n).rev().collect() };
+        let (mut w, mut o) = (s[idx[0]].width, s[idx[0]].opacity as f64);
+        for k in 1..n {
+            let (i, j) = (idx[k], idx[k - 1]);
+            let ds = (arc[i] - arc[j]).abs();
+            let a = 1.0 - (-ds / span).exp();
+            w += (s[i].width - w) * a;
+            o += (s[i].opacity as f64 - o) * a;
+            s[i].width = w;
+            s[i].opacity = o as f32;
+        }
+    }
+    const MAX_SLOPE: f64 = 0.7; // width per unit of arc length (radius 0.35)
+    for i in 1..n {
+        let ds = arc[i] - arc[i - 1];
+        s[i].width = s[i].width.min(s[i - 1].width + MAX_SLOPE * ds);
+    }
+    for i in (0..n - 1).rev() {
+        let ds = arc[i + 1] - arc[i];
+        s[i].width = s[i].width.min(s[i + 1].width + MAX_SLOPE * ds);
+    }
 }
 
 fn tangents(s: &[Sample]) -> Vec<Vec2> {
@@ -352,47 +416,47 @@ pub fn pieces(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Sample>> {
     out
 }
 
+/// How far (world units) a merged capsule may stray from the samples it
+/// replaces. Invisible even zoomed in 10x, and it keeps long straight or
+/// gently curved runs to a few capsules.
+const MERGE_TOLERANCE: f64 = 0.03;
+/// Longest run of samples merged into one capsule.
+const MAX_MERGE: usize = 24;
+
 pub fn mesh_from_samples(s: &[Sample]) -> Mesh {
     let mut m = Mesh { origin: s.first().map(|s| s.pos).unwrap_or_default(), ..Default::default() };
     match s.len() {
         0 => return m,
         1 => {
-            m.fan(s[0].pos, s[0].width / 2.0, 0.0, 2.0 * PI, s[0].opacity);
+            m.push(&s[0], &s[0]);
             return m;
         }
         _ => {}
     }
-    let tan = tangents(s);
-    // Body: a triangle strip between the left and right offset curves.
-    let mut prev: Option<(u32, u32)> = None;
-    for (i, smp) in s.iter().enumerate() {
-        let hw = smp.width / 2.0;
-        let nd = tan[i].perp();
-        let n = nd * hw;
-        let l = m.vertex(smp.pos + n, nd, 1.0, hw, smp.opacity);
-        let r = m.vertex(smp.pos - n, nd * -1.0, -1.0, hw, smp.opacity);
-        if let Some((pl, pr)) = prev {
-            m.indices.extend_from_slice(&[pl, pr, l, pr, r, l]);
+    // Can samples i..=k be drawn as one capsule from i to k?
+    let fits = |i: usize, k: usize| {
+        let (a, b) = (s[i], s[k]);
+        let d = b.pos - a.pos;
+        let len2 = d.dot(d);
+        (i + 1..k).all(|j| {
+            let t = if len2 > 0.0 { ((s[j].pos - a.pos).dot(d) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let off = s[j].pos.distance(a.pos + d * t);
+            let w = a.width + (b.width - a.width) * t;
+            let o = a.opacity + (b.opacity - a.opacity) * t as f32;
+            off <= MERGE_TOLERANCE
+                && (s[j].width - w).abs() <= 2.0 * MERGE_TOLERANCE
+                && (s[j].opacity - o).abs() <= 0.02
+        })
+    };
+    let mut i = 0;
+    while i + 1 < s.len() {
+        let mut k = i + 1;
+        while k + 1 < s.len() && k + 1 - i <= MAX_MERGE && fits(i, k + 1) {
+            k += 1;
         }
-        prev = Some((l, r));
+        m.push(&s[i], &s[k]);
+        i = k;
     }
-    // Round joins where the stroke turns sharply, so corners stay solid.
-    for i in 1..s.len() - 1 {
-        let din = (s[i].pos - s[i - 1].pos).normalized();
-        let dout = (s[i + 1].pos - s[i].pos).normalized();
-        // Only real corners (> ~45°) need a join; smooth curves are dense enough.
-        if din.dot(dout) < 0.7 {
-            m.fan(s[i].pos, s[i].width / 2.0, 0.0, 2.0 * PI, s[i].opacity);
-        }
-    }
-    // Round caps.
-    let first = s[0];
-    let last = s[s.len() - 1];
-    let a_start = tan[0].perp().y.atan2(tan[0].perp().x);
-    m.fan(first.pos, first.width / 2.0, a_start, PI, first.opacity);
-    let te = tan[s.len() - 1];
-    let a_end = (-te.perp().y).atan2(-te.perp().x);
-    m.fan(last.pos, last.width / 2.0, a_end, PI, last.opacity);
     m
 }
 
@@ -457,29 +521,17 @@ mod tests {
     }
 
     fn assert_valid(m: &Mesh) {
-        assert_eq!(m.indices.len() % 3, 0);
-        for &i in &m.indices {
-            assert!((i as usize) < m.vertices.len(), "index out of range");
-        }
-        for v in &m.vertices {
-            assert!(v.pos.iter().chain(&v.dir).all(|c| c.is_finite()));
-            assert!(v.alpha >= 0.0 && v.alpha <= 1.0);
-            assert!(v.half_width > 0.0);
-            assert!(v.edge.abs() <= 1.0);
-            let dl = (v.dir[0] * v.dir[0] + v.dir[1] * v.dir[1]).sqrt();
-            // Outline vertices point outwards with a unit direction; centres have none.
-            if v.edge == 0.0 {
-                assert_eq!(dl, 0.0)
-            } else {
-                assert!((dl - 1.0).abs() < 1e-3)
-            }
+        for g in &m.segments {
+            assert!(g.a.iter().chain(&g.b).all(|c| c.is_finite()));
+            assert!(g.ra > 0.0 && g.rb > 0.0 && g.ra.is_finite() && g.rb.is_finite());
+            assert!((0.0..=1.0).contains(&g.alpha_a) && (0.0..=1.0).contains(&g.alpha_b));
         }
     }
 
     #[test]
     fn empty_stroke_has_empty_mesh() {
         let m = mesh(&line(BrushKind::Pen, 0));
-        assert!(m.vertices.is_empty());
+        assert!(m.segments.is_empty());
         assert!(outline(&line(BrushKind::Pen, 0)).is_empty());
     }
 
@@ -488,7 +540,8 @@ mod tests {
         let s = line(BrushKind::Pen, 1);
         let m = mesh(&s);
         assert_valid(&m);
-        assert!(m.triangle_count() >= 8);
+        assert_eq!(m.segment_count(), 1, "one round dab");
+        assert_eq!(m.segments[0].a, m.segments[0].b);
         let b = m.bounds();
         let w = Brush::new(BrushKind::Pen, Rgba::BLACK, 4.0).footprint(&s.points[0], 0.0).width as f64;
         assert!((b.width() - w).abs() < 0.1, "dot width {} vs {}", b.width(), w);
@@ -513,7 +566,7 @@ mod tests {
         let s = Stroke::new(StrokeId(2), Brush::default(), 0.0, InputDevice::Pen, pts);
         let m = mesh(&s);
         assert_valid(&m);
-        assert!(m.vertices.iter().all(|v| v.pos[0].abs() < 100.0 && v.pos[1].abs() < 100.0));
+        assert!(m.segments.iter().all(|g| g.a.iter().chain(&g.b).all(|c| c.abs() < 100.0)));
     }
 
     #[test]
@@ -567,9 +620,9 @@ mod tests {
         }
         // Nothing is drawn in the middle of the first gap (x 16..26, minus the round caps).
         let m = mesh(&s);
-        assert!(m.vertices.iter().all(|v| {
-            let x = v.pos[0] as f64 + m.origin.x;
-            !(19.0..23.0).contains(&x)
+        assert!(m.segments.iter().all(|g| {
+            let (x0, x1) = (g.a[0] as f64 + m.origin.x - g.ra as f64, g.b[0] as f64 + m.origin.x + g.rb as f64);
+            x1 <= 19.0 || x0 >= 23.0
         }));
         // A dash boundary that lands exactly on a sample (x = 120) still splits there.
         assert!(p.iter().any(|d| (d[0].pos.x - 104.0).abs() < 1e-6 && (d.last().unwrap().pos.x - 120.0).abs() < 1e-6));
@@ -636,6 +689,110 @@ mod tests {
         let s = Stroke::new(StrokeId(3), Brush::default(), 0.0, InputDevice::Pen, pts);
         let m = mesh(&s);
         assert_valid(&m);
-        assert!(m.triangle_count() > 0);
+        assert!(m.segment_count() > 0);
+    }
+
+    /// Distance from `p` to the union of the mesh's capsules (negative inside).
+    fn sdf(m: &Mesh, p: Vec2) -> f64 {
+        m.segments
+            .iter()
+            .map(|g| {
+                let a = Vec2::new(g.a[0] as f64, g.a[1] as f64) + m.origin;
+                let b = Vec2::new(g.b[0] as f64, g.b[1] as f64) + m.origin;
+                let d = b - a;
+                let l2 = d.dot(d);
+                let t = if l2 > 0.0 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                p.distance(a + d * t) - (g.ra as f64 + (g.rb - g.ra) as f64 * t)
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn dots_and_ends_are_true_circles() {
+        // Bug: round ends were 12-sided polygons with visible flat edges.
+        let s = Stroke::new(
+            StrokeId(9),
+            Brush::new(BrushKind::Marker, Rgba::BLACK, 30.0),
+            0.0,
+            InputDevice::Pen,
+            vec![InputPoint::new(0.0, 0.0, 0.5)],
+        );
+        let m = mesh(&s);
+        let r = m.segments[0].ra as f64;
+        for i in 0..360 {
+            let a = (i as f64).to_radians();
+            let d = sdf(&m, Vec2::new(a.cos(), a.sin()) * r);
+            assert!(d.abs() < 1e-4, "edge at {i} degrees is {d} off the circle");
+        }
+    }
+
+    #[test]
+    fn slow_jittery_reversal_has_no_spikes() {
+        // Bug: a slow pen that turns back on itself (with digitiser jitter)
+        // made the outline fold into spikes and triangles sticking out.
+        let mut pts = Vec::new();
+        let mut t = 0.0;
+        for i in 0..80 {
+            let x = if i < 40 { i as f64 * 0.25 } else { (80 - i) as f64 * 0.25 };
+            let jitter = if i % 2 == 0 { 0.06 } else { -0.06 };
+            pts.push(InputPoint::new(x, jitter + (i as f64 * 0.01), 0.7).at(t));
+            t += 4.0;
+        }
+        let s = Stroke::new(StrokeId(10), Brush::new(BrushKind::Pen, Rgba::BLACK, 6.0), 0.0, InputDevice::Pen, pts);
+        let m = mesh(&s);
+        assert_valid(&m);
+        let max_r = m.segments.iter().map(|g| g.ra.max(g.rb)).fold(0.0, f32::max) as f64;
+        let b = m.bounds();
+        // Everything stays within the widest radius of the centre line's extent.
+        assert!(b.min.x >= -max_r - 1e-6 && b.max.x <= 10.0 + max_r + 1e-6, "{b:?}");
+        assert!(b.height() <= 1.0 + 2.0 * max_r, "{b:?}");
+    }
+
+    #[test]
+    fn pressure_spike_does_not_make_a_blob() {
+        // Bug: one noisy pressure sample (or pressing harder while moving
+        // slowly) ballooned the line into a blob.
+        let pts: Vec<_> = (0..60)
+            .map(|i| {
+                let p = if i == 30 { 1.0 } else { 0.15 };
+                InputPoint::new(i as f64 * 0.3, 0.0, p).at(i as f64 * 4.0)
+            })
+            .collect();
+        let s = Stroke::new(StrokeId(11), Brush::new(BrushKind::Pen, Rgba::BLACK, 8.0), 0.0, InputDevice::Pen, pts);
+        let smp = samples(&s);
+        let base = smp[5].width;
+        let peak = smp.iter().map(|x| x.width).fold(0.0, f64::max);
+        assert!(peak < base * 1.6, "spike grew the line from {base} to {peak}");
+        // Sustained pressure still widens the line.
+        let pts: Vec<_> = (0..60)
+            .map(|i| InputPoint::new(i as f64, 0.0, if i < 30 { 0.1 } else { 1.0 }).at(i as f64 * 4.0))
+            .collect();
+        let s = Stroke::new(StrokeId(12), Brush::new(BrushKind::Pen, Rgba::BLACK, 8.0), 0.0, InputDevice::Pen, pts);
+        let smp = samples(&s);
+        assert!(smp.last().unwrap().width > smp[0].width * 2.0);
+    }
+
+    #[test]
+    fn fountain_nib_ignores_jitter_when_moving_slowly() {
+        // Bug: at slow speed, direction between neighbouring samples is mostly
+        // noise, so the direction-sensitive nib flickered between thin and fat.
+        let pts: Vec<_> = (0..100)
+            .map(|i| {
+                let jitter = if i % 2 == 0 { 0.08 } else { -0.08 };
+                InputPoint::new(i as f64 * 0.12, jitter, 0.5).at(i as f64 * 4.0)
+            })
+            .collect();
+        let s =
+            Stroke::new(StrokeId(13), Brush::new(BrushKind::Fountain, Rgba::BLACK, 6.0), 0.0, InputDevice::Pen, pts);
+        let smp = samples(&s);
+        let inner = &smp[smp.len() / 5..smp.len() * 4 / 5];
+        let (lo, hi) = inner.iter().fold((f64::MAX, 0.0f64), |(l, h), x| (l.min(x.width), h.max(x.width)));
+        assert!(hi < lo * 1.25, "width flickers between {lo} and {hi}");
+    }
+
+    #[test]
+    fn straight_lines_use_few_capsules() {
+        let m = mesh(&line(BrushKind::Pen, 41));
+        assert!(m.segment_count() <= 20, "{} capsules for a straight line", m.segment_count());
     }
 }

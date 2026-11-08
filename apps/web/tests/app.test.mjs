@@ -181,6 +181,63 @@ test('stroke edges are antialiased, not stair-stepped', async () => {
   await ctx.close();
 });
 
+test('a big dot is a true circle, not a polygon', async () => {
+  const { page, ctx } = await openApp(env);
+  const radii = await page.evaluate(async () => {
+    bedrock.canvas.set_paper('plain');
+    document.querySelector('[data-brush="marker"]').click();
+    const sz = document.getElementById('size');
+    sz.value = 30;
+    sz.dispatchEvent(new Event('input'));
+    t.ev('pointerdown', 1, 'pen', 400, 300, { pressure: 0.6 });
+    t.ev('pointerup', 1, 'pen', 400, 300, { pressure: 0 });
+    await t.frame();
+    // Edge radius along 48 directions, to a tenth of a pixel, from coverage.
+    const out = [];
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * 2 * Math.PI;
+      let r = 0;
+      for (let d = 0; d < 40; d += 0.1) {
+        const [cr] = bedrock.canvas.pixel_at(400 + Math.cos(a) * d, 300 + Math.sin(a) * d);
+        if (cr > 120) { r = d; break; }
+      }
+      out.push(r);
+    }
+    return out;
+  });
+  const min = Math.min(...radii), max = Math.max(...radii);
+  assert.ok(min > 10, `dot is drawn (radius ${min})`);
+  // A 12-sided polygon of radius 14 is 0.48 px flatter mid-side than at its corners.
+  assert.ok(max - min <= 1.0, `edge radius varies from ${min} to ${max} px`);
+  await ctx.close();
+});
+
+test('ink drawn over a highlighter stays continuous', async () => {
+  const { page, ctx } = await openApp(env);
+  const gaps = await page.evaluate(async () => {
+    bedrock.canvas.set_paper('plain');
+    document.querySelector('[data-brush="highlighter"]').click();
+    await t.line(100, 300, 800, 300, { pressure: 0.6 });
+    document.querySelector('[data-brush="pen"]').click();
+    await t.line(100, 290, 800, 320, { pressure: 0.5 });
+    // Walk along the pen line inside the highlighter and look for breaks.
+    let gaps = 0;
+    for (let x = 200; x <= 700; x++) {
+      const y = 290 + ((x - 100) / 700) * 30;
+      let dark = false;
+      for (let dy = -2; dy <= 2; dy++) {
+        const [r, g, b] = bedrock.canvas.pixel_at(x, y + dy);
+        if (r + g + b < 300) dark = true;
+      }
+      if (!dark) gaps++;
+    }
+    return gaps;
+  });
+  // Bug: the depth buffer wasn't cleared between batches, so the pen line was cut into dashes.
+  assert.equal(gaps, 0);
+  await ctx.close();
+});
+
 test('dashed and dotted line styles and the stabiliser are set per brush and saved', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

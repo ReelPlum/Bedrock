@@ -65,6 +65,11 @@ impl LineStyle {
     }
 }
 
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
@@ -128,9 +133,13 @@ impl Brush {
         match self.kind {
             BrushKind::Pen => Footprint { width: s * (0.3 + 0.7 * pr.powf(0.8)), opacity: 1.0 },
             BrushKind::Pencil => {
-                // Tilting the pencil uses the side of the lead: wider and lighter.
-                let width = s * (0.5 + 0.5 * pr) * (1.0 + 3.0 * tilt * tilt);
-                let opacity = (0.25 + 0.75 * pr) * (1.0 - 0.55 * tilt);
+                // Tilting the pencil uses the side of the lead: wider and
+                // lighter. A normal writing grip already holds the Pencil at
+                // 45-65 degrees, so shading only starts once it is laid
+                // flatter than that (as with a real pencil).
+                let shade = smoothstep(0.45, 0.85, tilt);
+                let width = s * (0.5 + 0.5 * pr) * (1.0 + 3.0 * shade * shade);
+                let opacity = (0.25 + 0.75 * pr) * (1.0 - 0.55 * shade);
                 Footprint { width, opacity: opacity.clamp(0.05, 1.0) }
             }
             BrushKind::Fountain => {

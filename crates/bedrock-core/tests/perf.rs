@@ -42,9 +42,9 @@ fn hundred_thousand_strokes() {
     let t = Instant::now();
     let diff = scene.sync(&d);
     let build = t.elapsed();
-    let verts: usize = diff.added.iter().map(|(_, m)| m.vertex_count()).sum();
-    println!("initial build: {build:?} for {n} strokes, {} chunks, {verts} vertices", scene.chunk_count());
-    assert!(verts / n < 250, "GPU memory: {} vertices per stroke is too many", verts / n);
+    let segs: usize = diff.added.iter().map(|(_, m)| m.segment_count()).sum();
+    println!("initial build: {build:?} for {n} strokes, {} chunks, {segs} capsules", scene.chunk_count());
+    assert!(segs / n < 120, "GPU memory: {} capsules per stroke is too many", segs / n);
 
     // Per frame work while panning: cull chunks against the view.
     let cam = Camera { offset: Vec2::new(3000.0, 3000.0), zoom: 1.0, viewport: Vec2::new(1366.0, 1024.0) };

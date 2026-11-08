@@ -17,60 +17,73 @@ use crate::stroke::{Stroke, StrokeId};
 use crate::tessellate;
 use std::collections::{HashMap, HashSet};
 
-/// Stop growing a chunk beyond this many vertices.
-const MAX_CHUNK_VERTICES: usize = 60_000;
+/// Stop growing a chunk beyond this many capsules.
+const MAX_CHUNK_SEGMENTS: usize = 60_000;
 /// Average strokes per chunk (content-defined boundary probability 1/N).
 const BOUNDARY_EVERY: u64 = 48;
 /// Keep vertex coordinates small for `f32` precision.
 const MAX_ORIGIN_DISTANCE: f64 = 50_000.0;
 
-/// GPU-ready geometry, one entry per vertex in each array:
-/// * `positions`: x, y relative to `origin` (f32),
-/// * `colors`: RGBA8,
-/// * `edges`: outward direction x, y and edge coordinate, as signed
-///   normalised bytes (the 4th byte is padding),
-/// * `half_widths`: stroke half width in world units (f32).
+/// Floats per capsule in [`ChunkMesh::segments`].
+pub const SEGMENT_FLOATS: usize = 7;
+/// Bytes per capsule in [`ChunkMesh::colors`].
+pub const SEGMENT_COLOR_BYTES: usize = 8;
+
+/// GPU-ready geometry: one instance per capsule (see [`tessellate::Segment`]).
+/// * `segments`: ax, ay, bx, by (relative to `origin`), ra, rb (world
+///   units) and the stroke's draw order within the chunk (0, 1, 2, ...),
+/// * `colors`: r, g, b, alpha at a, alpha at b, then 3 bytes of padding.
 #[derive(Debug, Clone, Default)]
 pub struct ChunkMesh {
     pub origin: Vec2,
-    pub positions: Vec<f32>,
+    pub segments: Vec<f32>,
     pub colors: Vec<u8>,
-    pub edges: Vec<i8>,
-    pub half_widths: Vec<f32>,
-    pub indices: Vec<u32>,
+    /// Number of strokes appended (the draw order runs 0..strokes).
+    pub strokes: u32,
 }
 
-fn snorm(v: f32) -> i8 {
-    (v.clamp(-1.0, 1.0) * 127.0).round() as i8
+fn unorm(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 impl ChunkMesh {
-    pub fn vertex_count(&self) -> usize {
-        self.positions.len() / 2
+    pub fn segment_count(&self) -> usize {
+        self.segments.len() / SEGMENT_FLOATS
     }
 
-    /// Append a stroke's mesh with its colour.
+    /// Append a stroke's capsules with its colour.
     pub fn append(&mut self, stroke: &Stroke) {
         let m = tessellate::mesh(stroke);
         self.append_mesh(&m, stroke);
     }
 
     pub fn append_mesh(&mut self, m: &tessellate::Mesh, stroke: &Stroke) {
-        if self.positions.is_empty() {
+        if self.segments.is_empty() {
             self.origin = m.origin;
         }
-        let base = self.vertex_count() as u32;
         let dx = (m.origin.x - self.origin.x) as f32;
         let dy = (m.origin.y - self.origin.y) as f32;
         let c = stroke.brush.color;
-        for v in &m.vertices {
-            self.positions.push(v.pos[0] + dx);
-            self.positions.push(v.pos[1] + dy);
-            self.colors.extend_from_slice(&[c.r, c.g, c.b, (v.alpha.clamp(0.0, 1.0) * 255.0).round() as u8]);
-            self.edges.extend_from_slice(&[snorm(v.dir[0]), snorm(v.dir[1]), snorm(v.edge), 0]);
-            self.half_widths.push(v.half_width);
+        let order = self.strokes as f32;
+        for g in &m.segments {
+            self.segments.extend_from_slice(&[g.a[0] + dx, g.a[1] + dy, g.b[0] + dx, g.b[1] + dy, g.ra, g.rb, order]);
+            self.colors.extend_from_slice(&[c.r, c.g, c.b, unorm(g.alpha_a), unorm(g.alpha_b), 0, 0, 0]);
         }
-        self.indices.extend(m.indices.iter().map(|i| i + base));
+        self.strokes += 1;
+    }
+
+    /// World-space bounds of everything in the chunk.
+    pub fn bounds(&self) -> Rect {
+        let mut r = Rect::EMPTY;
+        for g in self.segments.chunks_exact(SEGMENT_FLOATS) {
+            for (x, y, rad) in [(g[0], g[1], g[4]), (g[2], g[3], g[5])] {
+                let c = Vec2::new(x as f64 + self.origin.x, y as f64 + self.origin.y);
+                let rad = rad as f64;
+                r.include(c - Vec2::new(rad, rad));
+                r.include(c + Vec2::new(rad, rad));
+            }
+        }
+        r
     }
 }
 
@@ -167,8 +180,8 @@ impl Scene {
                 }
                 current.push(i);
                 fnv(&mut hash, s.id.0);
-                verts += s.points.len() * 4 + 64;
-                if s.id.0 % BOUNDARY_EVERY == 0 || verts > MAX_CHUNK_VERTICES {
+                verts += s.points.len() + 1;
+                if s.id.0 % BOUNDARY_EVERY == 0 || verts > MAX_CHUNK_SEGMENTS {
                     close(&mut current, &mut hash, &mut verts, &mut groups);
                 }
             }
@@ -247,10 +260,10 @@ mod tests {
         assert!(sc.chunk_count() < 60, "{} chunks", sc.chunk_count());
         assert_eq!(diff.added.len(), sc.chunk_count());
         for (_, m) in &diff.added {
-            assert_eq!(m.positions.len() / 2, m.colors.len() / 4);
-            assert_eq!(m.edges.len() / 4, m.vertex_count());
-            assert_eq!(m.half_widths.len(), m.vertex_count());
-            assert!(m.indices.iter().all(|&i| (i as usize) < m.vertex_count()));
+            assert_eq!(m.segments.len() % SEGMENT_FLOATS, 0);
+            assert_eq!(m.colors.len(), m.segment_count() * SEGMENT_COLOR_BYTES);
+            assert!(m.segment_count() >= m.strokes as usize);
+            assert!(m.segments.iter().all(|v| v.is_finite()));
         }
     }
 

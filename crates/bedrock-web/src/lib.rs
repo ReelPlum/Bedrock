@@ -290,12 +290,11 @@ impl Canvas {
             (Some(m), Some(s)) => {
                 let mut cm = ChunkMesh::default();
                 cm.append_mesh(&m, s);
-                let translucent = s.brush.kind == BrushKind::Pencil || s.brush.stroke_alpha() < 0.999;
-                Some((cm, translucent))
+                Some(cm)
             }
             _ => None,
         };
-        self.overlay.render_live(&self.engine.camera, self.dpr, mesh.as_ref().map(|(m, t)| (m, *t)));
+        self.overlay.render_live(&self.engine.camera, self.dpr, mesh.as_ref());
     }
 
     /// Test hook: render everything now and read the base layer's pixel at a

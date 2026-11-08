@@ -39,7 +39,7 @@ fn replay(path: &str) -> (Engine, usize) {
                 e.pointer_move(id, kind, s);
                 // The live layer re-tessellates on every sample, as on screen.
                 if let Some(m) = e.live_mesh() {
-                    assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+                    assert!(m.segments.iter().all(|g| g.ra > 0.0 && g.a.iter().chain(&g.b).all(|c| c.is_finite())));
                 }
             }
             "up" => e.pointer_up(id, kind, Some(s)),
@@ -65,7 +65,7 @@ fn handwriting_trace_replays_faithfully() {
         assert!(s.points.windows(2).all(|w| w[1].t >= w[0].t));
         assert!(s.points.iter().all(|p| p.altitude < 1.0), "tilt is recorded");
         let m = tessellate::mesh(s);
-        assert!(m.triangle_count() > 0);
+        assert!(m.segment_count() > 0);
     }
     assert!(doc.strokes().windows(2).all(|w| w[1].start_time > w[0].start_time));
 
