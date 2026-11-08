@@ -10,12 +10,13 @@ const PALETTES = {
   highlighter: ['#ffe14d', '#9be37a', '#ff8fc8', '#7cc6ff', '#ffb35c'],
 };
 const DEFAULT_BRUSHES = {
-  pen: { color: '#1c1c1e', size: 2.5 },
-  pencil: { color: '#1c1c1e', size: 2 },
-  fountain: { color: '#1c1c1e', size: 3 },
-  marker: { color: '#2f6bff', size: 6 },
-  highlighter: { color: '#ffe14d', size: 6 },
+  pen: { color: '#1c1c1e', size: 2.5, presets: [1.5, 2.5, 5], preset: 1 },
+  pencil: { color: '#1c1c1e', size: 2, presets: [1, 2, 4], preset: 1 },
+  fountain: { color: '#1c1c1e', size: 3, presets: [2, 3, 6], preset: 1 },
+  marker: { color: '#2f6bff', size: 6, presets: [3, 6, 12], preset: 1 },
+  highlighter: { color: '#ffe14d', size: 6, presets: [4, 6, 10], preset: 1 },
 };
+const DOCKS = ['bottom', 'top', 'left', 'right'];
 const SETTINGS_KEY = 'bedrock.settings.v1';
 const AUTOSAVE_MS = 400; // research target: every stroke saved locally within a second
 
@@ -27,7 +28,17 @@ function loadSettings() {
     tool: s.tool || 'draw',
     eraserMode: s.eraserMode || 'erase-stroke',
     eraserSize: s.eraserSize || 16,
-    brushes: { ...structuredClone(DEFAULT_BRUSHES), ...(s.brushes || {}) },
+    brushes: Object.fromEntries(Object.entries(DEFAULT_BRUSHES).map(([k, d]) => {
+      const b = { ...structuredClone(d), ...((s.brushes || {})[k] || {}) };
+      if (!Array.isArray(b.presets) || b.presets.length !== 3) b.presets = [...d.presets];
+      return [k, b];
+    })),
+    palettes: {
+      ink: Array.isArray(s.palettes?.ink) && s.palettes.ink.length ? s.palettes.ink : [...PALETTES.ink],
+      highlighter: Array.isArray(s.palettes?.highlighter) && s.palettes.highlighter.length ? s.palettes.highlighter : [...PALETTES.highlighter],
+    },
+    dock: DOCKS.includes(s.dock) ? s.dock : 'bottom',
+    prevTool: s.prevTool || null,
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
     lastNote: s.lastNote || null,
@@ -235,6 +246,146 @@ async function main() {
   function currentBrush() {
     return settings.brushes[settings.brush];
   }
+  function currentPalette() {
+    return settings.palettes[settings.brush === 'highlighter' ? 'highlighter' : 'ink'];
+  }
+  function currentTool() {
+    return settings.tool === 'draw' ? settings.brush : 'eraser';
+  }
+
+  /** Select a brush or the eraser. Tapping the tool that is already active
+   * jumps back to the previous one (e.g. pen -> eraser -> tap -> pen). */
+  function selectTool(name, { noToggle = false } = {}) {
+    const cur = currentTool();
+    if (name === cur) {
+      if (noToggle || !settings.prevTool || settings.prevTool === cur) return;
+      name = settings.prevTool;
+    }
+    settings.prevTool = cur;
+    if (name === 'eraser') {
+      settings.tool = 'eraser';
+    } else {
+      settings.tool = 'draw';
+      settings.brush = name;
+    }
+    setColorEditing(false);
+    saveSettings();
+    applyTool();
+  }
+
+  /** Calls `fn` when `el` is held for half a second (finger, pen or mouse),
+   * or right-clicked; the click that follows a long press is marked. */
+  function onLongPress(el, fn) {
+    let timer = 0;
+    const cancel = () => clearTimeout(timer);
+    el.addEventListener('pointerdown', () => {
+      cancel();
+      timer = setTimeout(() => { el.dataset.longPressed = '1'; fn(); }, 500);
+    });
+    el.addEventListener('pointerup', cancel);
+    el.addEventListener('pointerleave', cancel);
+    el.addEventListener('pointercancel', cancel);
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); cancel(); fn(); });
+  }
+
+  // ----- colour presets: + adds the current colour, long-press to delete -------
+  function setColorEditing(on) {
+    colorsEl.classList.toggle('editing', on);
+  }
+  $('color-add').addEventListener('click', () => {
+    const c = currentBrush().color.toLowerCase();
+    const palette = currentPalette();
+    if (palette.some((p) => p.toLowerCase() === c)) {
+      toast('That colour is already in your colours', 1500);
+      return;
+    }
+    palette.push(c);
+    saveSettings();
+    applyTool();
+  });
+
+  // ----- size presets: three per brush; the slider edits the selected one ------
+  function renderPresets(erasing, b) {
+    const el = $('size-presets');
+    el.hidden = erasing;
+    if (erasing) return;
+    const max = Math.max(...b.presets);
+    el.replaceChildren(...b.presets.map((v, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'preset';
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-label', `Size preset ${i + 1}: ${v}`);
+      btn.title = `Size ${v} (select, then use the slider to change it)`;
+      btn.setAttribute('aria-checked', String(b.preset === i));
+      const dot = document.createElement('span');
+      const d = 5 + (13 * v) / max;
+      dot.style.width = dot.style.height = `${d}px`;
+      dot.style.setProperty('--c', b.color);
+      btn.append(dot);
+      btn.onclick = () => {
+        b.preset = i;
+        b.size = v;
+        saveSettings();
+        applyTool();
+      };
+      return btn;
+    }));
+  }
+
+  function setSize(v) {
+    if (!Number.isFinite(v)) return;
+    if (settings.tool === 'draw') {
+      const b = currentBrush();
+      b.size = v;
+      if (b.preset != null) b.presets[b.preset] = v;
+    } else {
+      settings.eraserSize = v;
+    }
+    saveSettings();
+    applyTool();
+  }
+
+  // ----- dock: the toolbar can sit on any edge ----------------------------------
+  const toolbar = $('toolbar');
+  function applyDock() {
+    toolbar.dataset.dock = settings.dock;
+    $('stroke-pop').dataset.dock = settings.dock;
+    $('dock').value = settings.dock;
+  }
+  function setDock(d) {
+    if (!DOCKS.includes(d)) return;
+    settings.dock = d;
+    saveSettings();
+    applyDock();
+  }
+  {
+    const grip = $('dock-grip');
+    let dragging = false;
+    grip.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      grip.setPointerCapture(e.pointerId);
+      toolbar.classList.add('dragging');
+      toolbar.style.setProperty('--x', `${e.clientX}px`);
+      toolbar.style.setProperty('--y', `${e.clientY}px`);
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      toolbar.style.setProperty('--x', `${e.clientX}px`);
+      toolbar.style.setProperty('--y', `${e.clientY}px`);
+    });
+    const drop = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      toolbar.classList.remove('dragging');
+      // Snap to the nearest edge.
+      const w = window.innerWidth, h = window.innerHeight;
+      const d = { left: e.clientX / w, right: 1 - e.clientX / w, top: e.clientY / h, bottom: 1 - e.clientY / h };
+      setDock(Object.entries(d).sort((a, b) => a[1] - b[1])[0][0]);
+    };
+    grip.addEventListener('pointerup', drop);
+    grip.addEventListener('pointercancel', (e) => { dragging = false; toolbar.classList.remove('dragging'); });
+  }
+  $('dock').addEventListener('change', (e) => setDock(e.target.value));
 
   function applyTool() {
     const erasing = settings.tool !== 'draw';
@@ -249,8 +400,8 @@ async function main() {
       btn.setAttribute('role', 'radio');
     }
     $('eraser-mode').textContent = settings.eraserMode === 'erase-stroke' ? 'S' : 'P';
-    const palette = settings.brush === 'highlighter' ? PALETTES.highlighter : PALETTES.ink;
-    colorsEl.replaceChildren(...palette.map((c) => {
+    const palette = currentPalette();
+    colorsEl.replaceChildren(...palette.map((c, i) => {
       const sw = document.createElement('button');
       sw.className = 'swatch';
       sw.setAttribute('role', 'radio');
@@ -259,14 +410,25 @@ async function main() {
       const dot = document.createElement('span');
       dot.style.background = c;
       sw.append(dot);
+      onLongPress(sw, () => setColorEditing(true));
       sw.onclick = () => {
+        if (sw.dataset.longPressed) { delete sw.dataset.longPressed; return; }
+        if (colorsEl.classList.contains('editing')) {
+          if (palette.length > 1) palette.splice(i, 1);
+          else toast('Keep at least one colour', 1500);
+          saveSettings();
+          applyTool();
+          return;
+        }
+        selectTool(settings.brush, { noToggle: true });
         b.color = c;
-        settings.tool = 'draw';
         saveSettings();
         applyTool();
       };
       return sw;
     }));
+    $('color-add').hidden = erasing;
+    renderPresets(erasing, b);
     $('color-input').value = b.color.slice(0, 7);
     const size = erasing ? settings.eraserSize : b.size;
     const slider = $('size');
@@ -285,10 +447,21 @@ async function main() {
   }
   function renderStrokePop() {
     const b = currentBrush();
-    $('stroke-brush').textContent = settings.brush;
+    const erasing = settings.tool !== 'draw';
+    $('stroke-brush').textContent = erasing ? 'Eraser' : settings.brush;
+    $('pop-brush').hidden = erasing;
+    $('pop-eraser').hidden = !erasing;
+    const ps = $('pop-size');
+    if (erasing) { ps.min = 4; ps.max = 80; ps.step = 1; } else { ps.min = 0.5; ps.max = 30; ps.step = 0.5; }
+    for (const btn of strokePop.querySelectorAll('[data-eraser]')) {
+      btn.setAttribute('aria-checked', String(btn.dataset.eraser === settings.eraserMode));
+    }
     for (const btn of strokePop.querySelectorAll('[data-style]')) {
       btn.setAttribute('aria-checked', String(btn.dataset.style === (b.style || 'solid')));
     }
+    const size = erasing ? settings.eraserSize : b.size;
+    ps.value = size;
+    $('pop-size-value').textContent = size;
     $('stabilizer').value = b.stabilizer || 0;
     $('stabilizer-value').textContent = stabilizerLabel(b.stabilizer || 0);
   }
@@ -299,9 +472,15 @@ async function main() {
   }
   $('btn-stroke').addEventListener('click', (e) => {
     e.stopPropagation();
-    if (settings.tool !== 'draw') { settings.tool = 'draw'; saveSettings(); applyTool(); }
     setStrokePop(strokePop.hidden);
   });
+  for (const btn of strokePop.querySelectorAll('[data-eraser]')) {
+    btn.addEventListener('click', () => {
+      settings.eraserMode = btn.dataset.eraser;
+      saveSettings();
+      applyTool();
+    });
+  }
   for (const btn of strokePop.querySelectorAll('[data-style]')) {
     btn.addEventListener('click', () => {
       currentBrush().style = btn.dataset.style;
@@ -316,33 +495,17 @@ async function main() {
   });
 
   for (const btn of toolButtons) {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.tool === 'eraser') {
-        if (settings.tool === 'eraser') {
-          settings.eraserMode = settings.eraserMode === 'erase-stroke' ? 'erase-partial' : 'erase-stroke';
-          toast(settings.eraserMode === 'erase-stroke' ? 'Eraser: whole strokes' : 'Eraser: partial', 1500);
-        }
-        settings.tool = 'eraser';
-      } else {
-        settings.tool = 'draw';
-        settings.brush = btn.dataset.brush;
-      }
-      saveSettings();
-      applyTool();
-    });
+    const name = btn.dataset.tool === 'eraser' ? 'eraser' : btn.dataset.brush;
+    btn.addEventListener('click', () => selectTool(name));
   }
   $('color-input').addEventListener('input', (e) => {
+    selectTool(settings.brush, { noToggle: true });
     currentBrush().color = e.target.value;
-    settings.tool = 'draw';
     saveSettings();
     applyTool();
   });
-  $('size').addEventListener('input', (e) => {
-    const v = parseFloat(e.target.value);
-    if (settings.tool === 'draw') currentBrush().size = v; else settings.eraserSize = v;
-    saveSettings();
-    applyTool();
-  });
+  $('size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
+  $('pop-size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
 
   function updateUndo() {
     $('btn-undo').disabled = !canvas.can_undo();
@@ -369,6 +532,7 @@ async function main() {
   };
   document.addEventListener('pointerdown', (e) => {
     if (!menu.contains(e.target) && e.target !== $('btn-menu')) menu.hidden = true;
+    if (!colorsEl.contains(e.target)) setColorEditing(false);
     if (!strokePop.hidden && !strokePop.contains(e.target) && !$('btn-stroke').contains(e.target)) setStrokePop(false);
     if (!$('library').contains(e.target) && !$('btn-library').contains(e.target)) $('library').hidden = true;
   });
@@ -462,9 +626,9 @@ async function main() {
       e.preventDefault();
       actions.save();
     } else if (!mod && '12345'.includes(e.key) && e.key.length === 1) {
-      toolButtons[Number(e.key) - 1].click();
+      selectTool(toolButtons[Number(e.key) - 1].dataset.brush, { noToggle: true });
     } else if (!mod && e.key.toLowerCase() === 'e') {
-      toolButtons[5].click();
+      selectTool('eraser', { noToggle: true });
     }
   });
 
@@ -476,6 +640,7 @@ async function main() {
   window.addEventListener('pagehide', () => { saveNow(); saveCamera(); });
 
   // ----- start ---------------------------------------------------------------------
+  applyDock();
   applyTool();
   if (settings.lastNote && store && (await store.get(settings.lastNote))) await openNote(settings.lastNote);
   else await newNote();

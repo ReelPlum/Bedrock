@@ -20,6 +20,10 @@ browser) and every pen stroke as documented JSON (`note.json`). See
 - Palm rejection: while the Pencil is down, touches are ignored.
 - Undo and redo, also with a two-finger double tap (undo) and a three-finger double tap (redo).
 - Solid, dashed and dotted lines, and a stabiliser for shaky hands, set per brush.
+- Strokes rendered with signed distance fields: round, smooth edges at any zoom.
+- A toolbar you can dock to any edge, three editable size presets per brush, your own colour presets, and a settings panel for the selected tool.
+- Tap the active tool again to jump back to the previous one (for example pen and eraser).
+- Dot, grid and line paper that stays fixed to the page, like printed paper.
 - Notes are saved on the device automatically within a second (IndexedDB) and reopen where you left off.
 - Save to iCloud Drive through the Files app / share sheet, open from iCloud Drive, export SVG,
   export all notes as a ZIP. Automatic CloudKit sync is planned, see [docs/icloud.md](docs/icloud.md).

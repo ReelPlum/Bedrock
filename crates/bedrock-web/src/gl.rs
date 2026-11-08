@@ -98,6 +98,9 @@ void main() {
 
 // World position = offset + css / zoom. `u_offset` is pre-reduced modulo the
 // pattern spacing on the CPU (f64) so this stays precise anywhere on the canvas.
+/// Grid, dot and line spacing in world units (css px at 100% zoom).
+pub const PAPER_SPACING: f64 = 32.0;
+
 const PAPER_FS: &str = r#"#version 300 es
 precision highp float;
 uniform vec2 u_offset;
@@ -115,13 +118,17 @@ void main() {
   vec2 cell = (fract(world / u_spacing + 0.5) - 0.5) * u_spacing * u_zoom; // css px to nearest grid point
   float a = 0.0;
   if (u_mode == 1) {
-    a = 1.0 - smoothstep(0.9, 1.6, length(cell));
+    // Dots are part of the page: they grow and shrink with it (never below ~1 px).
+    float r = max(1.25 * u_zoom, 0.7);
+    a = 1.0 - smoothstep(r - 0.35, r + 0.35, length(cell));
   } else if (u_mode == 2) {
     float d = min(abs(cell.x), abs(cell.y));
     a = (1.0 - smoothstep(0.3, 0.9, d)) * 0.6;
   } else if (u_mode == 3) {
     a = (1.0 - smoothstep(0.3, 0.9, abs(cell.y))) * 0.6;
   }
+  // Zoomed far out the pattern would turn into a grey haze: fade it away.
+  a *= smoothstep(5.0, 12.0, u_spacing * u_zoom);
   vec3 c = mix(u_bg, u_ink.rgb, a * u_ink.a);
   o = vec4(c, 1.0);
 }"#;
@@ -410,14 +417,10 @@ impl Layer {
         gl.disable(GL::BLEND);
         gl.disable(GL::STENCIL_TEST);
         gl.use_program(Some(p));
-        // Keep the pattern 16-64 css px apart at any zoom.
-        let mut spacing = 32.0f64;
-        while spacing * cam.zoom < 16.0 {
-            spacing *= 2.0;
-        }
-        while spacing * cam.zoom > 64.0 && spacing > 1e-6 {
-            spacing /= 2.0;
-        }
+        // The pattern belongs to the page, like printed paper: a fixed
+        // spacing in world units, so lines stay put under the handwriting
+        // and scale with it when zooming.
+        let spacing = PAPER_SPACING;
         let off = Vec2::new(cam.offset.x.rem_euclid(spacing), cam.offset.y.rem_euclid(spacing));
         let g = |n: &str| u.get(n).and_then(|x| x.as_ref());
         gl.uniform2f(g("u_offset"), off.x as f32, off.y as f32);

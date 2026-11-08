@@ -17,6 +17,38 @@ test('starts without errors and renders the paper', async () => {
   await ctx.close();
 });
 
+test('grid paper stays fixed to the page when zooming', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const c = bedrock.canvas;
+    c.set_paper('grid');
+    // Vertical grid lines crossed along a row, as css x positions.
+    const lines = () => {
+      const xs = [];
+      let prev = false;
+      for (let x = 0; x < 1000; x += 0.5) {
+        const [r] = c.pixel_at(x, 101.3);
+        const on = r < 235;
+        if (on && !prev) xs.push(x);
+        prev = on;
+      }
+      return xs;
+    };
+    const gap = (xs) => (xs[xs.length - 1] - xs[0]) / (xs.length - 1);
+    const at1 = gap(lines());
+    c.zoom_at(0, 0, 1.5);
+    const at15 = gap(lines());
+    c.zoom_at(0, 0, 2);
+    const at3 = gap(lines());
+    return { at1, at15, at3 };
+  });
+  // Bug: the spacing was re-picked at every zoom, so the grid crept and jumped.
+  assert.ok(Math.abs(r.at1 - 32) < 0.6, `32 px apart at 100% (${r.at1})`);
+  assert.ok(Math.abs(r.at15 - 48) < 0.8, `48 px apart at 150% (${r.at15})`);
+  assert.ok(Math.abs(r.at3 - 96) < 1.5, `96 px apart at 300% (${r.at3})`);
+  await ctx.close();
+});
+
 test('a pen stroke puts ink on the canvas', async () => {
   const { page, errors, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
@@ -238,6 +270,112 @@ test('ink drawn over a highlighter stays continuous', async () => {
   await ctx.close();
 });
 
+test('tapping the active tool again jumps back to the previous tool', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(() => {
+    const active = () => document.querySelector('.tool[aria-checked="true"]').getAttribute('aria-label');
+    const eraser = document.querySelector('[data-tool="eraser"]');
+    const steps = [active()];
+    eraser.click();
+    steps.push(active());
+    eraser.click(); // tap the active tool again
+    steps.push(active());
+    document.querySelector('[data-brush="pen"]').click();
+    steps.push(active());
+    return steps;
+  });
+  assert.deepEqual(r, ['Pen', 'Eraser', 'Pen', 'Eraser']);
+  await ctx.close();
+});
+
+test('tool settings: eraser mode lives in the settings of the eraser', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    await t.line(200, 300, 600, 300);
+    document.querySelector('[data-tool="eraser"]').click();
+    document.getElementById('btn-stroke').click();
+    const brushHidden = document.getElementById('pop-brush').hidden;
+    document.querySelector('[data-eraser="erase-partial"]').click();
+    await t.line(400, 200, 400, 400);
+    // Partial erase splits the line in two instead of deleting it.
+    return { brushHidden, title: document.getElementById('stroke-brush').textContent, strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.deepEqual(r, { brushHidden: true, title: 'Eraser', strokes: 2 });
+  await ctx.close();
+});
+
+test('three size presets per brush; the slider edits the selected one', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(() => {
+    const presets = () => [...document.querySelectorAll('#size-presets .preset')];
+    const n = presets().length;
+    presets()[2].click();
+    const picked = JSON.parse(localStorage.getItem('bedrock.settings.v1')).brushes.pen.size;
+    const slider = document.getElementById('size');
+    slider.value = 7.5;
+    slider.dispatchEvent(new Event('input'));
+    presets()[0].click();
+    presets()[2].click();
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1')).brushes.pen;
+    return { n, picked, size: s.size, presets: s.presets };
+  });
+  assert.equal(r.n, 3);
+  assert.equal(r.picked, 5);
+  assert.equal(r.size, 7.5, 'selecting the edited preset brings back the edited size');
+  assert.deepEqual(r.presets, [1.5, 2.5, 7.5]);
+  await ctx.close();
+});
+
+test('colour presets can be added and deleted, and are remembered', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const swatches = () => document.querySelectorAll('#colors .swatch').length;
+    const before = swatches();
+    const ci = document.getElementById('color-input');
+    ci.value = '#00aa88';
+    ci.dispatchEvent(new Event('input'));
+    document.getElementById('color-add').click();
+    const added = swatches();
+    // Long-press (here: right-click) enters delete mode; tapping a colour removes it.
+    document.querySelector('#colors .swatch').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const editing = document.getElementById('colors').classList.contains('editing');
+    document.querySelector('#colors .swatch').click();
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+    return { before, added, editing, after: swatches(), saved: s.palettes.ink };
+  });
+  assert.equal(r.added, r.before + 1);
+  assert.ok(r.editing);
+  assert.equal(r.after, r.before);
+  assert.ok(r.saved.includes('#00aa88') && !r.saved.includes('#1c1c1e'), JSON.stringify(r.saved));
+  await ctx.close();
+});
+
+test('the toolbar can be docked to any edge and stays there', async () => {
+  const { page, ctx } = await openApp(env);
+  const box = () => page.evaluate(() => {
+    const r = document.getElementById('toolbar').getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+  });
+  const bottom = await box();
+  assert.ok(bottom.y + bottom.h > bottom.vh - 30 && bottom.w > bottom.h);
+  // Drag the grip to the left edge.
+  const grip = await page.locator('#dock-grip').boundingBox();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(20, 380, { steps: 5 });
+  await page.mouse.up();
+  const left = await box();
+  assert.ok(left.x < 30 && left.h > left.w, `docked left: ${JSON.stringify(left)}`);
+  await page.evaluate(() => { const d = document.getElementById('dock'); d.value = 'right'; d.dispatchEvent(new Event('change')); });
+  const right = await box();
+  assert.ok(right.x + right.w > right.vw - 30 && right.h > right.w);
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock && window.bedrock.ready);
+  const again = await box();
+  assert.ok(again.x + again.w > again.vw - 30, 'position is remembered');
+  await ctx.close();
+});
+
 test('dashed and dotted line styles and the stabiliser are set per brush and saved', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
@@ -269,7 +407,7 @@ test('dashed and dotted line styles and the stabiliser are set per brush and sav
     const note = JSON.parse(bedrock.canvas.export_json());
     document.querySelector('[data-brush="pen"]').click();
     document.getElementById('btn-stroke').click();
-    const remembered = document.querySelector('#stroke-pop [aria-checked="true"]').dataset.style;
+    const remembered = document.querySelector('#stroke-pop [data-style][aria-checked="true"]').dataset.style;
     return {
       dashes: runs(200), dots: runs(400), solid: runs(600),
       brushes: note.strokes.map((s) => [s.brush.style ?? 'solid', s.brush.stabilizer ?? 0]),
