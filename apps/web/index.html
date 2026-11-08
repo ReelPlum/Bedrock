@@ -121,6 +121,7 @@
       <span class="scale"><span>Firm</span><span>Soft</span></span>
     </div>
     <label class="row"><input type="checkbox" id="finger-draw"> Draw with finger</label>
+    <label class="row"><input type="checkbox" id="show-minimap"> Show minimap</label>
     <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
   </div>
 
@@ -131,6 +132,10 @@
     </div>
     <ul id="note-list"></ul>
   </aside>
+
+  <div class="minimap" id="minimap" hidden aria-label="Minimap: tap or drag to move around the note">
+    <canvas></canvas>
+  </div>
 
   <div id="hud" class="hud" hidden></div>
   <div id="toast" class="toast" role="alert" hidden></div>

@@ -554,6 +554,105 @@ test('saving happens in the background and the saved note matches exactly', asyn
   await context.close();
 });
 
+/** Ink samples in what is actually on screen (a screenshot; pixel_at
+ *  re-renders first, so it can't catch a frame that was never drawn). */
+async function screenInk(page, x0, x1) {
+  const png = (await page.screenshot()).toString('base64');
+  return page.evaluate(async ({ png, x0, x1 }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${png}`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let y = 100; y < 650; y += 3) for (let x = x0; x < x1; x += 3) {
+      const i = (y * c.width + x) * 4;
+      if (d[i] + d[i + 1] + d[i + 2] < 300) n++;
+    }
+    return n;
+  }, { png, x0, x1 });
+}
+
+test('an opened note shows its ink straight away, without touching the canvas', async () => {
+  const { page, ctx } = await openApp(env);
+  // Two notes with the same number of strokes: one on the left, one on the right.
+  const ids = await page.evaluate(async () => {
+    const ids = [];
+    for (const x of [100, 600]) {
+      await bedrock.newNote();
+      for (let i = 0; i < 4; i++) await t.line(x, 200 + i * 80, x + 300, 200 + i * 80, { pressure: 0.9 });
+      await bedrock.saveNow();
+      ids.push(bedrock.noteId);
+    }
+    return ids;
+  });
+  const shown = [];
+  for (const id of [ids[0], ids[1], ids[0]]) {
+    await page.evaluate(async (id) => { await bedrock.openNote(id); bedrock.canvas.set_camera(0, 0, 1); bedrock.input.requestFrame(); }, id);
+    await page.evaluate(() => t.frame());
+    shown.push([await screenInk(page, 80, 420), await screenInk(page, 580, 920)]);
+  }
+  // Bug: the opened note's ink didn't appear (or the old note's stayed)
+  // until a new stroke was drawn.
+  for (const [i, [left, right]] of shown.entries()) {
+    const wantLeft = i !== 1;
+    assert.ok(wantLeft ? left > 50 && right === 0 : right > 50 && left === 0, `open #${i + 1}: left ${left}, right ${right}`);
+  }
+  await ctx.close();
+});
+
+test('the minimap shows the drawing and the view, grows with them, and moves the camera', async () => {
+  const { page, ctx, errors } = await openApp(env, { viewport: { width: 1180, height: 820 } });
+  const r = await page.evaluate(async () => {
+    const mm = document.getElementById('minimap');
+    const dark = () => {
+      const c = mm.querySelector('canvas');
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 150 && d[i] + d[i + 1] + d[i + 2] < 300) n++;
+      return n;
+    };
+    const visibleAtStart = !mm.hidden;
+    const emptyInk = dark();
+    for (let i = 0; i < 4; i++) await t.line(200, 200 + i * 60, 800, 220 + i * 60, { pressure: 0.9 });
+    await new Promise((res) => setTimeout(res, 500));
+    await t.frame();
+    const ink = dark();
+    const area1 = bedrock.canvas.minimap_region();
+    // Scroll far away: the area grows to include the view.
+    bedrock.canvas.pan(-3000, 0);
+    bedrock.input.requestFrame();
+    await t.frame();
+    const area2 = bedrock.canvas.minimap_region();
+    const view = bedrock.canvas.view_rect();
+    // Tap the left edge of the minimap: the camera goes back to the ink.
+    const c = mm.querySelector('canvas').getBoundingClientRect();
+    const ev = (type) => mm.querySelector('canvas').dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 9, pointerType: 'touch', clientX: c.left + 20, clientY: c.top + c.height / 2, isPrimary: true,
+    }));
+    ev('pointerdown'); ev('pointerup');
+    await t.frame();
+    const back = bedrock.canvas.view_rect();
+    document.getElementById('show-minimap').click();
+    const hidden = mm.hidden;
+    const saved = JSON.parse(localStorage.getItem('bedrock.settings.v1')).showMinimap;
+    return { visibleAtStart, emptyInk, ink, area1, area2, view, back, hidden, saved, strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.ok(r.visibleAtStart);
+  assert.equal(r.emptyInk, 0);
+  assert.ok(r.ink > 20, `minimap shows ink (${r.ink} px)`);
+  assert.ok(r.area2[2] >= r.view[2] && r.area2[0] <= r.area1[0], `area ${r.area2} holds view ${r.view} and the ink`);
+  assert.ok(r.back[0] < r.view[0] - 1000, `tapping moved the view from ${r.view[0]} to ${r.back[0]}`);
+  assert.equal(r.strokes, 4, 'tapping the minimap does not draw');
+  assert.ok(r.hidden);
+  assert.equal(r.saved, false);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

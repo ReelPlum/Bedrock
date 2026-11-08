@@ -1,9 +1,9 @@
 // Offline support: network first (so updates arrive immediately), falling
 // back to the cached copy when the iPad is offline.
-const CACHE = 'bedrock-v3';
+const CACHE = 'bedrock-v4';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg',
-  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js',
+  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js',
   'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm',
 ];
 

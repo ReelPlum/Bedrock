@@ -172,12 +172,13 @@ impl Brush {
         }
     }
 
-    /// How much faster strokes thin (0 = not at all, 0.3 = to 70% width).
+    /// How much faster strokes thin (0 = not at all, 0.2 = to 80% width).
+    /// Kept well below the pressure range so pressure stays the main control.
     pub fn thinning(&self) -> f32 {
         match self.kind {
-            BrushKind::Pen => 0.3,
-            BrushKind::Fountain => 0.2,
-            BrushKind::Pencil => 0.15,
+            BrushKind::Pen => 0.2,
+            BrushKind::Fountain => 0.15,
+            BrushKind::Pencil => 0.1,
             BrushKind::Marker | BrushKind::Highlighter => 0.0,
         }
     }

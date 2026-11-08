@@ -50,6 +50,7 @@ fn seed(hi: u32, lo: u32) -> u64 {
 pub struct Canvas {
     engine: Engine,
     scene: Scene,
+    minimap: bedrock_core::overview::Region,
     base: gl::Layer,
     overlay: gl::Layer,
     css: (f64, f64),
@@ -69,6 +70,7 @@ impl Canvas {
         Ok(Canvas {
             engine: Engine::new(seed(seed_hi, seed_lo)),
             scene: Scene::new(),
+            minimap: bedrock_core::overview::Region::new(),
             base: gl::Layer::new(base, true)?,
             overlay: gl::Layer::new(overlay, false)?,
             css: (1.0, 1.0),
@@ -194,6 +196,55 @@ impl Canvas {
         let style = LineStyle::from_name(style).ok_or_else(|| JsValue::from_str("unknown line style"))?;
         self.engine.brush = self.engine.brush.with_style(style).with_stabilizer(stabilizer);
         Ok(())
+    }
+
+    /// Draw everything again on the next frame. Used when the page becomes
+    /// visible again: a browser may drop a WebGL frame drawn while hidden
+    /// (e.g. behind the iPad file picker), and nothing else would redraw it.
+    pub fn redraw(&mut self) {
+        self.engine.invalidate();
+    }
+
+    /// Minimap area `[x0, y0, x1, y1]` in world units: all the ink plus the
+    /// camera's view; grows only, until another note is opened.
+    pub fn minimap_region(&mut self) -> Vec<f64> {
+        let ink = self.engine.doc.bounds();
+        let view = self.engine.camera.visible_world();
+        let r = self.minimap.update(&ink, &view);
+        vec![r.min.x, r.min.y, r.max.x, r.max.y]
+    }
+
+    /// The camera's view `[x0, y0, x1, y1]` in world units.
+    pub fn view_rect(&self) -> Vec<f64> {
+        let r = self.engine.camera.visible_world();
+        vec![r.min.x, r.min.y, r.max.x, r.max.y]
+    }
+
+    /// Centre the view on world point (x, y), keeping the zoom.
+    pub fn center_on(&mut self, x: f64, y: f64) {
+        if !(x.is_finite() && y.is_finite()) {
+            return;
+        }
+        let c = &mut self.engine.camera;
+        c.offset = Vec2::new(x, y) - c.viewport * (0.5 / c.zoom);
+        self.engine.invalidate();
+    }
+
+    /// Simplified strokes for the minimap (see `overview::polylines`).
+    pub fn minimap_strokes(&self, tolerance: f64) -> Vec<f32> {
+        bedrock_core::overview::polylines(&self.engine.doc, tolerance)
+    }
+
+    /// Swap in another document. The scene is rebuilt from scratch: it only
+    /// syncs when the revision changes, and a freshly opened note can have
+    /// the same revision as the one before it (bug: opened notes stayed
+    /// blank until you drew something).
+    fn replace_document(&mut self, doc: Document) {
+        self.engine.set_document(doc);
+        self.minimap.reset();
+        self.base.clear_chunks();
+        self.scene = Scene::new();
+        self.engine.invalidate();
     }
 
     /// Pressure feel for this device, -1 (firm) ..= 1 (soft), 0 = linear.
@@ -378,7 +429,7 @@ impl Canvas {
 
     /// Start a fresh, empty note.
     pub fn new_document(&mut self, seed_hi: u32, seed_lo: u32) {
-        self.engine.set_document(Document::new(seed(seed_hi, seed_lo)));
+        self.replace_document(Document::new(seed(seed_hi, seed_lo)));
     }
 
     /// `.bedrock` file bytes (ZIP).
@@ -418,7 +469,7 @@ impl Canvas {
     pub fn load(&mut self, bytes: &[u8], seed_hi: u32, seed_lo: u32) -> Result<js_sys::Array, JsValue> {
         let loaded =
             format::load_bytes(bytes, seed(seed_hi, seed_lo)).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        self.engine.set_document(loaded.doc);
+        self.replace_document(loaded.doc);
         Ok(loaded.warnings.into_iter().map(JsValue::from).collect())
     }
 }

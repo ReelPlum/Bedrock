@@ -178,25 +178,34 @@ pub fn filter_points(points: &[InputPoint]) -> Vec<InputPoint> {
     out
 }
 
-/// Speed in world units per millisecond at each point, smoothed in time
-/// (about 30 ms) because raw speed at 240 Hz is very noisy.
+/// Speed in world units per millisecond at each point: distance travelled
+/// over the last `WINDOW_MS` of input, so it is smooth, and correct even when
+/// several samples share a timestamp (coalesced events on some browsers
+/// arrive that way, which made single-pair speeds look enormous).
 pub fn speeds(points: &[InputPoint]) -> Vec<f64> {
-    const TAU_MS: f64 = 30.0;
-    let mut out = Vec::with_capacity(points.len());
-    let mut v = 0.0;
-    for (i, p) in points.iter().enumerate() {
+    const WINDOW_MS: f64 = 24.0;
+    let n = points.len();
+    let mut arc = Vec::with_capacity(n);
+    let mut acc = 0.0;
+    for i in 0..n {
         if i > 0 {
-            let q = points[i - 1];
-            // Resampled points can be well under 1 ms apart; the EMA weight
-            // scales with dt, so a tiny dt can't make a spike.
-            let dt = (p.t - q.t).max(1e-3);
-            let raw = p.pos().distance(q.pos()) / dt;
-            v = if i == 1 { raw } else { v + (raw - v) * (1.0 - (-dt / TAU_MS).exp()) };
+            acc += points[i].pos().distance(points[i - 1].pos());
         }
-        out.push(v);
+        arc.push(acc);
     }
-    if out.len() > 1 {
-        out[0] = out[1];
+    let mut out = Vec::with_capacity(n);
+    let mut j = 0;
+    for i in 0..n {
+        while j < i && points[i].t - points[j + 1].t >= WINDOW_MS {
+            j += 1;
+        }
+        // Look ahead too when the window behind is short (stroke start).
+        let mut k = i;
+        while k + 1 < n && (points[k].t - points[j].t) < WINDOW_MS {
+            k += 1;
+        }
+        let dt = points[k].t - points[j].t;
+        out.push(if dt >= 1.0 { (arc[k] - arc[j]) / dt } else { 0.0 });
     }
     out
 }
@@ -214,8 +223,8 @@ pub fn has_timing(points: &[InputPoint]) -> bool {
 /// Width multiplier for speed: 1 when slow, down to `1 - thinning` when
 /// fast. Speed only ever thins, never thickens.
 pub fn speed_factor(thinning: f32, speed_px_per_ms: f64) -> f32 {
-    const V_LO: f64 = 0.3;
-    const V_HI: f64 = 3.0;
+    const V_LO: f64 = 0.5;
+    const V_HI: f64 = 4.0;
     let t = ((speed_px_per_ms - V_LO) / (V_HI - V_LO)).clamp(0.0, 1.0);
     1.0 - thinning * (t * t * (3.0 - 2.0 * t)) as f32
 }
@@ -380,6 +389,16 @@ mod tests {
         assert!(has_timing(&timed));
         assert!(!has_timing(&untimed));
         assert!(!has_timing(&timed[..1]));
+    }
+
+    #[test]
+    fn speed_survives_shared_timestamps() {
+        // 1 unit/ms, but samples arrive in pairs with the same timestamp.
+        let pts: Vec<_> =
+            (0..100).map(|i| InputPoint::new(i as f64 * 2.0, 0.0, 0.5).at((i / 2) as f64 * 4.0)).collect();
+        for v in &speeds(&pts)[20..80] {
+            assert!((v - 1.0).abs() < 0.15, "speed {v}");
+        }
     }
 
     #[test]

@@ -901,20 +901,35 @@ mod tests {
         }
     }
 
-    fn mid_width(kind: BrushKind, speed: f64) -> f64 {
+    fn mid_width_at(kind: BrushKind, speed: f64, pressure: f32) -> f64 {
         let pts: Vec<_> =
-            (0..200).map(|i| InputPoint::new(i as f64 * speed * 4.0, 0.0, 0.5).at(i as f64 * 4.0)).collect();
+            (0..200).map(|i| InputPoint::new(i as f64 * speed * 4.0, 0.0, pressure).at(i as f64 * 4.0)).collect();
         let smp = samples(&pen_stroke(22, kind, 4.0, pts));
         smp[smp.len() / 2].width
     }
 
+    fn mid_width(kind: BrushKind, speed: f64) -> f64 {
+        mid_width_at(kind, speed, 0.5)
+    }
+
     #[test]
     fn faster_strokes_are_thinner_for_pens_only() {
-        let (slow, fast) = (mid_width(BrushKind::Pen, 0.8), mid_width(BrushKind::Pen, 1.6));
+        let (slow, fast) = (mid_width(BrushKind::Pen, 1.5), mid_width(BrushKind::Pen, 3.0));
         let thinner = 1.0 - fast / slow;
-        assert!((0.1..=0.4).contains(&thinner), "2x speed thinned the pen by {:.0}%", thinner * 100.0);
+        assert!((0.05..=0.4).contains(&thinner), "2x speed thinned the pen by {:.0}%", thinner * 100.0);
         let (slow, fast) = (mid_width(BrushKind::Marker, 0.8), mid_width(BrushKind::Marker, 1.6));
         assert!((slow - fast).abs() < 1e-9, "marker {slow} vs {fast}");
+    }
+
+    #[test]
+    fn pressure_matters_more_than_speed() {
+        // Bug report: with speed thinning the pen felt like it ignored
+        // pressure. Over everyday ranges (light to firm, slow to quick
+        // writing) pressure must change the width far more than speed.
+        let by_pressure = mid_width_at(BrushKind::Pen, 1.0, 0.9) / mid_width_at(BrushKind::Pen, 1.0, 0.15);
+        let by_speed = mid_width_at(BrushKind::Pen, 0.3, 0.5) / mid_width_at(BrushKind::Pen, 2.5, 0.5);
+        assert!(by_pressure > 1.8, "pressure only changes width {by_pressure:.2}x");
+        assert!(by_speed < 1.2, "speed changes width {by_speed:.2}x");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import init, { Canvas, ZipBuilder, peek_title } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
+import { Minimap } from './minimap.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -41,6 +42,7 @@ function loadSettings() {
     prevTool: s.prevTool || null,
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
+    showMinimap: s.showMinimap !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
     lastNote: s.lastNote || null,
@@ -96,8 +98,10 @@ async function main() {
 
   // ----- rendering & input -------------------------------------------------
   const hud = $('hud');
+  let minimap = null;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
+      minimap?.update();
       if (canvas.revision() !== savedRevision) scheduleSave();
       updateUndo();
       if (!hud.hidden) {
@@ -116,6 +120,13 @@ async function main() {
     input.requestFrame();
   }
   new ResizeObserver(resize).observe(stage);
+  minimap = new Minimap($('minimap'), canvas, {
+    onMove: () => { input.requestFrame(); clearTimeout(camTimer); camTimer = setTimeout(saveCamera, 800); },
+  });
+  const redraw = () => { canvas.redraw(); input.requestFrame(); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) redraw(); });
+  window.addEventListener('pageshow', redraw);
+  window.addEventListener('focus', redraw);
   resize();
 
   for (const c of [$('base'), $('overlay')]) {
@@ -241,6 +252,7 @@ async function main() {
     $('title').value = canvas.title();
     $('paper').value = canvas.paper();
     if (saver.available) saver.reset(false); else canvas.take_changes();
+    minimap?.reset();
     savedRevision = canvas.revision();
     setSaveState('Saved');
     updateUndo();
@@ -688,6 +700,13 @@ async function main() {
     saveSettings();
     input.requestFrame();
   });
+  $('show-minimap').checked = settings.showMinimap;
+  minimap.visible = settings.showMinimap;
+  $('show-minimap').addEventListener('change', (e) => {
+    settings.showMinimap = e.target.checked;
+    minimap.visible = settings.showMinimap;
+    saveSettings();
+  });
   $('show-latency').checked = settings.showLatency;
   hud.hidden = !settings.showLatency;
   $('show-latency').addEventListener('change', (e) => {
@@ -737,7 +756,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 
