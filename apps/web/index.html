@@ -114,6 +114,12 @@
         <option value="right">Right</option>
       </select>
     </label>
+    <div class="row pressure-row">
+      <label for="pressure">Pen pressure</label>
+      <output id="pressure-value">Normal</output>
+      <input type="range" id="pressure" min="-100" max="100" step="5" aria-label="Pen pressure, firm to soft">
+      <span class="scale"><span>Firm</span><span>Soft</span></span>
+    </div>
     <label class="row"><input type="checkbox" id="finger-draw"> Draw with finger</label>
     <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
   </div>

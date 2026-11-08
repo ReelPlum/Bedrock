@@ -38,8 +38,9 @@ void main() {
   float h = length(d);
   vec2 ax = h > 1e-6 ? d / h : vec2(1.0, 0.0);
   vec2 n = vec2(-ax.y, ax.x);
-  // Lines thinner than a pixel stay a pixel wide and fade instead of breaking up.
-  float rmin = 0.5 * u_px;
+  // Hairlines: lines thinner than 1.5 px stay 1.5 px wide and fade in
+  // proportion instead, so they don't shimmer or break up into dots.
+  float rmin = 0.75 * u_px;
   float r1 = max(a_rz.x, rmin), r2 = max(a_rz.y, rmin);
   float m = u_px;                         // room for the antialiasing ramp
   float rmax = max(r1, r2) + m;
@@ -315,6 +316,14 @@ impl Layer {
             if let Some(old) = self.chunks.insert(info.key, m) {
                 self.free(old);
             }
+        }
+    }
+
+    /// Drop every uploaded chunk (they are rebuilt from the scene).
+    pub fn clear_chunks(&mut self) {
+        let keys: Vec<u64> = self.chunks.keys().copied().collect();
+        for k in keys {
+            self.remove_chunk(k);
         }
     }
 

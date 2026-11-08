@@ -133,6 +133,10 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .menu button, .menu .row { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .menu .row { justify-content: flex-start; }
 .menu .row select { margin-left: auto; font: inherit; }
+.menu .pressure-row { flex-wrap: wrap; row-gap: 4px; }
+.menu .pressure-row output { margin-left: auto; color: var(--muted, #888); font-variant-numeric: tabular-nums; }
+.menu .pressure-row input[type=range] { flex: 1 0 100%; margin: 0; }
+.menu .pressure-row .scale { flex: 1 0 100%; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted, #888); }
 .menu button:hover { background: rgba(0, 0, 0, 0.05); }
 .menu hr { border: 0; border-top: 1px solid var(--chrome-border); margin: 4px 0; width: 100%; }
 

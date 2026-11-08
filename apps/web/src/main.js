@@ -41,6 +41,8 @@ function loadSettings() {
     prevTool: s.prevTool || null,
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
+    // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
+    pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
     lastNote: s.lastNote || null,
   };
 }
@@ -671,6 +673,20 @@ async function main() {
     settings.fingerDraw = e.target.checked;
     canvas.set_finger_drawing(settings.fingerDraw);
     saveSettings();
+  });
+  function pressureLabel(v) {
+    if (Math.abs(v) < 5) return 'Normal';
+    return v < 0 ? 'Firm' : 'Soft';
+  }
+  $('pressure').value = settings.pressure;
+  $('pressure-value').textContent = pressureLabel(settings.pressure);
+  canvas.set_pressure_softness(settings.pressure / 100);
+  $('pressure').addEventListener('input', (e) => {
+    settings.pressure = parseInt(e.target.value, 10) || 0;
+    $('pressure-value').textContent = pressureLabel(settings.pressure);
+    canvas.set_pressure_softness(settings.pressure / 100);
+    saveSettings();
+    input.requestFrame();
   });
   $('show-latency').checked = settings.showLatency;
   hud.hidden = !settings.showLatency;

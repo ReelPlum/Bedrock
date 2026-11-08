@@ -131,7 +131,11 @@ impl Brush {
         let pr = p.pressure.clamp(0.0, 1.0);
         let tilt = p.tilt_amount();
         match self.kind {
-            BrushKind::Pen => Footprint { width: s * (0.3 + 0.7 * pr.powf(0.8)), opacity: 1.0 },
+            BrushKind::Pen => {
+                // A laid-down pen touches with more of its tip: up to 15% wider.
+                let lean = 1.0 + 0.15 * smoothstep(0.3, 0.8, tilt);
+                Footprint { width: s * (0.3 + 0.7 * pr.powf(0.8)) * lean, opacity: 1.0 }
+            }
             BrushKind::Pencil => {
                 // Tilting the pencil uses the side of the lead: wider and
                 // lighter. A normal writing grip already holds the Pencil at
@@ -143,14 +147,44 @@ impl Brush {
                 Footprint { width, opacity: opacity.clamp(0.05, 1.0) }
             }
             BrushKind::Fountain => {
-                // A tilted pen defines the nib angle; upright falls back to 45°.
-                let nib = if tilt > 0.15 { p.azimuth + PI / 2.0 } else { FRAC_PI_4 };
+                // A tilted pen defines the nib angle; upright falls back to
+                // 45°. The two are blended smoothly (in doubled-angle space,
+                // since a nib at 0° and 180° is the same nib) so the width
+                // can't jump while the pen passes through a near-upright grip.
+                let k = smoothstep(0.08, 0.25, tilt);
+                let held = p.azimuth + PI / 2.0;
+                let (x, y) = (
+                    (1.0 - k) * (2.0 * FRAC_PI_4).cos() + k * (2.0 * held).cos(),
+                    (1.0 - k) * (2.0 * FRAC_PI_4).sin() + k * (2.0 * held).sin(),
+                );
+                let nib = if x.hypot(y) > 1e-4 {
+                    0.5 * y.atan2(x)
+                } else if k >= 0.5 {
+                    held
+                } else {
+                    FRAC_PI_4
+                };
                 let across = (dir_angle - nib).sin().abs();
                 Footprint { width: s * (0.2 + 1.3 * across) * (0.55 + 0.45 * pr), opacity: 1.0 }
             }
             BrushKind::Marker => Footprint { width: s * (0.85 + 0.15 * pr), opacity: 1.0 },
             BrushKind::Highlighter => Footprint { width: s * 4.0, opacity: 1.0 },
         }
+    }
+
+    /// How much faster strokes thin (0 = not at all, 0.3 = to 70% width).
+    pub fn thinning(&self) -> f32 {
+        match self.kind {
+            BrushKind::Pen => 0.3,
+            BrushKind::Fountain => 0.2,
+            BrushKind::Pencil => 0.15,
+            BrushKind::Marker | BrushKind::Highlighter => 0.0,
+        }
+    }
+
+    /// Whether stroke ends are tapered (felt tips and highlighters aren't).
+    pub fn tapers(&self) -> bool {
+        matches!(self.kind, BrushKind::Pen | BrushKind::Fountain | BrushKind::Pencil)
     }
 
     /// Effective colour alpha for the whole stroke.
@@ -166,7 +200,7 @@ impl Brush {
     pub fn max_width(&self) -> f32 {
         let s = self.size.max(0.1);
         match self.kind {
-            BrushKind::Pen => s,
+            BrushKind::Pen => s * 1.15,
             BrushKind::Pencil => s * 4.0,
             BrushKind::Fountain => s * 1.5,
             BrushKind::Marker => s,

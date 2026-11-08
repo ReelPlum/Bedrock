@@ -120,6 +120,13 @@ impl Engine {
         }
     }
 
+    /// Redraw everything on the next frame (e.g. after a rendering setting
+    /// such as the pressure feel changed).
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+        self.live_dirty = true;
+    }
+
     pub fn resize(&mut self, width: f64, height: f64) {
         self.camera.viewport = Vec2::new(width.max(1.0), height.max(1.0));
         self.dirty = true;
@@ -141,10 +148,6 @@ impl Engine {
         self.dirty = false;
         self.live_dirty = false;
     }
-    pub fn invalidate(&mut self) {
-        self.dirty = true;
-    }
-
     pub fn is_drawing(&self) -> bool {
         matches!(self.active, Some(Active::Drawing { .. }))
     }
@@ -474,7 +477,7 @@ impl Engine {
     pub fn live_mesh(&self) -> Option<Mesh> {
         let s = self.live_stroke()?;
         if self.predicted.is_empty() {
-            return Some(tessellate::mesh(s));
+            return Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &s.points)));
         }
         let mut pts = s.points.clone();
         pts.extend_from_slice(&self.predicted);

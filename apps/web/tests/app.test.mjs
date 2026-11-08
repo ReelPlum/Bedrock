@@ -72,6 +72,30 @@ test('pressure changes the line width', async () => {
   await ctx.close();
 });
 
+test('pen pressure feel: soft draws light touches wider, is remembered, and redraws old ink', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const size = document.getElementById('size');
+    size.value = '20';
+    size.dispatchEvent(new Event('input'));
+    await t.line(200, 300, 700, 300, { pressure: 0.25 });
+    await t.frame();
+    const normal = t.thickness(450, 270, 330);
+    const slider = document.getElementById('pressure');
+    slider.value = '100';
+    slider.dispatchEvent(new Event('input'));
+    await t.frame();
+    await t.frame();
+    const soft = t.thickness(450, 270, 330);
+    const saved = JSON.parse(localStorage.getItem('bedrock.settings.v1')).pressure;
+    return { normal, soft, saved, label: document.getElementById('pressure-value').textContent };
+  });
+  assert.ok(r.soft > r.normal, `soft ${r.soft}px should be wider than normal ${r.normal}px`);
+  assert.equal(r.saved, 100);
+  assert.equal(r.label, 'Soft');
+  await ctx.close();
+});
+
 test('tilting the pencil makes a broader stroke', async () => {
   const { page, ctx } = await openApp(env);
   const [upright, tilted] = await page.evaluate(async () => {

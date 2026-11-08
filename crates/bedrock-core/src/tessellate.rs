@@ -7,6 +7,7 @@
 use crate::brush::{Footprint, LineStyle};
 use crate::geom::{Rect, Vec2};
 use crate::input::InputPoint;
+use crate::pen;
 use crate::stroke::Stroke;
 use std::f64::consts::PI;
 
@@ -96,26 +97,6 @@ fn circle_segments(r: f64, sweep: f64) -> usize {
     ((full * sweep.abs() / (2.0 * PI)).ceil() as usize).max(2)
 }
 
-/// Light smoothing of raw input (a [1, 2, 1] kernel on position and pressure)
-/// that removes digitiser jitter without visibly rounding corners.
-pub fn smooth(points: &[InputPoint]) -> Vec<InputPoint> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-    let mut out = Vec::with_capacity(points.len());
-    out.push(points[0]);
-    for w in points.windows(3) {
-        let (a, b, c) = (w[0], w[1], w[2]);
-        let mut p = b;
-        p.x = 0.25 * a.x + 0.5 * b.x + 0.25 * c.x;
-        p.y = 0.25 * a.y + 0.5 * b.y + 0.25 * c.y;
-        p.pressure = 0.25 * a.pressure + 0.5 * b.pressure + 0.25 * c.pressure;
-        out.push(p);
-    }
-    out.push(*points.last().unwrap());
-    out
-}
-
 fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
     let mut d = (b - a) % (2.0 * std::f32::consts::PI);
     if d > std::f32::consts::PI {
@@ -135,36 +116,11 @@ fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f64) -> Vec2 {
     Vec2::new(f(p0.x, p1.x, p2.x, p3.x), f(p0.y, p1.y, p2.y, p3.y))
 }
 
-/// Longest stabiliser lag (at strength 1).
-pub const MAX_STABILIZER_MS: f64 = 90.0;
-
-/// Stabiliser: the drawn point follows the pen through a time-based
-/// exponential filter (rate independent, so 60, 120 and 240 Hz input feel
-/// the same). The stroke still ends exactly where the pen lifted.
+/// Stabiliser: a pulled string (see [`pen::pulled_string`]) whose length
+/// grows with `amount` (0..=1). Rate independent, and the stroke still ends
+/// exactly where the pen lifted.
 pub fn stabilize(points: &[InputPoint], amount: f32) -> Vec<InputPoint> {
-    let tau = (amount.clamp(0.0, 1.0) as f64).powf(1.5) * MAX_STABILIZER_MS;
-    if points.len() < 3 || tau <= 0.0 {
-        return points.to_vec();
-    }
-    let mut out = Vec::with_capacity(points.len() + 1);
-    let mut s = points[0];
-    out.push(s);
-    for w in points.windows(2) {
-        let (prev, p) = (w[0], w[1]);
-        let dt = (p.t - prev.t).max(1.0);
-        let a = 1.0 - (-dt / tau).exp();
-        let mut q = p;
-        q.x = s.x + (p.x - s.x) * a;
-        q.y = s.y + (p.y - s.y) * a;
-        s = q;
-        out.push(q);
-    }
-    // Catch up with the pen so the line ends where it was lifted.
-    let last = *points.last().unwrap();
-    if s.pos().distance(last.pos()) > 1e-6 {
-        out.push(last);
-    }
-    out
+    pen::pulled_string(points, pen::stabilizer_radius(amount))
 }
 
 /// Interpolated input points along a Catmull-Rom spline through `pts`.
@@ -200,35 +156,42 @@ fn resample(pts: &[InputPoint], step: f64) -> Vec<InputPoint> {
     out
 }
 
-/// Centre-line samples with brush footprints applied.
+/// Centre-line samples with brush footprints applied, for a finished stroke.
 pub fn samples(stroke: &Stroke) -> Vec<Sample> {
-    samples_for(stroke, &stroke.points)
+    samples_with_step(stroke, &stroke.points, 1.0, true)
 }
 
-/// Like [`samples`] but for an explicit point list (used for live strokes
-/// with predicted points appended).
+/// Like [`samples`] but for a stroke still being drawn, with an explicit
+/// point list (predicted points may be appended). No end taper, since the
+/// pen hasn't lifted yet.
 pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
-    samples_with_step(stroke, points, 1.0)
+    samples_with_step(stroke, points, 1.0, false)
 }
 
 /// Coarser samples (`scale` times the normal spacing), e.g. for thumbnails.
 pub fn samples_coarse(stroke: &Stroke, scale: f64) -> Vec<Sample> {
-    samples_with_step(stroke, &stroke.points, scale)
+    samples_with_step(stroke, &stroke.points, scale, true)
 }
 
-fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<Sample> {
-    let stabilized;
-    let points = if stroke.brush.stabilizer > 0.0 {
-        stabilized = stabilize(points, stroke.brush.stabilizer);
-        &stabilized[..]
-    } else {
-        points
-    };
-    let smoothed = smooth(points);
+/// Raw samples closer than this (world units) are merged: about half a
+/// pixel at 100%, finer for thin brushes that are usually zoomed in on.
+fn merge_spacing(size: f64) -> f64 {
+    (size * 0.2).clamp(0.1, 0.5)
+}
+
+fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finished: bool) -> Vec<Sample> {
+    let brush = &stroke.brush;
+    let size = brush.size.max(0.1) as f64;
+    // Input clean-up, in order: 1€ filters (noise out, little lag), the
+    // stabiliser's pulled string if on, then merge points too close to carry
+    // a direction.
+    let filtered = pen::filter_points(points);
+    let stabilized = if brush.stabilizer > 0.0 { stabilize(&filtered, brush.stabilizer) } else { filtered };
+    let cleaned = pen::decimate(&stabilized, merge_spacing(size));
     // Dense resampling: capsules are cheap on the GPU and long straight runs
     // are merged again afterwards, so curves can be finely sampled.
-    let step = (stroke.brush.size as f64 * 0.15).clamp(0.15, 0.75) * scale.max(1.0);
-    let pts = resample(&smoothed, step);
+    let step = (size * 0.15).clamp(0.15, 0.75) * scale.max(1.0);
+    let pts = resample(&cleaned, step);
     // Drop duplicates so tangents are well defined.
     let mut dedup: Vec<InputPoint> = Vec::with_capacity(pts.len());
     for p in pts {
@@ -236,7 +199,7 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<
             dedup.push(p);
         }
     }
-    let alpha = stroke.brush.stroke_alpha();
+    let alpha = brush.stroke_alpha();
     let n = dedup.len();
     if n == 0 {
         return Vec::new();
@@ -254,7 +217,6 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<
     // between neighbouring points: when the pen moves slowly the points are a
     // fraction of a unit apart and their direction is mostly digitiser noise,
     // which made direction-sensitive nibs flicker between thin and fat.
-    let size = stroke.brush.size.max(0.1) as f64;
     let reach = (size * 0.75).clamp(1.0, 6.0);
     let (mut lo, mut hi) = (0usize, 0usize);
     let angles: Vec<f32> = (0..n)
@@ -274,14 +236,62 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<
             }
         })
         .collect();
+    let curve = pen::pressure_curve();
+    // No speed without timestamps (imported strokes): don't guess.
+    let thinning = if pen::has_timing(points) { brush.thinning() } else { 0.0 };
+    let speed = if thinning > 0.0 { pen::speeds(&dedup) } else { Vec::new() };
     let mut out: Vec<Sample> = (0..n)
         .map(|i| {
-            let Footprint { width, opacity } = stroke.brush.footprint(&dedup[i], angles[i]);
-            Sample { pos: dedup[i].pos(), width: width as f64, opacity: opacity * alpha }
+            let mut p = dedup[i];
+            p.pressure = curve.apply(p.pressure);
+            let Footprint { width, opacity } = brush.footprint(&p, angles[i]);
+            let thin = if thinning > 0.0 { pen::speed_factor(thinning, speed[i]) } else { 1.0 };
+            Sample { pos: p.pos(), width: (width * thin) as f64, opacity: opacity * alpha }
         })
         .collect();
     calm_widths(&mut out, &arc, size);
+    if brush.tapers() {
+        taper(&mut out, &arc, finished, dedup[n - 1].pressure);
+    }
     out
+}
+
+/// Ends shaped by arc length (so 60 Hz and 240 Hz input taper alike):
+/// * start: the radius grows from 40% to full over one stroke width, as a
+///   nib does when it touches down. Pencil pressure in the first
+///   milliseconds is unreliable, so this doesn't rely on it.
+/// * end (finished strokes only): when the pen was lifted while still
+///   pressing (a flicked lift that pressure doesn't catch), ease the last
+///   stroke width down to 65%.
+///
+/// Strokes shorter than two widths (dots, short ticks) keep their full width.
+fn taper(s: &mut [Sample], arc: &[f64], finished: bool, last_pressure: f32) {
+    let n = s.len();
+    let total = arc[n - 1];
+    let w = s.iter().map(|x| x.width).fold(0.0, f64::max);
+    if n < 3 || total < 2.0 * w || w <= 0.0 {
+        return;
+    }
+    let ease = |t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    for i in 0..n {
+        let t = arc[i] / w;
+        if t >= 1.0 {
+            break;
+        }
+        s[i].width *= 0.4 + 0.6 * ease(t);
+    }
+    if finished && last_pressure > 0.35 {
+        for i in (0..n).rev() {
+            let t = (total - arc[i]) / w;
+            if t >= 1.0 {
+                break;
+            }
+            s[i].width *= 0.65 + 0.35 * ease(t);
+        }
+    }
 }
 
 /// Keep width and opacity changes gradual along the line.
@@ -291,7 +301,8 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64) -> Vec<
 /// passes fix that without dulling deliberate swells and tapers:
 /// * a light forward-backward smoothing over about one brush size of line,
 /// * a slope limit: the radius may grow at most ~0.35 units per unit of
-///   line, so the stroke can't balloon in a short distance.
+///   line, so the stroke can't balloon in a short distance. Only growth is
+///   limited: a line may thin quickly (a lift, a fast flick).
 fn calm_widths(s: &mut [Sample], arc: &[f64], size: f64) {
     let n = s.len();
     if n < 3 {
@@ -315,10 +326,6 @@ fn calm_widths(s: &mut [Sample], arc: &[f64], size: f64) {
     for i in 1..n {
         let ds = arc[i] - arc[i - 1];
         s[i].width = s[i].width.min(s[i - 1].width + MAX_SLOPE * ds);
-    }
-    for i in (0..n - 1).rev() {
-        let ds = arc[i + 1] - arc[i];
-        s[i].width = s[i].width.min(s[i + 1].width + MAX_SLOPE * ds);
     }
 }
 
@@ -613,13 +620,13 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_keeps_endpoints() {
-        let pts: Vec<_> = (0..5).map(|i| InputPoint::new(i as f64, (i % 2) as f64, 0.5)).collect();
-        let sm = smooth(&pts);
-        assert_eq!(sm.len(), pts.len());
-        assert_eq!(sm[0], pts[0]);
-        assert_eq!(sm[4], pts[4]);
-        assert!((sm[1].y - 0.5).abs() < 1e-9);
+    fn input_cleanup_keeps_endpoints() {
+        let pts: Vec<_> = (0..20).map(|i| InputPoint::new(i as f64, (i % 2) as f64, 0.5).at(i as f64 * 4.0)).collect();
+        let f = pen::filter_points(&pts);
+        assert_eq!(f[0].pos(), pts[0].pos());
+        assert_eq!(f.last().unwrap().pos(), pts.last().unwrap().pos());
+        let wobble = f[5..15].iter().map(|p| (p.y - 0.5).abs()).fold(0.0, f64::max);
+        assert!(wobble < 0.3, "zigzag left at {wobble}");
     }
 
     #[test]
@@ -708,8 +715,9 @@ mod tests {
                 .collect();
             let st = stabilize(&pts, 0.7);
             // Distance between pen and line right after the corner.
-            let i = pts.iter().position(|p| p.t >= 300.0).unwrap();
-            pts[i].pos().distance(st[i].pos())
+            let pen = pts.iter().find(|p| p.t >= 300.0).unwrap();
+            let ink = st.iter().rev().find(|q| q.t <= pen.t).unwrap();
+            pen.pos().distance(ink.pos())
         };
         let (a, b) = (corner(60.0), corner(240.0));
         assert!((a - b).abs() < a * 0.25, "60 Hz lag {a} vs 240 Hz lag {b}");
@@ -808,7 +816,7 @@ mod tests {
     fn fountain_nib_ignores_jitter_when_moving_slowly() {
         // Bug: at slow speed, direction between neighbouring samples is mostly
         // noise, so the direction-sensitive nib flickered between thin and fat.
-        let pts: Vec<_> = (0..100)
+        let pts: Vec<_> = (0..300)
             .map(|i| {
                 let jitter = if i % 2 == 0 { 0.08 } else { -0.08 };
                 InputPoint::new(i as f64 * 0.12, jitter, 0.5).at(i as f64 * 4.0)
@@ -826,5 +834,168 @@ mod tests {
     fn straight_lines_use_few_capsules() {
         let m = mesh(&line(BrushKind::Pen, 41));
         assert!(m.segment_count() <= 20, "{} capsules for a straight line", m.segment_count());
+    }
+
+    // Tests from the pen-feel research.
+
+    fn pen_stroke(id: u64, kind: BrushKind, size: f32, pts: Vec<InputPoint>) -> Stroke {
+        Stroke::new(StrokeId(id), Brush::new(kind, Rgba::BLACK, size), 0.0, InputDevice::Pen, pts)
+    }
+
+    #[test]
+    fn slow_jittery_circle_stays_round() {
+        // A slow circle (r 20, 2 s at 240 Hz) with ±0.4 digitiser noise.
+        let mut seed = 7u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f64 / (1u32 << 24) as f64 * 0.8 - 0.4
+        };
+        let pts: Vec<_> = (0..480)
+            .map(|i| {
+                let a = i as f64 / 480.0 * 2.0 * PI;
+                InputPoint::new(20.0 * a.cos() + noise(), 20.0 * a.sin() + noise(), 0.5).at(i as f64 * 4.17)
+            })
+            .collect();
+        let s = pen_stroke(20, BrushKind::Pen, 4.0, pts);
+        let smp = samples(&s);
+        let w = smp.iter().map(|x| x.width).fold(0.0, f64::max);
+        let worst = smp.iter().map(|x| (x.pos.length() - 20.0).abs()).fold(0.0, f64::max);
+        assert!(worst < 0.5 * w, "centre line strays {worst} from the circle (width {w})");
+    }
+
+    #[test]
+    fn hesitation_does_not_kink_the_line() {
+        // 50 samples bunched within 1 unit while the pen pauses mid-line,
+        // with typical Pencil noise.
+        let mut pts = Vec::new();
+        let mut t = 0.0;
+        for i in 0..40 {
+            pts.push(InputPoint::new(i as f64, 0.0, 0.5).at(t));
+            t += 4.0;
+        }
+        for i in 0..50 {
+            let j = if i % 2 == 0 { 0.15 } else { -0.15 };
+            pts.push(InputPoint::new(40.0 + (i % 5) as f64 * 0.1, j, 0.5).at(t));
+            t += 4.0;
+        }
+        for i in 1..40 {
+            pts.push(InputPoint::new(40.5 + i as f64, 0.0, 0.5).at(t));
+            t += 4.0;
+        }
+        let s = pen_stroke(21, BrushKind::Pen, 3.0, pts.clone());
+        let m = mesh(&s);
+        let wobble = m.segments.iter().map(|g| g.a[1].abs().max(g.b[1].abs())).fold(0.0, f32::max);
+        assert!(wobble < 0.15 * 3.0, "line wobbles {wobble} off course");
+        let dirs: Vec<f64> = m
+            .segments
+            .iter()
+            .filter(|g| g.a != g.b)
+            .map(|g| ((g.b[1] - g.a[1]) as f64).atan2((g.b[0] - g.a[0]) as f64))
+            .collect();
+        for w in dirs.windows(2) {
+            let mut d = (w[1] - w[0]).abs();
+            if d > PI {
+                d = 2.0 * PI - d;
+            }
+            assert!(d < 30f64.to_radians(), "capsules turn {}°", d.to_degrees());
+        }
+    }
+
+    fn mid_width(kind: BrushKind, speed: f64) -> f64 {
+        let pts: Vec<_> =
+            (0..200).map(|i| InputPoint::new(i as f64 * speed * 4.0, 0.0, 0.5).at(i as f64 * 4.0)).collect();
+        let smp = samples(&pen_stroke(22, kind, 4.0, pts));
+        smp[smp.len() / 2].width
+    }
+
+    #[test]
+    fn faster_strokes_are_thinner_for_pens_only() {
+        let (slow, fast) = (mid_width(BrushKind::Pen, 0.8), mid_width(BrushKind::Pen, 1.6));
+        let thinner = 1.0 - fast / slow;
+        assert!((0.1..=0.4).contains(&thinner), "2x speed thinned the pen by {:.0}%", thinner * 100.0);
+        let (slow, fast) = (mid_width(BrushKind::Marker, 0.8), mid_width(BrushKind::Marker, 1.6));
+        assert!((slow - fast).abs() < 1e-9, "marker {slow} vs {fast}");
+    }
+
+    #[test]
+    fn tapers_follow_arc_length_and_spare_dots() {
+        let line_at = |hz: f64| -> Vec<Sample> {
+            let n = (hz * 0.4) as usize;
+            let pts = (0..n)
+                .map(|i| InputPoint::new(i as f64 * 100.0 / (n - 1) as f64, 0.0, 0.8).at(i as f64 * 1000.0 / hz))
+                .collect();
+            samples(&pen_stroke(23, BrushKind::Pen, 6.0, pts))
+        };
+        // Where the start taper reaches 95% of the full width.
+        let reach = |s: &[Sample]| {
+            let full = s[s.len() / 2].width;
+            s.iter().find(|x| x.width >= 0.95 * full).unwrap().pos.x
+        };
+        let (a, b) = (line_at(60.0), line_at(240.0));
+        assert!(a[0].width < a[a.len() / 2].width * 0.6, "starts thin");
+        assert!((reach(&a) - reach(&b)).abs() < 1.5, "60 Hz {} vs 240 Hz {}", reach(&a), reach(&b));
+        // Lifted while pressing: the end eases off too.
+        assert!(a.last().unwrap().width < a[a.len() / 2].width * 0.8);
+        // A short tick, one width long, keeps at least 80% of its radius.
+        let pts = (0..6).map(|i| InputPoint::new(i as f64, 0.0, 0.8).at(i as f64 * 4.0)).collect();
+        let s = pen_stroke(24, BrushKind::Pen, 6.0, pts);
+        let full =
+            Brush::new(BrushKind::Pen, Rgba::BLACK, 6.0).footprint(&InputPoint::new(0.0, 0.0, 0.8), 0.0).width as f64;
+        assert!(samples(&s).iter().all(|x| x.width >= 0.8 * full * 0.7), "tick lost its width");
+        // Markers aren't tapered.
+        let pts = (0..40).map(|i| InputPoint::new(i as f64 * 3.0, 0.0, 0.8).at(i as f64 * 4.0)).collect();
+        let m = samples(&pen_stroke(25, BrushKind::Marker, 6.0, pts));
+        assert!((m[0].width - m[m.len() / 2].width).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_strokes_get_no_end_taper() {
+        let pts: Vec<_> = (0..60).map(|i| InputPoint::new(i as f64 * 2.0, 0.0, 0.8).at(i as f64 * 4.0)).collect();
+        let s = pen_stroke(26, BrushKind::Pen, 6.0, pts.clone());
+        let live = samples_for(&s, &pts);
+        let done = samples(&s);
+        assert!(live.last().unwrap().width > done.last().unwrap().width * 1.2);
+        // The start is identical, so nothing jumps when the pen lifts.
+        assert_eq!(live[0], done[0]);
+    }
+
+    #[test]
+    fn fountain_width_is_continuous_as_the_pen_tilts() {
+        // Bug class: the nib angle switched abruptly at 0.15 tilt, so a
+        // stroke drawn while straightening the pen changed width in one step.
+        let b = Brush::new(BrushKind::Fountain, Rgba::BLACK, 6.0);
+        let at = |tilt: f32| {
+            let mut p = InputPoint::new(0.0, 0.0, 0.5);
+            p.altitude = (1.0 - tilt) * std::f32::consts::FRAC_PI_2;
+            p.azimuth = 0.3;
+            b.footprint(&p, 0.0).width
+        };
+        let mut prev = at(0.0);
+        for i in 1..=100 {
+            let w = at(i as f32 * 0.004);
+            assert!((w - prev).abs() < 0.25, "width jumps from {prev} to {w} at tilt {}", i as f32 * 0.004);
+            prev = w;
+        }
+    }
+
+    #[test]
+    fn unreliable_first_pressure_is_ignored() {
+        // Pencil often reports ~0 pressure for the first few ms.
+        let pts: Vec<_> = (0..60)
+            .map(|i| InputPoint::new(i as f64 * 2.0, 0.0, if i < 2 { 0.02 } else { 0.8 }).at(i as f64 * 4.0))
+            .collect();
+        let f = pen::filter_points(&pts);
+        assert!(f[0].pressure > 0.7 && f[1].pressure > 0.7, "{} {}", f[0].pressure, f[1].pressure);
+    }
+
+    #[test]
+    fn strokes_without_timestamps_are_not_thinned() {
+        // Bug: imported strokes (all t = 0) looked infinitely fast and were
+        // drawn at the thinnest width.
+        let pts: Vec<_> = (0..40).map(|i| InputPoint::new(i as f64 * 3.0, 0.0, 0.8)).collect();
+        let smp = samples(&pen_stroke(27, BrushKind::Pen, 6.0, pts));
+        let full =
+            Brush::new(BrushKind::Pen, Rgba::BLACK, 6.0).footprint(&InputPoint::new(0.0, 0.0, 0.8), 0.0).width as f64;
+        assert!((smp[smp.len() / 2].width - full).abs() < 0.05, "{} vs {full}", smp[smp.len() / 2].width);
     }
 }

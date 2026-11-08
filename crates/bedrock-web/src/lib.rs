@@ -196,6 +196,18 @@ impl Canvas {
         Ok(())
     }
 
+    /// Pressure feel for this device, -1 (firm) ..= 1 (soft), 0 = linear.
+    /// Only changes how pressure is drawn; the file keeps raw pressure.
+    pub fn set_pressure_softness(&mut self, softness: f32) {
+        if (bedrock_core::pen::pressure_softness() - softness).abs() < 1e-6 {
+            return;
+        }
+        bedrock_core::pen::set_pressure_softness(softness);
+        self.base.clear_chunks();
+        self.scene = Scene::new();
+        self.engine.invalidate();
+    }
+
     /// `draw` | `erase-stroke` | `erase-partial`
     pub fn set_tool(&mut self, tool: &str) {
         self.engine.tool = match tool {
