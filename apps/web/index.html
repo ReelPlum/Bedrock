@@ -27,10 +27,10 @@
     </button>
     <input id="title" class="title" placeholder="Untitled note" aria-label="Note title" autocomplete="off" spellcheck="false">
     <span id="save-state" class="save-state" role="status" aria-live="polite">Saved</span>
-    <button class="icon" id="btn-undo" title="Undo (two-finger tap)" aria-label="Undo">
+    <button class="icon" id="btn-undo" title="Undo (two-finger double tap)" aria-label="Undo">
       <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
     </button>
-    <button class="icon" id="btn-redo" title="Redo (three-finger tap)" aria-label="Redo">
+    <button class="icon" id="btn-redo" title="Redo (three-finger double tap)" aria-label="Redo">
       <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>
     </button>
     <button class="icon" id="btn-menu" title="More" aria-label="More" aria-haspopup="true">
@@ -55,7 +55,22 @@
       <span class="dot" id="size-dot"></span>
       <input type="range" id="size" min="0.5" max="30" step="0.5" aria-label="Brush size">
     </label>
+    <button class="tool" id="btn-stroke" title="Line style and stabiliser" aria-label="Line style and stabiliser" aria-haspopup="true" aria-expanded="false">
+      <svg viewBox="0 0 24 24"><path d="M3 7h18"/><path d="M3 12h4m3 0h4m3 0h4"/><path d="M3 17h.01M8 17h.01M13 17h.01M18 17h.01" class="dots"/></svg>
+    </button>
   </nav>
+
+  <div class="popover" id="stroke-pop" hidden role="dialog" aria-label="Line style and stabiliser">
+    <div class="pop-label" id="stroke-brush">Pen</div>
+    <div class="segmented" role="radiogroup" aria-label="Line style" id="line-style">
+      <button role="radio" data-style="solid" aria-label="Solid"><svg viewBox="0 0 48 12"><path d="M4 6h40"/></svg></button>
+      <button role="radio" data-style="dashed" aria-label="Dashed"><svg viewBox="0 0 48 12"><path d="M4 6h10m6 0h10m6 0h8"/></svg></button>
+      <button role="radio" data-style="dotted" aria-label="Dotted"><svg viewBox="0 0 48 12"><path d="M5 6h.01M13 6h.01M21 6h.01M29 6h.01M37 6h.01M45 6h.01" class="dots"/></svg></button>
+    </div>
+    <label class="pop-row" for="stabilizer">Stabiliser <output id="stabilizer-value">Off</output></label>
+    <input type="range" id="stabilizer" min="0" max="100" step="5" aria-label="Stabiliser">
+    <p class="pop-hint">Smooths shaky lines. Higher values lag slightly behind the tip.</p>
+  </div>
 
   <div class="menu" id="menu" hidden role="menu">
     <button role="menuitem" data-action="new">New note</button>

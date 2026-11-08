@@ -88,6 +88,8 @@ and angles, 1 for time.
 | `brush.kind` | `pen`, `pencil`, `fountain`, `marker` or `highlighter`. |
 | `brush.color` | `#rrggbbaa`. |
 | `brush.size` | Nominal width in world units at full pressure. |
+| `brush.style` | Optional: `solid` (default, omitted), `dashed` or `dotted`. Dash and dot spacing scale with `size`. Readers that don't know a style draw the line solid. |
+| `brush.stabilizer` | Optional, 0 to 1 (default 0, omitted). How strongly rendering smooths shaky lines. It is applied when drawing, so `points` always hold the raw samples and the setting can be changed later without losing data. |
 | `device` | `pen`, `mouse` or `touch`. |
 | `start` | Unix time in milliseconds of the first sample. With `t` this gives the absolute time of every sample, which preserves writing order and pauses for handwriting recognition. |
 | `derivedFrom` | Optional. Ids of the original strokes this one was cut from by the eraser. |

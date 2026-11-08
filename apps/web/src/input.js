@@ -10,6 +10,11 @@
 
 const HALF_PI = Math.PI / 2;
 
+// Predicted samples are only a latency trick: never draw more than this far
+// ahead of the newest real sample, and never while the pen is lifting.
+export const MAX_PREDICTION_MS = 12;
+export const MAX_PREDICTED_POINTS = 2;
+
 /** Pointer Events tiltX/tiltY (degrees) -> [altitude, azimuth] radians. */
 export function tiltToAltitudeAzimuth(tiltX, tiltY) {
   if (!tiltX && !tiltY) return [HALF_PI, 0];
@@ -32,9 +37,9 @@ export function sampleFrom(e, rect) {
   } else {
     [altitude, azimuth] = tiltToAltitudeAzimuth(e.tiltX || 0, e.tiltY || 0);
   }
-  let pressure = e.pressure;
-  if (e.pointerType !== 'pen') pressure = 0.5;
-  else if (!(pressure > 0)) pressure = 0.5; // some pens report 0 on down
+  // Pens report real pressure (0 while hovering). Mice report 0.5 while a
+  // button is down; touches have no useful pressure.
+  const pressure = e.pointerType === 'pen' ? (e.pressure > 0 ? e.pressure : 0) : 0.5;
   return {
     x: e.clientX - rect.left,
     y: e.clientY - rect.top,
@@ -63,6 +68,9 @@ export class InputController {
     this.lastInputTime = 0;
     this.latency = { last: 0, avg: 0, samples: 0 };
     this.active = new Map(); // pointerId -> kind
+    this.lastPressure = new Map();
+    this.prediction = true;
+    this.samplesSeen = 0;
     this.mousePan = null;
     this.enabled = true;
     this._bind();
@@ -90,6 +98,47 @@ export class InputController {
     });
   }
 
+  /** End the active pointer. The up event's own position is not added for
+   *  pens: it is reported after lift-off and would draw a tail. */
+  _finish(e, cancelled) {
+    const kind = this.active.get(e.pointerId);
+    if (!kind) return;
+    this.active.delete(e.pointerId);
+    this.lastPressure.delete(e.pointerId);
+    if (cancelled) {
+      this.canvas.pointer_cancel(e.pointerId, kind);
+    } else {
+      const s = sampleFrom(e, this.rect);
+      if (kind === 'pen' || kind === 'eraser') s.pressure = 0;
+      this._send('pointer_up', e.pointerId, kind, s);
+      this.onCommit();
+    }
+    this.requestFrame();
+  }
+
+  /** Draw a short predicted tail, unless the pen is slowing down to lift. */
+  _predict(e, kind, last) {
+    const prev = this.lastPressure.get(e.pointerId) || 0;
+    const isPen = kind === 'pen' || kind === 'eraser';
+    let flat = new Float64Array(0);
+    const lifting = isPen && last && (last.pressure < 0.08 || last.pressure < prev * 0.8);
+    if (last) this.lastPressure.set(e.pointerId, last.pressure);
+    if (this.prediction && last && !lifting && typeof e.getPredictedEvents === 'function') {
+      const keep = [];
+      for (const pe of e.getPredictedEvents()) {
+        if (keep.length >= MAX_PREDICTED_POINTS) break;
+        const s = sampleFrom(pe, this.rect);
+        if (s.time - last.time > MAX_PREDICTION_MS) break;
+        if (isPen && s.pressure === 0) s.pressure = last.pressure;
+        keep.push(s);
+      }
+      flat = new Float64Array(keep.length * 6);
+      keep.forEach((s, i) => flat.set([s.x, s.y, s.pressure, s.altitude, s.azimuth, s.time], i * 6));
+    }
+    // Always send, so an old tail is cleared when there is no new prediction.
+    this.canvas.pointer_predicted(e.pointerId, flat);
+  }
+
   _send(method, id, kind, s) {
     this.canvas[method](id, kind, s.x, s.y, s.pressure, s.altitude, s.azimuth, s.time);
   }
@@ -110,8 +159,12 @@ export class InputController {
       try { st.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
       const kind = kindOf(e);
       this.active.set(e.pointerId, kind);
+      this.lastPressure.set(e.pointerId, 0);
       this.lastInputTime = e.timeStamp;
-      this._send('pointer_down', e.pointerId, kind, sampleFrom(e, this.rect));
+      const s = sampleFrom(e, this.rect);
+      // A few pens report 0 on the down event itself; it is a real contact.
+      if (s.pressure === 0) s.pressure = 0.5;
+      this._send('pointer_down', e.pointerId, kind, s);
       this.requestFrame();
     }, opts);
 
@@ -126,20 +179,25 @@ export class InputController {
       const kind = this.active.get(e.pointerId);
       if (!kind) return;
       e.preventDefault();
+      const isPen = kind === 'pen' || kind === 'eraser';
+      // The pen left the glass but the browser has not sent pointerup yet
+      // (Apple Pencil hover keeps sending moves): end the stroke right here,
+      // so no line follows the tip after lifting.
+      if (isPen && e.buttons === 0) {
+        this._finish(e, false);
+        return;
+      }
       const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
       const list = events.length ? events : [e];
-      for (const ce of list) this._send('pointer_move', e.pointerId, kind, sampleFrom(ce, this.rect));
-      if (typeof e.getPredictedEvents === 'function') {
-        const predicted = e.getPredictedEvents();
-        if (predicted.length) {
-          const flat = new Float64Array(predicted.length * 6);
-          predicted.forEach((pe, i) => {
-            const s = sampleFrom(pe, this.rect);
-            flat.set([s.x, s.y, s.pressure, s.altitude, s.azimuth, s.time], i * 6);
-          });
-          this.canvas.pointer_predicted(e.pointerId, flat);
-        }
+      let last = null;
+      for (const ce of list) {
+        const s = sampleFrom(ce, this.rect);
+        if (isPen && s.pressure === 0) continue; // hover / lift sample, not ink
+        this._send('pointer_move', e.pointerId, kind, s);
+        last = s;
       }
+      this.samplesSeen += list.length;
+      this._predict(e, kind, last);
       this.lastInputTime = e.timeStamp;
       this.requestFrame();
     }, opts);
@@ -149,21 +207,13 @@ export class InputController {
         this.mousePan = null;
         return;
       }
-      const kind = this.active.get(e.pointerId);
-      if (!kind) return;
-      this.active.delete(e.pointerId);
-      if (e.type === 'pointercancel') {
-        this.canvas.pointer_cancel(e.pointerId, kind);
-      } else {
-        this._send('pointer_up', e.pointerId, kind, sampleFrom(e, this.rect));
-        this.onCommit();
-      }
-      this.requestFrame();
+      this._finish(e, e.type === 'pointercancel');
     };
     st.addEventListener('pointerup', end, opts);
     st.addEventListener('pointercancel', end, opts);
     st.addEventListener('lostpointercapture', (e) => {
-      if (this.active.has(e.pointerId)) end(new PointerEvent('pointercancel', e));
+      // Capture is released right after pointerup; treat it as a normal end.
+      if (this.active.has(e.pointerId)) this._finish(e, false);
     });
 
     // iOS Safari: stop the magnifier, text selection, page scroll and

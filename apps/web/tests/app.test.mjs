@@ -108,19 +108,123 @@ test('fingers pan the canvas and do not draw; a resting palm is ignored', async 
   await ctx.close();
 });
 
-test('two-finger tap undoes and three-finger tap redoes', async () => {
+test('two-finger double tap undoes and three-finger double tap redoes; single taps do nothing', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
     await t.line(200, 300, 600, 300);
+    let id = 40;
     const tap = async (n) => {
-      for (let i = 0; i < n; i++) t.ev('pointerdown', 40 + i, 'touch', 300 + i * 60, 500);
-      for (let i = 0; i < n; i++) t.ev('pointerup', 40 + i, 'touch', 300 + i * 60, 500);
+      const ids = Array.from({ length: n }, () => id++);
+      ids.forEach((p, i) => t.ev('pointerdown', p, 'touch', 300 + i * 60, 500));
+      ids.forEach((p, i) => t.ev('pointerup', p, 'touch', 300 + i * 60, 500));
       await t.frame();
       return bedrock.canvas.stroke_count();
     };
-    return [bedrock.canvas.stroke_count(), await tap(2), await tap(3)];
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const start = bedrock.canvas.stroke_count();
+    const single = await tap(2);
+    await wait(500); // longer than the double-tap window
+    await tap(2);
+    const undone = await tap(2);
+    await wait(500);
+    const singleRedo = await tap(3);
+    await wait(500);
+    await tap(3);
+    const redone = await tap(3);
+    return [start, single, undone, singleRedo, redone];
   });
-  assert.deepEqual(r, [1, 0, 1]);
+  assert.deepEqual(r, [1, 1, 0, 0, 1]);
+  await ctx.close();
+});
+
+test('lifting the pencil ends the line: hover moves after lift add no ink', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.canvas.set_paper('plain');
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let x = 210; x <= 400; x += 10) t.ev('pointermove', 1, 'pen', x, 300, { pressure: 0.5 });
+    // The tip leaves the glass: Safari keeps sending moves with pressure 0 and
+    // no buttons before (or instead of) pointerup.
+    for (let x = 410; x <= 600; x += 10) t.ev('pointermove', 1, 'pen', x, 300, { pressure: 0, buttons: 0 });
+    t.ev('pointerup', 1, 'pen', 600, 300, { pressure: 0 });
+    await t.frame();
+    const note = JSON.parse(bedrock.canvas.export_json());
+    const n = note.channels.length, xi = note.channels.indexOf('x');
+    const xs = note.strokes[0].points.filter((_, i) => i % n === xi);
+    return { strokes: note.strokes.length, drawn: t.isInk(300, 300), tail: t.isInk(500, 300), maxX: Math.max(...xs) };
+  });
+  assert.equal(r.strokes, 1);
+  assert.ok(r.drawn, 'ink where the tip touched');
+  assert.ok(!r.tail, 'no ink where the tip only hovered');
+  assert.ok(r.maxX < 420, `stroke ends at the lift point, not at ${r.maxX}`);
+  await ctx.close();
+});
+
+test('stroke edges are antialiased, not stair-stepped', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.canvas.set_paper('plain');
+    await t.line(200, 200, 700, 330, { pressure: 0.6 }); // shallow diagonal: worst case for aliasing
+    const bg = bedrock.canvas.pixel_at(450, 600).slice(0, 3).reduce((a, b) => a + b);
+    let ink = 999, partial = 0;
+    for (let x = 300; x < 600; x += 7) {
+      for (let y = 180; y < 360; y++) {
+        const v = bedrock.canvas.pixel_at(x, y).slice(0, 3).reduce((a, b) => a + b);
+        ink = Math.min(ink, v);
+        if (v > ink + 60 && v < bg - 60) partial++;
+      }
+    }
+    return { bg, ink, partial };
+  });
+  assert.ok(r.ink < 200, `stroke core is dark (${r.ink})`);
+  assert.ok(r.partial >= 40, `edges have in-between shades (${r.partial} partial pixels)`);
+  await ctx.close();
+});
+
+test('dashed and dotted line styles and the stabiliser are set per brush and saved', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.canvas.set_paper('plain');
+    const pick = (style) => {
+      document.getElementById('btn-stroke').click();
+      document.querySelector(`#stroke-pop [data-style="${style}"]`).click();
+    };
+    const runs = (y) => {
+      let n = 0, prev = false;
+      for (let x = 200; x <= 700; x++) {
+        const [r, g, b] = bedrock.canvas.pixel_at(x, y);
+        const on = r + g + b < 600; // the marker is blue, so not "dark" ink
+        if (on && !prev) n++;
+        prev = on;
+      }
+      return n;
+    };
+    pick('dashed');
+    const stab = document.getElementById('stabilizer');
+    stab.value = 40;
+    stab.dispatchEvent(new Event('input'));
+    await t.line(200, 200, 700, 200, { pressure: 0.6 });
+    pick('dotted');
+    await t.line(200, 400, 700, 400, { pressure: 0.6 });
+    // Another brush keeps its own (solid) style.
+    document.querySelector('[data-brush="marker"]').click();
+    await t.line(200, 600, 700, 600, { pressure: 0.6 });
+    const note = JSON.parse(bedrock.canvas.export_json());
+    document.querySelector('[data-brush="pen"]').click();
+    document.getElementById('btn-stroke').click();
+    const remembered = document.querySelector('#stroke-pop [aria-checked="true"]').dataset.style;
+    return {
+      dashes: runs(200), dots: runs(400), solid: runs(600),
+      brushes: note.strokes.map((s) => [s.brush.style ?? 'solid', s.brush.stabilizer ?? 0]),
+      remembered, stabLabel: document.getElementById('stabilizer-value').textContent,
+    };
+  });
+  assert.ok(r.dashes >= 10, `dashed line has gaps (${r.dashes} dashes)`);
+  assert.ok(r.dots > r.dashes, `dotted line has more, shorter pieces (${r.dots} dots)`);
+  assert.equal(r.solid, 1);
+  assert.deepEqual(r.brushes, [['dashed', 0.4], ['dotted', 0.4], ['solid', 0]]);
+  assert.equal(r.remembered, 'dotted');
+  assert.equal(r.stabLabel, '40%');
   await ctx.close();
 });
 

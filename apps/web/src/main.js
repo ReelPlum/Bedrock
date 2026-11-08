@@ -229,7 +229,7 @@ async function main() {
   }
 
   // ----- toolbar -------------------------------------------------------------
-  const toolButtons = [...document.querySelectorAll('.tool')];
+  const toolButtons = [...document.querySelectorAll('.tool[data-brush], .tool[data-tool]')];
   const colorsEl = $('colors');
 
   function currentBrush() {
@@ -241,6 +241,7 @@ async function main() {
     canvas.set_tool(erasing ? settings.eraserMode : 'draw');
     const b = currentBrush();
     canvas.set_brush(settings.brush, b.color, b.size);
+    canvas.set_brush_style(b.style || 'solid', (b.stabilizer || 0) / 100);
     canvas.set_eraser_size(settings.eraserSize);
     for (const btn of toolButtons) {
       const on = erasing ? btn.dataset.tool === 'eraser' : btn.dataset.brush === settings.brush;
@@ -274,7 +275,45 @@ async function main() {
     const dot = $('size-dot');
     dot.style.setProperty('--d', `${Math.max(3, Math.min(22, size))}px`);
     dot.style.setProperty('--c', erasing ? '#bbb' : b.color);
+    renderStrokePop();
   }
+
+  // ----- line style + stabiliser popover (per brush) ---------------------------
+  const strokePop = $('stroke-pop');
+  function stabilizerLabel(v) {
+    return v ? `${v}%` : 'Off';
+  }
+  function renderStrokePop() {
+    const b = currentBrush();
+    $('stroke-brush').textContent = settings.brush;
+    for (const btn of strokePop.querySelectorAll('[data-style]')) {
+      btn.setAttribute('aria-checked', String(btn.dataset.style === (b.style || 'solid')));
+    }
+    $('stabilizer').value = b.stabilizer || 0;
+    $('stabilizer-value').textContent = stabilizerLabel(b.stabilizer || 0);
+  }
+  function setStrokePop(open) {
+    strokePop.hidden = !open;
+    $('btn-stroke').setAttribute('aria-expanded', String(open));
+    if (open) renderStrokePop();
+  }
+  $('btn-stroke').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (settings.tool !== 'draw') { settings.tool = 'draw'; saveSettings(); applyTool(); }
+    setStrokePop(strokePop.hidden);
+  });
+  for (const btn of strokePop.querySelectorAll('[data-style]')) {
+    btn.addEventListener('click', () => {
+      currentBrush().style = btn.dataset.style;
+      saveSettings();
+      applyTool();
+    });
+  }
+  $('stabilizer').addEventListener('input', (e) => {
+    currentBrush().stabilizer = parseInt(e.target.value, 10) || 0;
+    saveSettings();
+    applyTool();
+  });
 
   for (const btn of toolButtons) {
     btn.addEventListener('click', () => {
@@ -330,6 +369,7 @@ async function main() {
   };
   document.addEventListener('pointerdown', (e) => {
     if (!menu.contains(e.target) && e.target !== $('btn-menu')) menu.hidden = true;
+    if (!strokePop.hidden && !strokePop.contains(e.target) && !$('btn-stroke').contains(e.target)) setStrokePop(false);
     if (!$('library').contains(e.target) && !$('btn-library').contains(e.target)) $('library').hidden = true;
   });
 

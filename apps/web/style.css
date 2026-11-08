@@ -25,7 +25,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 svg .fill { fill: currentColor; }
 svg circle { fill: currentColor; stroke: none; }
 
-.topbar, .toolbar, .menu, .library {
+.topbar, .toolbar, .menu, .library, .popover {
   position: fixed; background: var(--chrome); border: 1px solid var(--chrome-border);
   box-shadow: var(--shadow); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
 }
@@ -71,7 +71,22 @@ svg circle { fill: currentColor; stroke: none; }
   top: calc(max(10px, env(safe-area-inset-top)) + 56px); right: max(10px, calc(50vw - 320px));
   border-radius: var(--radius); padding: 6px; min-width: 260px; display: flex; flex-direction: column;
 }
-.menu[hidden], .library[hidden] { display: none; }
+.menu[hidden], .library[hidden], .popover[hidden] { display: none; }
+.popover {
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px); left: 50%; transform: translateX(-50%);
+  width: min(300px, calc(100vw - 20px)); border-radius: var(--radius); padding: 12px; z-index: 4;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.pop-label { font-weight: 600; text-transform: capitalize; }
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: rgba(0, 0, 0, 0.05); padding: 3px; border-radius: 10px; }
+.segmented button { height: 36px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
+.segmented button[aria-checked="true"] { background: var(--ink); color: #fff; }
+.segmented svg { width: 48px; height: 12px; stroke-width: 2.5; }
+.pop-row { display: flex; justify-content: space-between; }
+.pop-row output { color: var(--muted); font-variant-numeric: tabular-nums; }
+.popover input[type="range"] { width: 100%; accent-color: var(--ink); }
+.pop-hint { margin: 0; color: var(--muted); font-size: 12px; }
+svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .menu button, .menu .row { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .menu .row { justify-content: flex-start; }
 .menu .row select { margin-left: auto; font: inherit; }

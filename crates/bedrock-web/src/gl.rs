@@ -12,22 +12,48 @@ use web_sys::{
     WebGlVertexArrayObject,
 };
 
+// Analytic antialiasing: outline vertices are pushed half a device pixel
+// outwards and coverage fades from 1 to 0 across that pixel, computed from
+// the exact distance to the stroke edge. This gives smooth ink without
+// relying on MSAA, which iOS Safari does not reliably honour.
 const INK_VS: &str = r#"#version 300 es
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
+layout(location = 2) in vec4 a_edge;      // dir.xy, edge, pad (snorm8)
+layout(location = 3) in float a_half_width;
 uniform vec2 u_scale;
 uniform vec2 u_offset;
+uniform float u_px;                       // world units per device pixel
 out vec4 v_color;
+out float v_dist;                         // signed distance from centre line, device px
+out float v_half;                         // half width, device px
+const float GROW = 0.5;
 void main() {
   v_color = a_color;
-  gl_Position = vec4(a_pos * u_scale + u_offset, 0.0, 1.0);
+  float half_px = a_half_width / u_px;
+  vec2 p = a_pos + a_edge.xy * (GROW * u_px);
+  v_dist = a_edge.z * (half_px + GROW);
+  v_half = half_px;
+  gl_Position = vec4(p * u_scale + u_offset, 0.0, 1.0);
 }"#;
 
 const INK_FS: &str = r#"#version 300 es
-precision mediump float;
+precision highp float;
 in vec4 v_color;
+in float v_dist;
+in float v_half;
 out vec4 o;
-void main() { o = vec4(v_color.rgb * v_color.a, v_color.a); }"#;
+void main() {
+  // Coverage of this pixel: 1 inside, 0.5 on the edge, 0 half a pixel out.
+  float cov = clamp(v_half - abs(v_dist) + 0.5, 0.0, 1.0);
+  // Hairlines thinner than a pixel fade instead of breaking up.
+  cov *= clamp(v_half * 2.0, 0.0, 1.0);
+  float a = v_color.a * cov;
+  if (a <= 0.002) discard;
+  // Used by the translucent pass: keep the best coverage per pixel.
+  gl_FragDepth = 1.0 - cov;
+  o = vec4(v_color.rgb * a, a);
+}"#;
 
 const PAPER_VS: &str = r#"#version 300 es
 void main() {
@@ -97,9 +123,15 @@ fn u32_bytes(v: &[u32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
+fn i8_bytes(v: &[i8]) -> &[u8] {
+    // SAFETY: i8 and u8 have the same size and alignment.
+    unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len()) }
+}
+
 struct GpuMesh {
     vao: WebGlVertexArrayObject,
-    buffers: [WebGlBuffer; 3],
+    buffers: [WebGlBuffer; 5],
+    bounds: bedrock_core::geom::Rect,
     count: i32,
     origin: Vec2,
 }
@@ -108,6 +140,7 @@ struct InkProgram {
     program: WebGlProgram,
     u_scale: Option<WebGlUniformLocation>,
     u_offset: Option<WebGlUniformLocation>,
+    u_px: Option<WebGlUniformLocation>,
 }
 
 /// Paper shader, its uniforms by name, and an empty VAO for the fullscreen triangle.
@@ -129,9 +162,11 @@ pub struct Layer {
 pub fn context(canvas: &HtmlCanvasElement, opaque: bool) -> Result<GL, JsValue> {
     let opts = js_sys::Object::new();
     let set = |k: &str, v: bool| js_sys::Reflect::set(&opts, &k.into(), &v.into());
-    set("antialias", true)?;
+    // Edges are antialiased in the shader, so every device looks the same and
+    // no MSAA memory is spent (iOS Safari often ignores it anyway).
+    set("antialias", false)?;
     set("stencil", true)?;
-    set("depth", false)?;
+    set("depth", true)?;
     set("alpha", !opaque)?;
     set("premultipliedAlpha", true)?;
     set("preserveDrawingBuffer", false)?;
@@ -151,6 +186,7 @@ impl Layer {
         let ink = InkProgram {
             u_scale: gl.get_uniform_location(&program, "u_scale"),
             u_offset: gl.get_uniform_location(&program, "u_offset"),
+            u_px: gl.get_uniform_location(&program, "u_px"),
             program,
         };
         let paper = if with_paper {
@@ -190,11 +226,21 @@ impl Layer {
 
     fn upload(&self, mesh: &ChunkMesh, usage: u32, reuse: Option<GpuMesh>) -> Option<GpuMesh> {
         let gl = &self.gl;
+        let mut bounds = bedrock_core::geom::Rect::EMPTY;
+        for p in mesh.positions.chunks(2) {
+            bounds.include(Vec2::new(p[0] as f64 + mesh.origin.x, p[1] as f64 + mesh.origin.y));
+        }
         let m = match reuse {
             Some(m) => m,
             None => {
                 let vao = gl.create_vertex_array()?;
-                let buffers = [gl.create_buffer()?, gl.create_buffer()?, gl.create_buffer()?];
+                let buffers = [
+                    gl.create_buffer()?,
+                    gl.create_buffer()?,
+                    gl.create_buffer()?,
+                    gl.create_buffer()?,
+                    gl.create_buffer()?,
+                ];
                 gl.bind_vertex_array(Some(&vao));
                 gl.bind_buffer(GL::ARRAY_BUFFER, Some(&buffers[0]));
                 gl.enable_vertex_attrib_array(0);
@@ -202,9 +248,15 @@ impl Layer {
                 gl.bind_buffer(GL::ARRAY_BUFFER, Some(&buffers[1]));
                 gl.enable_vertex_attrib_array(1);
                 gl.vertex_attrib_pointer_with_i32(1, 4, GL::UNSIGNED_BYTE, true, 0, 0);
-                gl.bind_buffer(GL::ELEMENT_ARRAY_BUFFER, Some(&buffers[2]));
+                gl.bind_buffer(GL::ARRAY_BUFFER, Some(&buffers[2]));
+                gl.enable_vertex_attrib_array(2);
+                gl.vertex_attrib_pointer_with_i32(2, 4, GL::BYTE, true, 0, 0);
+                gl.bind_buffer(GL::ARRAY_BUFFER, Some(&buffers[3]));
+                gl.enable_vertex_attrib_array(3);
+                gl.vertex_attrib_pointer_with_i32(3, 1, GL::FLOAT, false, 0, 0);
+                gl.bind_buffer(GL::ELEMENT_ARRAY_BUFFER, Some(&buffers[4]));
                 gl.bind_vertex_array(None);
-                GpuMesh { vao, buffers, count: 0, origin: Vec2::ZERO }
+                GpuMesh { vao, buffers, bounds: bedrock_core::geom::Rect::EMPTY, count: 0, origin: Vec2::ZERO }
             }
         };
         gl.bind_vertex_array(Some(&m.vao));
@@ -212,9 +264,13 @@ impl Layer {
         gl.buffer_data_with_u8_array(GL::ARRAY_BUFFER, f32_bytes(&mesh.positions), usage);
         gl.bind_buffer(GL::ARRAY_BUFFER, Some(&m.buffers[1]));
         gl.buffer_data_with_u8_array(GL::ARRAY_BUFFER, &mesh.colors, usage);
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&m.buffers[2]));
+        gl.buffer_data_with_u8_array(GL::ARRAY_BUFFER, i8_bytes(&mesh.edges), usage);
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&m.buffers[3]));
+        gl.buffer_data_with_u8_array(GL::ARRAY_BUFFER, f32_bytes(&mesh.half_widths), usage);
         gl.buffer_data_with_u8_array(GL::ELEMENT_ARRAY_BUFFER, u32_bytes(&mesh.indices), usage);
         gl.bind_vertex_array(None);
-        Some(GpuMesh { count: mesh.indices.len() as i32, origin: mesh.origin, ..m })
+        Some(GpuMesh { count: mesh.indices.len() as i32, origin: mesh.origin, bounds, ..m })
     }
 
     fn free(&self, m: GpuMesh) {
@@ -249,7 +305,7 @@ impl Layer {
         gl.blend_func(GL::ONE, GL::ONE_MINUS_SRC_ALPHA);
     }
 
-    fn draw_mesh(&mut self, m_key: Option<u64>, cam: &Camera, translucent: bool) {
+    fn draw_mesh(&mut self, m_key: Option<u64>, cam: &Camera, dpr: f64, translucent: bool) {
         let gl = &self.gl;
         let m = match m_key {
             Some(k) => self.chunks.get(&k),
@@ -267,23 +323,52 @@ impl Layer {
             ((m.origin.x - cam.offset.x) * z * 2.0 / w - 1.0) as f32,
             (1.0 - (m.origin.y - cam.offset.y) * z * 2.0 / h) as f32,
         );
+        gl.uniform1f(self.ink.u_px.as_ref(), (1.0 / (z * dpr)) as f32);
+        gl.bind_vertex_array(Some(&m.vao));
         if translucent {
-            // Blend each translucent stroke exactly once, even where it
-            // overlaps itself: write a fresh stencil value per stroke.
+            // A translucent stroke must blend exactly once per pixel, with the
+            // best (antialiased) coverage any of its triangles has there:
+            // 1) depth-only pass keeps max coverage (depth = 1 - coverage),
+            // 2) colour pass draws only that fragment, once (stencil).
+            let b = m.bounds.inflate(2.0 * z.recip());
+            let s0 = cam.world_to_screen(b.min);
+            let s1 = cam.world_to_screen(b.max);
+            let sx = ((s0.x * dpr).floor().max(0.0)) as i32;
+            let sy = (((h - s1.y) * dpr).floor().max(0.0)) as i32;
+            let sw = (((s1.x - s0.x) * dpr).ceil() + 2.0) as i32;
+            let sh = (((s1.y - s0.y) * dpr).ceil() + 2.0) as i32;
+            gl.enable(GL::SCISSOR_TEST);
+            gl.scissor(sx, sy, sw.max(1), sh.max(1));
+            gl.clear_depth(1.0);
+            gl.clear(GL::DEPTH_BUFFER_BIT);
+            gl.enable(GL::DEPTH_TEST);
+            gl.depth_mask(true);
+            gl.depth_func(GL::LESS);
+            gl.color_mask(false, false, false, false);
+            gl.disable(GL::STENCIL_TEST);
+            gl.draw_elements_with_i32(GL::TRIANGLES, m.count, GL::UNSIGNED_INT, 0);
+
             self.stencil_ref += 1;
             if self.stencil_ref > 255 {
                 gl.clear_stencil(0);
                 gl.clear(GL::STENCIL_BUFFER_BIT);
                 self.stencil_ref = 1;
             }
+            gl.color_mask(true, true, true, true);
+            gl.depth_mask(false);
+            gl.depth_func(GL::EQUAL);
             gl.enable(GL::STENCIL_TEST);
             gl.stencil_func(GL::NOTEQUAL, self.stencil_ref, 0xff);
             gl.stencil_op(GL::KEEP, GL::KEEP, GL::REPLACE);
+            gl.draw_elements_with_i32(GL::TRIANGLES, m.count, GL::UNSIGNED_INT, 0);
+            gl.disable(GL::DEPTH_TEST);
+            gl.disable(GL::STENCIL_TEST);
+            gl.disable(GL::SCISSOR_TEST);
         } else {
             gl.disable(GL::STENCIL_TEST);
+            gl.disable(GL::DEPTH_TEST);
+            gl.draw_elements_with_i32(GL::TRIANGLES, m.count, GL::UNSIGNED_INT, 0);
         }
-        gl.bind_vertex_array(Some(&m.vao));
-        gl.draw_elements_with_i32(GL::TRIANGLES, m.count, GL::UNSIGNED_INT, 0);
         gl.bind_vertex_array(None);
     }
 
@@ -292,7 +377,9 @@ impl Layer {
         gl.disable(GL::STENCIL_TEST);
         gl.clear_color(color[0], color[1], color[2], color[3]);
         gl.clear_stencil(0);
-        gl.clear(GL::COLOR_BUFFER_BIT | GL::STENCIL_BUFFER_BIT);
+        gl.clear_depth(1.0);
+        gl.disable(GL::SCISSOR_TEST);
+        gl.clear(GL::COLOR_BUFFER_BIT | GL::STENCIL_BUFFER_BIT | GL::DEPTH_BUFFER_BIT);
         self.stencil_ref = 0;
     }
 
@@ -339,20 +426,20 @@ impl Layer {
         self.draw_paper(cam, dpr, bg, paper_mode);
         self.begin_ink();
         for c in visible {
-            self.draw_mesh(Some(c.key), cam, c.translucent);
+            self.draw_mesh(Some(c.key), cam, dpr, c.translucent);
         }
         self.gl.disable(GL::STENCIL_TEST);
     }
 
     /// Overlay: transparent, with just the live stroke.
-    pub fn render_live(&mut self, cam: &Camera, mesh: Option<(&ChunkMesh, bool)>) {
+    pub fn render_live(&mut self, cam: &Camera, dpr: f64, mesh: Option<(&ChunkMesh, bool)>) {
         self.set_viewport();
         self.clear([0.0, 0.0, 0.0, 0.0]);
         let Some((mesh, translucent)) = mesh else { return };
         let reuse = self.live.take();
         self.live = self.upload(mesh, GL::DYNAMIC_DRAW, reuse);
         self.begin_ink();
-        self.draw_mesh(None, cam, translucent);
+        self.draw_mesh(None, cam, dpr, translucent);
         self.gl.disable(GL::STENCIL_TEST);
     }
 

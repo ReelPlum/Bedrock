@@ -9,7 +9,7 @@
 //!   With "finger drawing" on, one finger draws instead.
 //! * Palm rejection: while a pen is down, touches are ignored, and a pen
 //!   touching down cancels any finger gesture.
-//! * Two-finger tap = undo, three-finger tap = redo.
+//! * Two-finger double tap = undo, three-finger double tap = redo.
 
 use crate::brush::Brush;
 use crate::camera::Camera;
@@ -78,6 +78,8 @@ struct TouchGesture {
 
 pub const TAP_MAX_MS: f64 = 300.0;
 pub const TAP_MAX_MOVE: f64 = 12.0;
+/// Longest pause between the two taps of a double tap.
+pub const DOUBLE_TAP_GAP_MS: f64 = 350.0;
 
 pub struct Engine {
     pub doc: Document,
@@ -90,6 +92,8 @@ pub struct Engine {
     active: Option<Active>,
     predicted: Vec<InputPoint>,
     touch: TouchGesture,
+    /// Previous multi-finger tap: (finger count, time it ended).
+    last_tap: Option<(usize, f64)>,
     pen_down: bool,
     /// The committed scene (strokes, camera) must be redrawn.
     dirty: bool,
@@ -109,6 +113,7 @@ impl Engine {
             active: None,
             predicted: Vec::new(),
             touch: TouchGesture::default(),
+            last_tap: None,
             pen_down: false,
             dirty: true,
             live_dirty: true,
@@ -192,6 +197,7 @@ impl Engine {
             self.pen_down = true;
             // Palm rejection: a pen always wins over fingers.
             self.touch = TouchGesture::default();
+            self.last_tap = None;
             if matches!(self.active, Some(Active::Drawing { stroke: Stroke { device: InputDevice::Touch, .. }, .. })) {
                 self.active = None;
             }
@@ -293,8 +299,11 @@ impl Engine {
                 self.touch.touches.remove(&id);
             }
         }
+        // The up position is only ink if it still has contact pressure. Pens
+        // report 0 here (and often a position after lift-off), so adding it
+        // would draw a tail past where the tip left the glass.
         if let Some(s) = s {
-            if self.is_pointer_active(id) {
+            if self.is_pointer_active(id) && s.pressure > 0.0 {
                 self.pointer_move(id, kind, s);
             }
         }
@@ -407,14 +416,22 @@ impl Engine {
         if self.touch.touches.is_empty() {
             let t = std::mem::take(&mut self.touch);
             let tap = !t.cancelled && time - t.start_time <= TAP_MAX_MS && t.moved <= TAP_MAX_MOVE;
-            match (tap, t.max_touches) {
-                (true, 2) => {
+            if !tap || !(2..=3).contains(&t.max_touches) {
+                self.last_tap = None;
+                return;
+            }
+            // Undo / redo need a *double* tap, so a stray touch never undoes.
+            let double = matches!(self.last_tap, Some((n, end))
+                if n == t.max_touches && t.start_time - end <= DOUBLE_TAP_GAP_MS);
+            if double {
+                self.last_tap = None;
+                if t.max_touches == 2 {
                     self.undo();
-                }
-                (true, 3) => {
+                } else {
                     self.redo();
                 }
-                _ => {}
+            } else {
+                self.last_tap = Some((t.max_touches, time));
             }
         }
     }
@@ -461,7 +478,7 @@ impl Engine {
         }
         let mut pts = s.points.clone();
         pts.extend_from_slice(&self.predicted);
-        Some(tessellate::mesh_from_samples(&tessellate::samples_for(s, &pts)))
+        Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &pts)))
     }
 }
 
@@ -518,6 +535,18 @@ mod tests {
         assert!(e.doc.strokes()[0].points.iter().all(|p| p.x <= 10.0));
     }
 
+    /// Regression: lifting the pencil drew a short line to where the tip
+    /// was when the (late) pointerup arrived.
+    #[test]
+    fn pen_up_position_after_lift_is_not_ink() {
+        let mut e = eng();
+        e.pointer_down(1, PointerKind::Pen, ScreenSample::new(0.0, 0.0, 0.5, 0.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(50.0, 0.0, 0.5, 4.0));
+        e.pointer_up(1, PointerKind::Pen, Some(ScreenSample::new(80.0, 0.0, 0.0, 30.0)));
+        let s = &e.doc.strokes()[0];
+        assert_eq!(s.points.last().unwrap().x, 50.0);
+    }
+
     #[test]
     fn jitter_is_filtered() {
         let mut e = eng();
@@ -564,30 +593,59 @@ mod tests {
         assert!(e.doc.is_empty());
     }
 
-    #[test]
-    fn two_finger_tap_undoes() {
-        let mut e = eng();
-        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
-        assert_eq!(e.doc.len(), 1);
-        e.pointer_down(7, PointerKind::Touch, ScreenSample::new(300.0, 300.0, 0.0, 1000.0));
-        e.pointer_down(8, PointerKind::Touch, ScreenSample::new(360.0, 300.0, 0.0, 1010.0));
-        e.pointer_up(7, PointerKind::Touch, Some(ScreenSample::new(300.0, 300.0, 0.0, 1100.0)));
-        e.pointer_up(8, PointerKind::Touch, Some(ScreenSample::new(360.0, 300.0, 0.0, 1110.0)));
-        assert!(e.doc.is_empty());
+    fn tap(e: &mut Engine, fingers: i32, t0: f64) {
+        for i in 0..fingers {
+            e.pointer_down(
+                10 + i,
+                PointerKind::Touch,
+                ScreenSample::new(300.0 + i as f64 * 50.0, 300.0, 0.0, t0 + i as f64),
+            );
+        }
+        for i in 0..fingers {
+            e.pointer_up(
+                10 + i,
+                PointerKind::Touch,
+                Some(ScreenSample::new(300.0 + i as f64 * 50.0, 300.0, 0.0, t0 + 80.0)),
+            );
+        }
     }
 
     #[test]
-    fn three_finger_tap_redoes() {
+    fn two_finger_double_tap_undoes() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        tap(&mut e, 2, 1000.0);
+        assert_eq!(e.doc.len(), 1, "a single two-finger tap does nothing");
+        tap(&mut e, 2, 1200.0);
+        assert!(e.doc.is_empty(), "the second tap undoes");
+    }
+
+    #[test]
+    fn two_finger_taps_too_far_apart_do_not_undo() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        tap(&mut e, 2, 1000.0);
+        tap(&mut e, 2, 2000.0);
+        assert_eq!(e.doc.len(), 1);
+    }
+
+    #[test]
+    fn three_finger_double_tap_redoes() {
         let mut e = eng();
         draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
         e.undo();
+        tap(&mut e, 3, 1000.0);
         assert!(e.doc.is_empty());
-        for (i, x) in [300.0, 350.0, 400.0].iter().enumerate() {
-            e.pointer_down(10 + i as i32, PointerKind::Touch, ScreenSample::new(*x, 300.0, 0.0, 1000.0 + i as f64));
-        }
-        for (i, x) in [300.0, 350.0, 400.0].iter().enumerate() {
-            e.pointer_up(10 + i as i32, PointerKind::Touch, Some(ScreenSample::new(*x, 300.0, 0.0, 1100.0)));
-        }
+        tap(&mut e, 3, 1150.0);
+        assert_eq!(e.doc.len(), 1);
+    }
+
+    #[test]
+    fn mixed_taps_do_not_count_as_double() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        tap(&mut e, 3, 1000.0);
+        tap(&mut e, 2, 1150.0);
         assert_eq!(e.doc.len(), 1);
     }
 
@@ -595,10 +653,12 @@ mod tests {
     fn slow_two_finger_hold_does_not_undo() {
         let mut e = eng();
         draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
-        e.pointer_down(7, PointerKind::Touch, ScreenSample::new(300.0, 300.0, 0.0, 1000.0));
-        e.pointer_down(8, PointerKind::Touch, ScreenSample::new(360.0, 300.0, 0.0, 1010.0));
-        e.pointer_up(7, PointerKind::Touch, Some(ScreenSample::new(300.0, 300.0, 0.0, 1900.0)));
-        e.pointer_up(8, PointerKind::Touch, Some(ScreenSample::new(360.0, 300.0, 0.0, 1910.0)));
+        for t0 in [1000.0, 2000.0] {
+            e.pointer_down(7, PointerKind::Touch, ScreenSample::new(300.0, 300.0, 0.0, t0));
+            e.pointer_down(8, PointerKind::Touch, ScreenSample::new(360.0, 300.0, 0.0, t0 + 10.0));
+            e.pointer_up(7, PointerKind::Touch, Some(ScreenSample::new(300.0, 300.0, 0.0, t0 + 900.0)));
+            e.pointer_up(8, PointerKind::Touch, Some(ScreenSample::new(360.0, 300.0, 0.0, t0 + 910.0)));
+        }
         assert_eq!(e.doc.len(), 1);
     }
 

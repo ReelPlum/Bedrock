@@ -41,7 +41,9 @@
           "properties": {
             "kind": { "enum": ["pen", "pencil", "fountain", "marker", "highlighter"] },
             "color": { "$ref": "#/$defs/color" },
-            "size": { "type": "number", "exclusiveMinimum": 0 }
+            "size": { "type": "number", "exclusiveMinimum": 0 },
+            "style": { "enum": ["solid", "dashed", "dotted"], "default": "solid" },
+            "stabilizer": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
           }
         },
         "device": { "enum": ["pen", "mouse", "touch"] },

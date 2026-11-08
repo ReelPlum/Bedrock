@@ -24,13 +24,24 @@ const BOUNDARY_EVERY: u64 = 48;
 /// Keep vertex coordinates small for `f32` precision.
 const MAX_ORIGIN_DISTANCE: f64 = 50_000.0;
 
-/// GPU-ready geometry: positions relative to `origin`, RGBA8 colour per vertex.
+/// GPU-ready geometry, one entry per vertex in each array:
+/// * `positions`: x, y relative to `origin` (f32),
+/// * `colors`: RGBA8,
+/// * `edges`: outward direction x, y and edge coordinate, as signed
+///   normalised bytes (the 4th byte is padding),
+/// * `half_widths`: stroke half width in world units (f32).
 #[derive(Debug, Clone, Default)]
 pub struct ChunkMesh {
     pub origin: Vec2,
     pub positions: Vec<f32>,
     pub colors: Vec<u8>,
+    pub edges: Vec<i8>,
+    pub half_widths: Vec<f32>,
     pub indices: Vec<u32>,
+}
+
+fn snorm(v: f32) -> i8 {
+    (v.clamp(-1.0, 1.0) * 127.0).round() as i8
 }
 
 impl ChunkMesh {
@@ -53,9 +64,11 @@ impl ChunkMesh {
         let dy = (m.origin.y - self.origin.y) as f32;
         let c = stroke.brush.color;
         for v in &m.vertices {
-            self.positions.push(v[0] + dx);
-            self.positions.push(v[1] + dy);
-            self.colors.extend_from_slice(&[c.r, c.g, c.b, (v[2].clamp(0.0, 1.0) * 255.0).round() as u8]);
+            self.positions.push(v.pos[0] + dx);
+            self.positions.push(v.pos[1] + dy);
+            self.colors.extend_from_slice(&[c.r, c.g, c.b, (v.alpha.clamp(0.0, 1.0) * 255.0).round() as u8]);
+            self.edges.extend_from_slice(&[snorm(v.dir[0]), snorm(v.dir[1]), snorm(v.edge), 0]);
+            self.half_widths.push(v.half_width);
         }
         self.indices.extend(m.indices.iter().map(|i| i + base));
     }
@@ -235,6 +248,8 @@ mod tests {
         assert_eq!(diff.added.len(), sc.chunk_count());
         for (_, m) in &diff.added {
             assert_eq!(m.positions.len() / 2, m.colors.len() / 4);
+            assert_eq!(m.edges.len() / 4, m.vertex_count());
+            assert_eq!(m.half_widths.len(), m.vertex_count());
             assert!(m.indices.iter().all(|&i| (i as usize) < m.vertex_count()));
         }
     }

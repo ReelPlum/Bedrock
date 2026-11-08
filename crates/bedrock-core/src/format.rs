@@ -333,13 +333,8 @@ pub fn to_svg(doc: &Document) -> String {
                 continue;
             }
             let opacity = samples.iter().map(|s| s.opacity as f64).sum::<f64>() / samples.len() as f64;
-            let outline = tessellate::outline_from_samples(&samples);
-            out.push_str(&format!(
-                "<path id=\"s{}\" d=\"{}\" fill=\"{}\"",
-                s.id,
-                path_data(&outline),
-                s.brush.color.to_hex_rgb()
-            ));
+            let d: String = tessellate::outlines(s).iter().map(|o| path_data(o)).collect();
+            out.push_str(&format!("<path id=\"s{}\" d=\"{}\" fill=\"{}\"", s.id, d, s.brush.color.to_hex_rgb()));
             if opacity < 0.999 {
                 out.push_str(&format!(" fill-opacity=\"{}\"", round(opacity, 3)));
             }

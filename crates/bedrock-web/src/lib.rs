@@ -8,7 +8,7 @@
 mod gl;
 
 pub use bedrock_core;
-use bedrock_core::brush::{Brush, BrushKind};
+use bedrock_core::brush::{Brush, BrushKind, LineStyle};
 use bedrock_core::color::Rgba;
 use bedrock_core::document::{Change, Document};
 use bedrock_core::engine::{Engine, PointerKind, ScreenSample, Tool};
@@ -181,7 +181,17 @@ impl Canvas {
     pub fn set_brush(&mut self, kind: &str, color: &str, size: f32) -> Result<(), JsValue> {
         let kind = BrushKind::from_name(kind).ok_or_else(|| JsValue::from_str("unknown brush"))?;
         let color = Rgba::parse(color).ok_or_else(|| JsValue::from_str("invalid color"))?;
-        self.engine.brush = Brush::new(kind, color, size.clamp(0.2, 200.0));
+        let (style, stabilizer) = (self.engine.brush.style, self.engine.brush.stabilizer);
+        self.engine.brush =
+            Brush::new(kind, color, size.clamp(0.2, 200.0)).with_style(style).with_stabilizer(stabilizer);
+        Ok(())
+    }
+
+    /// Line style (`solid` | `dashed` | `dotted`) and stabiliser amount (0..1)
+    /// for strokes drawn from now on. Kept across `set_brush` calls.
+    pub fn set_brush_style(&mut self, style: &str, stabilizer: f32) -> Result<(), JsValue> {
+        let style = LineStyle::from_name(style).ok_or_else(|| JsValue::from_str("unknown line style"))?;
+        self.engine.brush = self.engine.brush.with_style(style).with_stabilizer(stabilizer);
         Ok(())
     }
 
@@ -285,7 +295,7 @@ impl Canvas {
             }
             _ => None,
         };
-        self.overlay.render_live(&self.engine.camera, mesh.as_ref().map(|(m, t)| (m, *t)));
+        self.overlay.render_live(&self.engine.camera, self.dpr, mesh.as_ref().map(|(m, t)| (m, *t)));
     }
 
     /// Test hook: render everything now and read the base layer's pixel at a

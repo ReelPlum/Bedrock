@@ -4,7 +4,7 @@
 //!
 //! Both come from the same samples so screen and file look identical.
 
-use crate::brush::Footprint;
+use crate::brush::{Footprint, LineStyle};
 use crate::geom::{Rect, Vec2};
 use crate::input::InputPoint;
 use crate::stroke::Stroke;
@@ -18,12 +18,30 @@ pub struct Sample {
     pub opacity: f32,
 }
 
+/// One mesh vertex. Besides position and opacity it carries what the GPU
+/// needs for analytic antialiasing (independent of the browser's MSAA, which
+/// iOS Safari does not reliably provide):
+/// * `dir`: unit direction pointing out of the stroke at this vertex,
+/// * `edge`: 0 on the centre line, ±1 on the outline,
+/// * `half_width`: the stroke's half width here, in world units.
+///
+/// The shader pushes outline vertices half a pixel outwards along `dir` and
+/// fades coverage over that pixel, giving smooth edges at any zoom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshVertex {
+    pub pos: [f32; 2],
+    pub dir: [f32; 2],
+    pub edge: f32,
+    pub half_width: f32,
+    pub alpha: f32,
+}
+
 /// Triangle mesh in coordinates relative to `origin` (keeps `f32` precise
-/// anywhere on the infinite canvas). Vertex = `[x, y, alpha]`.
+/// anywhere on the infinite canvas).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mesh {
     pub origin: Vec2,
-    pub vertices: Vec<[f32; 3]>,
+    pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
 }
 
@@ -35,14 +53,32 @@ impl Mesh {
     pub fn bounds(&self) -> Rect {
         let mut r = Rect::EMPTY;
         for v in &self.vertices {
-            r.include(Vec2::new(v[0] as f64 + self.origin.x, v[1] as f64 + self.origin.y));
+            r.include(Vec2::new(v.pos[0] as f64 + self.origin.x, v.pos[1] as f64 + self.origin.y));
         }
         r
     }
 
-    fn vertex(&mut self, p: Vec2, alpha: f32) -> u32 {
+    /// Append another mesh (re-based onto this mesh's origin).
+    pub fn append(&mut self, other: &Mesh) {
+        if self.vertices.is_empty() {
+            self.origin = other.origin;
+        }
+        let base = self.vertices.len() as u32;
+        let dx = (other.origin.x - self.origin.x) as f32;
+        let dy = (other.origin.y - self.origin.y) as f32;
+        self.vertices.extend(other.vertices.iter().map(|v| MeshVertex { pos: [v.pos[0] + dx, v.pos[1] + dy], ..*v }));
+        self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
+    fn vertex(&mut self, p: Vec2, dir: Vec2, edge: f32, half_width: f64, alpha: f32) -> u32 {
         let i = self.vertices.len() as u32;
-        self.vertices.push([(p.x - self.origin.x) as f32, (p.y - self.origin.y) as f32, alpha]);
+        self.vertices.push(MeshVertex {
+            pos: [(p.x - self.origin.x) as f32, (p.y - self.origin.y) as f32],
+            dir: [dir.x as f32, dir.y as f32],
+            edge,
+            half_width: half_width as f32,
+            alpha,
+        });
         i
     }
 
@@ -50,11 +86,13 @@ impl Mesh {
     /// sweeping `sweep` radians.
     fn fan(&mut self, c: Vec2, r: f64, a0: f64, sweep: f64, alpha: f32) {
         let segs = circle_segments(r, sweep);
-        let center = self.vertex(c, alpha);
-        let mut prev = self.vertex(c + Vec2::new(a0.cos(), a0.sin()) * r, alpha);
+        let center = self.vertex(c, Vec2::ZERO, 0.0, r, alpha);
+        let d0 = Vec2::new(a0.cos(), a0.sin());
+        let mut prev = self.vertex(c + d0 * r, d0, 1.0, r, alpha);
         for i in 1..=segs {
             let a = a0 + sweep * i as f64 / segs as f64;
-            let v = self.vertex(c + Vec2::new(a.cos(), a.sin()) * r, alpha);
+            let d = Vec2::new(a.cos(), a.sin());
+            let v = self.vertex(c + d * r, d, 1.0, r, alpha);
             self.indices.extend_from_slice(&[center, prev, v]);
             prev = v;
         }
@@ -62,7 +100,7 @@ impl Mesh {
 }
 
 fn circle_segments(r: f64, sweep: f64) -> usize {
-    let full = (r * 3.0).clamp(8.0, 48.0);
+    let full = (r * 3.0).clamp(12.0, 48.0);
     ((full * sweep.abs() / (2.0 * PI)).ceil() as usize).max(2)
 }
 
@@ -103,6 +141,38 @@ fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f64) -> Vec2 {
         0.5 * ((2.0 * b) + (-a + c) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (-a + 3.0 * b - 3.0 * c + d) * t3)
     };
     Vec2::new(f(p0.x, p1.x, p2.x, p3.x), f(p0.y, p1.y, p2.y, p3.y))
+}
+
+/// Longest stabiliser lag (at strength 1).
+pub const MAX_STABILIZER_MS: f64 = 90.0;
+
+/// Stabiliser: the drawn point follows the pen through a time-based
+/// exponential filter (rate independent, so 60, 120 and 240 Hz input feel
+/// the same). The stroke still ends exactly where the pen lifted.
+pub fn stabilize(points: &[InputPoint], amount: f32) -> Vec<InputPoint> {
+    let tau = (amount.clamp(0.0, 1.0) as f64).powf(1.5) * MAX_STABILIZER_MS;
+    if points.len() < 3 || tau <= 0.0 {
+        return points.to_vec();
+    }
+    let mut out = Vec::with_capacity(points.len() + 1);
+    let mut s = points[0];
+    out.push(s);
+    for w in points.windows(2) {
+        let (prev, p) = (w[0], w[1]);
+        let dt = (p.t - prev.t).max(1.0);
+        let a = 1.0 - (-dt / tau).exp();
+        let mut q = p;
+        q.x = s.x + (p.x - s.x) * a;
+        q.y = s.y + (p.y - s.y) * a;
+        s = q;
+        out.push(q);
+    }
+    // Catch up with the pen so the line ends where it was lifted.
+    let last = *points.last().unwrap();
+    if s.pos().distance(last.pos()) > 1e-6 {
+        out.push(last);
+    }
+    out
 }
 
 /// Interpolated input points along a Catmull-Rom spline through `pts`.
@@ -146,8 +216,15 @@ pub fn samples(stroke: &Stroke) -> Vec<Sample> {
 /// Like [`samples`] but for an explicit point list (used for live strokes
 /// with predicted points appended).
 pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
+    let stabilized;
+    let points = if stroke.brush.stabilizer > 0.0 {
+        stabilized = stabilize(points, stroke.brush.stabilizer);
+        &stabilized[..]
+    } else {
+        points
+    };
     let smoothed = smooth(points);
-    let step = (stroke.brush.size as f64 * 0.5).clamp(0.5, 3.0);
+    let step = (stroke.brush.size as f64 * 0.35).clamp(0.35, 2.0);
     let pts = resample(&smoothed, step);
     // Drop duplicates so tangents are well defined.
     let mut dedup: Vec<InputPoint> = Vec::with_capacity(pts.len());
@@ -190,9 +267,89 @@ fn tangents(s: &[Sample]) -> Vec<Vec2> {
         .collect()
 }
 
-/// GPU mesh for a stroke.
+/// GPU mesh for a stroke (handles dashed and dotted styles).
 pub fn mesh(stroke: &Stroke) -> Mesh {
-    mesh_from_samples(&samples(stroke))
+    mesh_for(stroke, &samples(stroke))
+}
+
+/// Mesh for explicit samples of `stroke` (e.g. a live stroke with predictions).
+pub fn mesh_for(stroke: &Stroke, s: &[Sample]) -> Mesh {
+    let parts = pieces(stroke, s);
+    let mut m = Mesh { origin: s.first().map(|s| s.pos).unwrap_or_default(), ..Default::default() };
+    for p in &parts {
+        m.append(&mesh_from_samples(p));
+    }
+    m
+}
+
+/// Split the centre line into the visible pieces of its line style: one
+/// piece for solid, dashes for dashed, single-sample dots for dotted.
+pub fn pieces(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Sample>> {
+    let size = stroke.brush.size.max(0.1) as f64;
+    let (on, off) = match stroke.brush.style {
+        LineStyle::Solid => return vec![s.to_vec()],
+        LineStyle::Dashed => (size * 4.0, size * 2.5),
+        LineStyle::Dotted => (0.0, size * 2.2),
+    };
+    if s.len() < 2 {
+        return vec![s.to_vec()];
+    }
+    let period = on + off.max(0.5);
+    let mut out: Vec<Vec<Sample>> = Vec::new();
+    let mut dist = 0.0f64; // arc length at s[i]
+    let lerp = |a: &Sample, b: &Sample, t: f64| Sample {
+        pos: a.pos.lerp(b.pos, t),
+        width: a.width + (b.width - a.width) * t,
+        opacity: a.opacity + (b.opacity - a.opacity) * t as f32,
+    };
+    if on == 0.0 {
+        // Dots: one round dab every `period` along the line, starting at 0.
+        out.push(vec![s[0]]);
+        let mut next = period;
+        for w in s.windows(2) {
+            let seg = w[0].pos.distance(w[1].pos);
+            while next <= dist + seg && seg > 0.0 {
+                out.push(vec![lerp(&w[0], &w[1], (next - dist) / seg)]);
+                next += period;
+            }
+            dist += seg;
+        }
+        return out;
+    }
+    // Walk the line once, toggling between dash and gap at each boundary. The
+    // state is tracked explicitly so a boundary that lands exactly on a sample
+    // can't be counted twice or skipped by float rounding.
+    let gap = off.max(0.5);
+    let mut drawing = true;
+    let mut next = on;
+    let mut current: Vec<Sample> = vec![s[0]];
+    for w in s.windows(2) {
+        let seg = w[0].pos.distance(w[1].pos);
+        if seg <= 0.0 {
+            continue;
+        }
+        while next <= dist + seg {
+            let b = lerp(&w[0], &w[1], (next - dist) / seg);
+            if drawing {
+                current.push(b);
+                out.push(std::mem::take(&mut current));
+                next += gap;
+            } else {
+                current = vec![b];
+                next += on;
+            }
+            drawing = !drawing;
+        }
+        if drawing && current.last().is_none_or(|l| l.pos.distance(w[1].pos) > 1e-9) {
+            current.push(w[1]);
+        }
+        dist += seg;
+    }
+    if drawing && current.len() > 1 {
+        out.push(current);
+    }
+    out.retain(|p| !p.is_empty());
+    out
 }
 
 pub fn mesh_from_samples(s: &[Sample]) -> Mesh {
@@ -209,9 +366,11 @@ pub fn mesh_from_samples(s: &[Sample]) -> Mesh {
     // Body: a triangle strip between the left and right offset curves.
     let mut prev: Option<(u32, u32)> = None;
     for (i, smp) in s.iter().enumerate() {
-        let n = tan[i].perp() * (smp.width / 2.0);
-        let l = m.vertex(smp.pos + n, smp.opacity);
-        let r = m.vertex(smp.pos - n, smp.opacity);
+        let hw = smp.width / 2.0;
+        let nd = tan[i].perp();
+        let n = nd * hw;
+        let l = m.vertex(smp.pos + n, nd, 1.0, hw, smp.opacity);
+        let r = m.vertex(smp.pos - n, nd * -1.0, -1.0, hw, smp.opacity);
         if let Some((pl, pr)) = prev {
             m.indices.extend_from_slice(&[pl, pr, l, pr, r, l]);
         }
@@ -237,10 +396,16 @@ pub fn mesh_from_samples(s: &[Sample]) -> Mesh {
     m
 }
 
-/// Closed outline polygon (for SVG). Self-intersections are fine with the
-/// non-zero fill rule.
+/// Closed outline polygon (for SVG) of a solid stroke. Self-intersections
+/// are fine with the non-zero fill rule.
 pub fn outline(stroke: &Stroke) -> Vec<Vec2> {
     outline_from_samples(&samples(stroke))
+}
+
+/// Outline polygons of every visible piece (dashes / dots) of a stroke.
+pub fn outlines(stroke: &Stroke) -> Vec<Vec<Vec2>> {
+    let s = samples(stroke);
+    pieces(stroke, &s).iter().map(|p| outline_from_samples(p)).filter(|o| !o.is_empty()).collect()
 }
 
 pub fn outline_from_samples(s: &[Sample]) -> Vec<Vec2> {
@@ -297,8 +462,17 @@ mod tests {
             assert!((i as usize) < m.vertices.len(), "index out of range");
         }
         for v in &m.vertices {
-            assert!(v.iter().all(|c| c.is_finite()));
-            assert!(v[2] >= 0.0 && v[2] <= 1.0);
+            assert!(v.pos.iter().chain(&v.dir).all(|c| c.is_finite()));
+            assert!(v.alpha >= 0.0 && v.alpha <= 1.0);
+            assert!(v.half_width > 0.0);
+            assert!(v.edge.abs() <= 1.0);
+            let dl = (v.dir[0] * v.dir[0] + v.dir[1] * v.dir[1]).sqrt();
+            // Outline vertices point outwards with a unit direction; centres have none.
+            if v.edge == 0.0 {
+                assert_eq!(dl, 0.0)
+            } else {
+                assert!((dl - 1.0).abs() < 1e-3)
+            }
         }
     }
 
@@ -339,7 +513,7 @@ mod tests {
         let s = Stroke::new(StrokeId(2), Brush::default(), 0.0, InputDevice::Pen, pts);
         let m = mesh(&s);
         assert_valid(&m);
-        assert!(m.vertices.iter().all(|v| v[0].abs() < 100.0 && v[1].abs() < 100.0));
+        assert!(m.vertices.iter().all(|v| v.pos[0].abs() < 100.0 && v.pos[1].abs() < 100.0));
     }
 
     #[test]
@@ -372,6 +546,88 @@ mod tests {
         for w in r.windows(2) {
             assert!(w[0].pos().distance(w[1].pos()) <= 1.5);
         }
+    }
+
+    fn styled(style: LineStyle) -> Stroke {
+        let mut s = line(BrushKind::Pen, 41); // 200 units long
+        s.brush = s.brush.with_style(style);
+        s
+    }
+
+    #[test]
+    fn dashed_line_has_gaps() {
+        let s = styled(LineStyle::Dashed);
+        let smp = samples(&s);
+        let p = pieces(&s, &smp);
+        // size 4: dash 16 + gap 10 = 26 per period over 200 units -> 8 dashes.
+        assert_eq!(p.len(), 8, "{} dashes", p.len());
+        for d in &p {
+            let len = d.first().unwrap().pos.distance(d.last().unwrap().pos);
+            assert!(len <= 16.0 + 1e-6, "dash length {len}");
+        }
+        // Nothing is drawn in the middle of the first gap (x 16..26, minus the round caps).
+        let m = mesh(&s);
+        assert!(m.vertices.iter().all(|v| {
+            let x = v.pos[0] as f64 + m.origin.x;
+            !(19.0..23.0).contains(&x)
+        }));
+        // A dash boundary that lands exactly on a sample (x = 120) still splits there.
+        assert!(p.iter().any(|d| (d[0].pos.x - 104.0).abs() < 1e-6 && (d.last().unwrap().pos.x - 120.0).abs() < 1e-6));
+        assert_eq!(outlines(&s).len(), 8);
+    }
+
+    #[test]
+    fn dotted_line_is_evenly_spaced_dots() {
+        let s = styled(LineStyle::Dotted);
+        let p = pieces(&s, &samples(&s));
+        assert!(p.iter().all(|d| d.len() == 1));
+        // spacing 8.8 over 200 units -> 23 dots including the first.
+        assert_eq!(p.len(), 23);
+        for w in p.windows(2) {
+            assert!((w[0][0].pos.distance(w[1][0].pos) - 8.8).abs() < 0.05);
+        }
+    }
+
+    #[test]
+    fn solid_is_one_piece() {
+        let s = styled(LineStyle::Solid);
+        assert_eq!(pieces(&s, &samples(&s)).len(), 1);
+    }
+
+    #[test]
+    fn stabilizer_smooths_jitter_and_ends_at_the_pen() {
+        // A shaky horizontal line: y alternates +-2 at 240 Hz.
+        let pts: Vec<_> = (0..120)
+            .map(|i| InputPoint::new(i as f64 * 2.0, if i % 2 == 0 { 2.0 } else { -2.0 }, 0.5).at(i as f64 * 4.2))
+            .collect();
+        let shake = |p: &[InputPoint]| p.windows(2).map(|w| (w[1].y - w[0].y).abs()).sum::<f64>() / p.len() as f64;
+        let raw = shake(&pts);
+        let st = stabilize(&pts, 0.8);
+        assert!(shake(&st) < raw * 0.3, "raw {raw} stabilised {}", shake(&st));
+        assert_eq!(st.last().unwrap().pos(), pts.last().unwrap().pos());
+        assert_eq!(stabilize(&pts, 0.0), pts, "off means untouched");
+    }
+
+    #[test]
+    fn stabilizer_is_rate_independent() {
+        // The same corner drawn at 60 Hz and 240 Hz lags by about the same distance.
+        let corner = |hz: f64| -> f64 {
+            let dt = 1000.0 / hz;
+            let pts: Vec<_> = (0..(hz as usize / 2))
+                .map(|i| {
+                    let t = i as f64 * dt;
+                    let x = if t < 250.0 { t * 0.4 } else { 100.0 };
+                    let y = if t < 250.0 { 0.0 } else { (t - 250.0) * 0.4 };
+                    InputPoint::new(x, y, 0.5).at(t)
+                })
+                .collect();
+            let st = stabilize(&pts, 0.7);
+            // Distance between pen and line right after the corner.
+            let i = pts.iter().position(|p| p.t >= 300.0).unwrap();
+            pts[i].pos().distance(st[i].pos())
+        };
+        let (a, b) = (corner(60.0), corner(240.0));
+        assert!((a - b).abs() < a * 0.25, "60 Hz lag {a} vs 240 Hz lag {b}");
     }
 
     #[test]

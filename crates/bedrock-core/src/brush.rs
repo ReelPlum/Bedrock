@@ -41,17 +41,59 @@ impl BrushKind {
     }
 }
 
+/// How the line is drawn along the stroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+impl LineStyle {
+    pub fn from_name(s: &str) -> Option<LineStyle> {
+        match s {
+            "solid" => Some(LineStyle::Solid),
+            "dashed" => Some(LineStyle::Dashed),
+            "dotted" => Some(LineStyle::Dotted),
+            _ => None,
+        }
+    }
+    fn is_solid(&self) -> bool {
+        *self == LineStyle::Solid
+    }
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// Writes an f32 as the shortest decimal that reads back as the same f32
+/// (0.4, not 0.4000000059604645), so files stay readable and stable.
+fn short_f32<S: serde::Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64(v.to_string().parse::<f64>().unwrap_or(*v as f64))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Brush {
     pub kind: BrushKind,
     pub color: Rgba,
     /// Nominal width in world units at full pressure.
+    #[serde(serialize_with = "short_f32")]
     pub size: f32,
+    #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+    pub style: LineStyle,
+    /// Stabiliser strength 0..=1: how much the line lags behind the pen to
+    /// smooth out shaky hands. Applied when rendering, so the raw samples
+    /// in the file stay untouched and the setting can be changed later.
+    #[serde(default, skip_serializing_if = "is_zero", serialize_with = "short_f32")]
+    pub stabilizer: f32,
 }
 
 impl Default for Brush {
     fn default() -> Self {
-        Brush { kind: BrushKind::Pen, color: Rgba::BLACK, size: 3.0 }
+        Brush { kind: BrushKind::Pen, color: Rgba::BLACK, size: 3.0, style: LineStyle::Solid, stabilizer: 0.0 }
     }
 }
 
@@ -65,7 +107,17 @@ pub struct Footprint {
 
 impl Brush {
     pub fn new(kind: BrushKind, color: Rgba, size: f32) -> Self {
-        Brush { kind, color, size }
+        Brush { kind, color, size, ..Brush::default() }
+    }
+
+    pub fn with_style(mut self, style: LineStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn with_stabilizer(mut self, amount: f32) -> Self {
+        self.stabilizer = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+        self
     }
 
     /// Footprint for sample `p` moving in direction `dir_angle` (radians).
@@ -116,6 +168,17 @@ impl Brush {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fractional_settings_are_written_as_short_decimals() {
+        // Bug: a stabiliser of 0.4 was saved as 0.4000000059604645.
+        let b = Brush::new(BrushKind::Pen, Rgba::BLACK, 2.3).with_stabilizer(0.4).with_style(LineStyle::Dotted);
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(json.contains("\"size\":2.3,") && json.contains("\"stabilizer\":0.4"), "{json}");
+        assert!(json.contains("\"style\":\"dotted\""), "{json}");
+        let back: Brush = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, b);
+    }
+
     use super::*;
 
     fn pt(p: f32) -> InputPoint {
