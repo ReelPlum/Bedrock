@@ -580,6 +580,7 @@ test('an opened note shows its ink straight away, without touching the canvas', 
   const { page, ctx } = await openApp(env);
   // Two notes with the same number of strokes: one on the left, one on the right.
   const ids = await page.evaluate(async () => {
+    bedrock.minimap.visible = false; // only look at the canvas
     const ids = [];
     for (const x of [100, 600]) {
       await bedrock.newNote();
