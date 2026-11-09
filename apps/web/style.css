@@ -194,3 +194,21 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
   will-change: transform;
 }
 .hover-cursor.eraser { opacity: 1; box-shadow: inset 0 0 0 1.5px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9); }
+
+/* What the recogniser sees: each word's image and what was read. */
+.recognizer-view {
+  position: fixed; z-index: 2; left: calc(12px + env(safe-area-inset-left, 0px)); top: 76px; max-height: calc(100% - 172px);
+  width: min(300px, calc(100vw - 24px)); display: flex; flex-direction: column;
+  background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); -webkit-user-select: text; user-select: text;
+}
+.rv-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 14px; border-bottom: 1px solid var(--chrome-border); }
+.rv-count { color: var(--muted); font-size: 12px; margin-right: auto; }
+.rv-close { width: 32px; height: 32px; border-radius: 8px; font-size: 20px; color: var(--muted); }
+.rv-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.rv-list li { display: flex; flex-direction: column; gap: 4px; }
+.rv-list img { max-width: 100%; height: auto; max-height: 72px; align-self: flex-start; border: 1px solid var(--chrome-border); border-radius: 6px; background: #fff; }
+.rv-meta { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.rv-kind { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); flex: none; }
+.rv-text { font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-word; }
+.rv-list li.pending .rv-text { color: var(--muted); font-family: inherit; }

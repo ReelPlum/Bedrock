@@ -779,6 +779,117 @@ test('handwriting: words are recognised, misspellings get a red wavy underline, 
   await ctx.close();
 });
 
+test('the recogniser view shows each word as the recogniser sees it, with what it read or why not', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    let calls = 0;
+    hw.engine = async () => {
+      calls++;
+      if (calls === 2) throw new Error('model not loaded');
+      return { text: 'hello', engine: 'fake' };
+    };
+    bedrock.minimap.visible = false;
+    for (const x0 of [150, 350]) {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+      }
+      await t.frame();
+    }
+    const panel = document.getElementById('recognizer-view');
+    const hiddenAtStart = panel.hidden;
+    document.getElementById('show-recognizer').click();
+    await hw.run();
+    await bedrock.recognizerView.refresh();
+    const rows = [...panel.querySelectorAll('.rv-list li')];
+    const imgs = await Promise.all(rows.map(async (li) => {
+      const img = li.querySelector('img');
+      await img.decode();
+      return { w: img.naturalWidth, h: img.naturalHeight };
+    }));
+    const out = {
+      hiddenAtStart,
+      shown: !panel.hidden,
+      texts: rows.map((li) => li.querySelector('.rv-text').textContent),
+      pending: rows.map((li) => li.classList.contains('pending')),
+      imgs,
+      count: panel.querySelector('.rv-count').textContent,
+    };
+    document.getElementById('rv-close').click();
+    out.closed = panel.hidden && !document.getElementById('show-recognizer').checked;
+    return out;
+  });
+  assert.equal(r.hiddenAtStart, true);
+  assert.ok(r.shown);
+  assert.deepEqual(r.texts, ['hello', 'Failed: model not loaded']);
+  assert.deepEqual(r.pending, [false, true]);
+  assert.equal(r.count, '2 words');
+  assert.ok(r.imgs.every((i) => i.w > 40 && i.h > 40), JSON.stringify(r.imgs));
+  assert.ok(r.closed, 'closes from its button and unticks the menu');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the formula recogniser runs Pix2Text MFR on ONNX Runtime: files at the repo root, greedy decoding to LaTeX', async () => {
+  // Stand-ins: ONNX Runtime from node_modules, tiny models with the real
+  // input/output names (tests/fixtures/make-mfr.py), a tokenizer stub.
+  const { readFile } = await import('node:fs/promises');
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const asked = [];
+  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/**', async (route) => {
+    const file = new URL(route.request().url()).pathname.split('/').pop();
+    const type = file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
+    route.fulfill({ body: await readFile(new URL(`../node_modules/onnxruntime-web/dist/${file}`, import.meta.url)), contentType: type });
+  });
+  await ctx.route('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1', (route) => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export const AutoTokenizer = { from_pretrained: async (m) => ({ model: m, decode: (ids, o) => ids.map((i) => ({ 5: '\\\\frac', 6: '{a}', 7: '{b}' })[i] ?? '').join('') }) };`,
+  }));
+  await ctx.route('https://huggingface.co/**', async (route) => {
+    const url = route.request().url();
+    asked.push(url);
+    const file = url.split('/').pop();
+    route.fulfill({ body: await readFile(new URL(`./fixtures/mfr/${file}`, import.meta.url)), contentType: 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+  });
+  const { page, errors } = await openApp(env, { context: ctx });
+  if (process.env.DEBUG_MFR) {
+    page.on('console', (m) => console.log('console', m.text()));
+    page.on('worker', (w) => w.on('console', (m) => console.log('worker', m.text())));
+    ctx.on('request', (q) => console.log('req', q.url()));
+    ctx.on('requestfailed', (q) => console.log('failed', q.url(), q.failure()?.errorText));
+  }
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    const statuses = [];
+    const prev = hw.onStatus;
+    hw.onStatus = (m) => { statuses.push(m.status || `error: ${m.error}`); };
+    const c = new OffscreenCanvas(120, 80);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, 120, 80);
+    g.fillStyle = '#000'; g.fillRect(20, 38, 80, 4);
+    const image = await c.convertToBlob({ type: 'image/png' });
+    hw.engine = null;
+    const first = await hw._engine()({ kind: 'math', image });
+    const second = await hw._engine()({ kind: 'math', image });
+    hw.onStatus = prev;
+    return { first, second, statuses };
+  });
+  assert.equal(r.first.text, '\\frac{a}{b}');
+  assert.equal(r.second.text, '\\frac{a}{b}');
+  assert.match(r.first.engine, /pix2text-mfr-1\.5/);
+  assert.ok(r.statuses.includes('ready'), JSON.stringify(r.statuses));
+  assert.ok(!r.statuses.some((s) => s.startsWith('error')), JSON.stringify(r.statuses));
+  assert.deepEqual(asked.map((u) => u.replace('https://huggingface.co/', '')).sort(), [
+    'breezedeus/pix2text-mfr-1.5/resolve/main/decoder_model.onnx',
+    'breezedeus/pix2text-mfr-1.5/resolve/main/encoder_model.onnx',
+  ], 'downloads the root-level files once');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

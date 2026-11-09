@@ -125,10 +125,16 @@
     <label class="row"><input type="checkbox" id="finger-draw"> Draw with finger</label>
     <label class="row"><input type="checkbox" id="recognize"> Recognise handwriting (on this device)</label>
     <label class="row"><input type="checkbox" id="spelling"> Check spelling</label>
+    <label class="row"><input type="checkbox" id="show-recognizer"> Show what the recogniser sees</label>
     <label class="row"><input type="checkbox" id="hover-preview"> Show the tool under a hovering Pencil</label>
     <label class="row"><input type="checkbox" id="show-minimap"> Show minimap</label>
     <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
   </div>
+
+  <aside class="recognizer-view" id="recognizer-view" hidden aria-label="What the recogniser sees">
+    <div class="rv-head"><strong>Recogniser input</strong><span class="rv-count"></span><button class="rv-close" id="rv-close" aria-label="Close">×</button></div>
+    <ol class="rv-list"></ol>
+  </aside>
 
   <aside class="library" id="library" hidden aria-label="Notes">
     <div class="library-head">

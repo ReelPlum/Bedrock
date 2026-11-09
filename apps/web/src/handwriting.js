@@ -16,11 +16,13 @@ const LETTER_PX = 40; // letter height in the image sent to the recogniser
 const PAD_PX = 12;
 
 export class Handwriting {
-  constructor(canvas, marks, { onTextChanged, onStatus } = {}) {
+  constructor(canvas, marks, { onTextChanged, onStatus, onWordStatus } = {}) {
     this.canvas = canvas;
     this.marks = marks; // <canvas> above the ink for the underlines
     this.onTextChanged = onTextChanged || (() => {});
     this.onStatus = onStatus || (() => {});
+    this.onWordStatus = onWordStatus || (() => {});
+    this.status = new Map(); // word id -> 'Reading…' or the error, until it has text
     this.enabled = true;
     this.spelling = true;
     this.engine = null; // null: the built-in worker, created on first use
@@ -79,19 +81,28 @@ export class Handwriting {
 
   async _recognise(word) {
     this.inFlight.add(word.id);
+    this._setStatus(word.id, 'Reading…');
     try {
       const image = await this.render(word);
       if (!image) return;
       const { text, engine } = await this._engine()({ kind: word.kind, image, word });
       if (typeof text === 'string' && this.canvas.set_word_text(word.id, text, word.kind, engine || 'unknown', -1)) {
+        this.status.delete(word.id);
         this.onTextChanged();
       }
     } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
       this.failed.set(word.id, (this.failed.get(word.id) || 0) + 1);
-      this.onStatus({ error: String(e && e.message ? e.message : e) });
+      this._setStatus(word.id, `Failed: ${msg}`);
+      this.onStatus({ error: msg });
     } finally {
       this.inFlight.delete(word.id);
     }
+  }
+
+  _setStatus(id, text) {
+    this.status.set(id, text);
+    this.onWordStatus(id, text);
   }
 
   _engine() {

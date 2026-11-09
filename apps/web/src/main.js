@@ -2,6 +2,7 @@ import init, { Canvas, ZipBuilder, peek_title } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
 import { Handwriting } from './handwriting.js';
+import { RecognizerView } from './recognizer-view.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -104,13 +105,14 @@ async function main() {
   const hud = $('hud');
   let minimap = null;
   let handwriting = null;
+  let recognizerView = null;
   let lastRevision = -1;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
       minimap?.update();
       if (handwriting) {
         const rev = canvas.revision();
-        if (rev !== lastRevision) { lastRevision = rev; handwriting.schedule(); }
+        if (rev !== lastRevision) { lastRevision = rev; handwriting.schedule(); recognizerView?.update(); }
         handwriting.draw();
       }
       if (canvas.revision() !== savedRevision) scheduleSave();
@@ -138,7 +140,8 @@ async function main() {
   });
   let modelToastShown = false;
   handwriting = new Handwriting(canvas, $('marks'), {
-    onTextChanged: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); },
+    onTextChanged: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); },
+    onWordStatus: () => recognizerView?.update(),
     onStatus: (m) => {
       if (m.status === 'loading' && !modelToastShown) {
         modelToastShown = true;
@@ -152,6 +155,7 @@ async function main() {
   handwriting.enabled = settings.recognize;
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
+  recognizerView = new RecognizerView($('recognizer-view'), handwriting);
   const redraw = () => { canvas.redraw(); input.requestFrame(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) redraw(); });
   window.addEventListener('pageshow', redraw);
@@ -766,6 +770,9 @@ async function main() {
     if (settings.recognize) handwriting.schedule();
     saveSettings();
   });
+  $('show-recognizer').checked = false;
+  $('show-recognizer').addEventListener('change', (e) => { recognizerView.visible = e.target.checked; });
+  $('rv-close').addEventListener('click', () => { recognizerView.visible = false; $('show-recognizer').checked = false; });
   $('spelling').checked = settings.spelling;
   $('spelling').addEventListener('change', (e) => {
     settings.spelling = e.target.checked;
@@ -835,7 +842,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, handwriting, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 
