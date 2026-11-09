@@ -144,14 +144,14 @@ svg circle.ring { fill: none; stroke: currentColor; }
 .popover input[type="range"] { width: 100%; accent-color: var(--ink); }
 .pop-hint { margin: 0; color: var(--muted); font-size: 12px; }
 svg .dots { stroke-width: 3.2; stroke-linecap: round; }
-.menu button, .menu .row { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.menu button, .menu .row, .menu .menu-link { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .menu .row { justify-content: flex-start; }
 .menu .row select { margin-left: auto; font: inherit; }
 .menu .pressure-row { flex-wrap: wrap; row-gap: 4px; }
 .menu .pressure-row output { margin-left: auto; color: var(--muted, #888); font-variant-numeric: tabular-nums; }
 .menu .pressure-row input[type=range] { flex: 1 0 100%; margin: 0; }
 .menu .pressure-row .scale { flex: 1 0 100%; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted, #888); }
-.menu button:hover { background: rgba(0, 0, 0, 0.05); }
+.menu button:hover, .menu .menu-link:hover { background: rgba(0, 0, 0, 0.05); }
 .menu hr { border: 0; border-top: 1px solid var(--chrome-border); margin: 4px 0; width: 100%; }
 
 .library {
@@ -264,3 +264,4 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
 .wm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .wm-actions button { padding: 8px 12px; border-radius: 9px; font-size: 14px; }
 .wm-save { background: var(--accent); color: #fff; }
+.menu .menu-link { color: inherit; text-decoration: none; }
