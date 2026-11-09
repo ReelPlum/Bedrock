@@ -1125,6 +1125,7 @@ test('holding a word opens its menu: make it a website link (saved, underlined, 
     await t.frame();
     out.menu = !menu.hidden;
     out.title = document.getElementById('wm-word').textContent;
+    out.reading = document.getElementById('wm-reading').textContent;
     out.strokes3 = bedrock.canvas.stroke_count();
     // Make it a link; a bad address is refused first.
     document.getElementById('wm-link').click();
@@ -1163,7 +1164,8 @@ test('holding a word opens its menu: make it a website link (saved, underlined, 
   assert.equal(r.movedMenu, false);
   assert.equal(r.strokes2, r.strokes1 + 1);
   assert.ok(r.menu, 'holding still on a word opens its menu');
-  assert.equal(r.title, '“Bedrock”');
+  assert.equal(r.title, 'Handwritten word');
+  assert.equal(r.reading, 'Read as “Bedrock” · quick model', 'shows what it was read as');
   assert.equal(r.strokes3, r.strokes2, 'the hold that opened the menu left no ink');
   assert.deepEqual(r.types, ['url'], 'websites for now');
   assert.ok(r.error, 'refuses something that is not a web address');
@@ -1175,6 +1177,221 @@ test('holding a word opens its menu: make it a website link (saved, underlined, 
   assert.deepEqual(r.reopened, { target: 'https://example.com/docs', type: 'url' });
   assert.equal(r.json.length, 1);
   assert.equal(r.json[0].text, 'Bedrock');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('lasso: draw around ink to select it, drag to move it (text and link go along), hold it to make it one word, link it, delete it', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    const reads = [];
+    hw.engine = async ({ kind, word }) => { reads.push(kind); return { text: kind === 'math' ? 'x^2' : `w${word.strokes.length}`, engine: 'fake' }; };
+    bedrock.minimap.visible = false;
+    const c = bedrock.canvas;
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const word = (x0, n) => {
+      for (let k = 0; k < n; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+      }
+    };
+    word(300, 3);
+    word(420, 2); // a clear gap: two words
+    word(300, 0);
+    await t.frame();
+    await hw.run();
+    const words = () => JSON.parse(c.words_json());
+    const out = { words0: words().map((w) => w.text) };
+    const strokes0 = c.stroke_count();
+    document.querySelector('[data-tool="lasso"]').click();
+    out.checked = document.querySelector('[data-tool="lasso"]').getAttribute('aria-checked');
+    // A loop around the first word only.
+    const loop = [[285, 255], [380, 255], [385, 315], [285, 318], [282, 260]];
+    t.ev('pointerdown', 2, 'pen', ...loop[0], { pressure: 0.5 });
+    for (const p of loop.slice(1)) t.ev('pointermove', 2, 'pen', ...p, { pressure: 0.5 });
+    await t.frame();
+    const marks = document.getElementById('marks');
+    const g = marks.getContext('2d');
+    const dpr = marks.width / marks.clientWidth;
+    const blueIn = (x, y, w, h) => {
+      const d = g.getImageData(x * dpr, y * dpr, w * dpr, h * dpr).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 60 && d[i + 2] > 150 && d[i] < 140) n++;
+      return n;
+    };
+    out.loopShown = blueIn(280, 250, 110, 8);
+    t.ev('pointerup', 2, 'pen', 282, 260, { pressure: 0 });
+    await t.frame();
+    let sel = JSON.parse(c.selection_json());
+    out.selected = sel.strokes.length;
+    out.selWord = sel.word === words()[0].id;
+    out.noInk = c.stroke_count() === strokes0;
+    out.boxShown = blueIn(285, 260, 100, 50) > 0;
+    // Drag it down 100 px.
+    t.ev('pointerdown', 3, 'pen', 330, 290, { pressure: 0.5 });
+    t.ev('pointermove', 3, 'pen', 330, 340, { pressure: 0.5 });
+    t.ev('pointermove', 3, 'pen', 330, 390, { pressure: 0.5 });
+    await t.frame();
+    out.floating = JSON.stringify(Array.from(c.drag_offset()));
+    t.ev('pointerup', 3, 'pen', 330, 390, { pressure: 0 });
+    await t.frame();
+    const moved = words().find((w) => w.bounds[1] > 330);
+    out.moved = moved && { text: moved.text, top: Math.round(moved.bounds[1]) };
+    const inkIn = (y0) => {
+      let n = 0;
+      for (let x = 300; x < 360; x += 4) for (let y = y0 - 28; y < y0 + 2; y += 4) if ([...c.pixel_at(x, y)].slice(0, 3).some((v) => v < 120)) n++;
+      return n;
+    };
+    out.inkMoved = inkIn(400) > 5;
+    out.leftBehind = inkIn(300) > 0;
+    out.strokesAfterMove = c.stroke_count();
+    // Bring it back up beside the second word and select both.
+    t.ev('pointerdown', 4, 'pen', 330, 390, { pressure: 0.5 });
+    t.ev('pointermove', 4, 'pen', 330, 290, { pressure: 0.5 });
+    t.ev('pointerup', 4, 'pen', 330, 290, { pressure: 0 });
+    const both = [[285, 250], [480, 250], [480, 320], [285, 320], [283, 255]];
+    t.ev('pointerdown', 5, 'pen', ...both[0], { pressure: 0.5 });
+    for (const p of both.slice(1)) t.ev('pointermove', 5, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 5, 'pen', 283, 255, { pressure: 0 });
+    sel = JSON.parse(c.selection_json());
+    out.both = sel.strokes.length;
+    const boundsBefore = JSON.stringify(sel.bounds);
+    // Hold on the selection: its menu, and the hold moves nothing.
+    t.ev('pointerdown', 6, 'pen', 400, 290, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 6, 'pen', 400, 290, { pressure: 0 });
+    await t.frame();
+    const menu = document.getElementById('word-menu');
+    const $ = (id) => document.getElementById(id);
+    out.menu = !menu.hidden && $('wm-word').textContent;
+    out.menuButtons = ['wm-group', 'wm-ungroup', 'wm-delete', 'wm-link', 'wm-kind'].filter((id) => !$(id).hidden);
+    out.notMoved = c.stroke_count() === strokes0 && JSON.stringify(JSON.parse(c.selection_json()).bounds) === boundsBefore;
+    $('wm-group').click();
+    await hw.run();
+    out.grouped = words().map((w) => w.text);
+    // Hold again: now it's one word, so it can be linked.
+    t.ev('pointerdown', 7, 'pen', 400, 290, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 7, 'pen', 400, 290, { pressure: 0 });
+    out.menu2 = $('wm-word').textContent;
+    out.reading2 = $('wm-reading').textContent;
+    out.menuButtons2 = ['wm-group', 'wm-ungroup', 'wm-delete'].filter((id) => !$(id).hidden);
+    $('wm-link').click();
+    $('wm-link-target').value = 'example.com';
+    document.querySelector('#wm-link-form .wm-save').click();
+    out.link = words().find((w) => w.link)?.strokes.length;
+    // Saved with the note: the one word and its link.
+    await bedrock.saveNow();
+    const id = bedrock.noteId;
+    await bedrock.newNote();
+    await bedrock.openNote(id);
+    out.reopened = words().map((w) => [w.strokes.length, w.link?.target ?? null]);
+    out.groupsInFile = JSON.parse(c.export_json()).groups?.map((g) => g.length);
+    // Select it again and delete it; undo brings it back.
+    // Still the lasso after reopening (the tool is a setting).
+    if (document.querySelector('[data-tool="lasso"]').getAttribute('aria-checked') !== 'true') document.querySelector('[data-tool="lasso"]').click();
+    t.ev('pointerdown', 8, 'pen', ...both[0], { pressure: 0.5 });
+    for (const p of both.slice(1)) t.ev('pointermove', 8, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 8, 'pen', 283, 255, { pressure: 0 });
+    bedrock.wordMenu.openSelection(JSON.parse(c.selection_json()));
+    $('wm-delete').click();
+    out.deleted = c.stroke_count();
+    c.undo();
+    out.undone = c.stroke_count();
+    // Switching to the pen clears the selection.
+    t.ev('pointerdown', 9, 'pen', ...both[0], { pressure: 0.5 });
+    for (const p of both.slice(1)) t.ev('pointermove', 9, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 9, 'pen', 283, 255, { pressure: 0 });
+    document.querySelector('[data-brush="pen"]').click();
+    out.clearedOnPen = JSON.parse(c.selection_json()).strokes.length;
+    return out;
+  });
+  assert.deepEqual(r.words0, ['w3', 'w2']);
+  assert.equal(r.checked, 'true');
+  assert.ok(r.loopShown > 10, `the loop is drawn while drawing it (${r.loopShown} px)`);
+  assert.equal(r.selected, 3, 'the first word, not its neighbour');
+  assert.ok(r.selWord);
+  assert.ok(r.noInk, 'the loop is not ink');
+  assert.ok(r.boxShown, 'the selection is outlined');
+  assert.equal(r.floating, '[0,100]');
+  assert.equal(r.moved?.text, 'w3', 'the moved word keeps its text');
+  assert.ok(r.moved.top > 360, `moved down (${r.moved.top})`);
+  assert.ok(r.inkMoved, 'ink drawn where it was dropped');
+  assert.ok(!r.leftBehind, 'and not where it was');
+  assert.equal(r.strokesAfterMove, 5);
+  assert.equal(r.both, 5);
+  assert.equal(r.menu, '5 strokes selected');
+  assert.deepEqual(r.menuButtons, ['wm-group', 'wm-delete', 'wm-link', 'wm-kind']);
+  assert.ok(r.notMoved, 'holding to open the menu did not move anything');
+  assert.deepEqual(r.grouped, ['w5'], 'one word, read again');
+  assert.equal(r.menu2, 'Selected word');
+  assert.equal(r.reading2, 'Read as “w5” · quick model');
+  assert.deepEqual(r.menuButtons2, ['wm-ungroup', 'wm-delete']);
+  assert.equal(r.link, 5);
+  assert.deepEqual(r.reopened, [[5, 'https://example.com/']]);
+  assert.deepEqual(r.groupsInFile, [5]);
+  assert.equal(r.deleted, 0);
+  assert.equal(r.undone, 5);
+  assert.equal(r.clearedOnPen, 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('word menu: says when a word is still waiting to be read, and switches a word between text and maths', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    const reads = [];
+    hw.engine = async ({ kind }) => { reads.push(kind); return { text: kind === 'math' ? 'x^{2}' : 'abc', engine: kind === 'math' ? 'mfr' : 'fake' }; };
+    bedrock.minimap.visible = false;
+    for (let k = 0; k < 3; k++) {
+      const x = 300 + k * 22;
+      t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+      for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+      t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+    }
+    await t.frame();
+    const c = bedrock.canvas;
+    const $ = (id) => document.getElementById(id);
+    const word = () => JSON.parse(c.words_json())[0];
+    const out = {};
+    bedrock.wordMenu.open(word());
+    out.waiting = $('wm-reading').textContent;
+    out.kindButton = $('wm-kind').textContent;
+    bedrock.wordMenu.close();
+    await hw.run();
+    bedrock.wordMenu.open(word());
+    out.read = $('wm-reading').textContent;
+    $('wm-kind').click();
+    out.kindNow = word().kind;
+    out.textDropped = word().text;
+    await hw.run();
+    bedrock.wordMenu.open(word());
+    out.title = $('wm-word').textContent;
+    out.readMath = $('wm-reading').textContent;
+    out.kindButton2 = $('wm-kind').textContent;
+    $('wm-kind').click();
+    await hw.run();
+    out.back = [word().kind, word().text];
+    out.reads = reads;
+    out.saved = JSON.parse(c.export_json()).kinds;
+    return out;
+  });
+  assert.equal(r.waiting, 'Waiting to be read…');
+  assert.equal(r.kindButton, 'Read it as maths');
+  assert.equal(r.read, 'Read as “abc” · quick model');
+  assert.equal(r.kindNow, 'math');
+  assert.equal(r.textDropped, null, 'read again by the formula model');
+  assert.equal(r.title, 'Formula');
+  assert.equal(r.readMath, 'Read as LaTeX “x^{2}” · formula model');
+  assert.equal(r.kindButton2, 'Not maths: read it as text');
+  assert.deepEqual(r.back, ['text', 'abc']);
+  assert.deepEqual(r.reads, ['text', 'math', 'text']);
+  assert.equal(r.saved.length, 1);
+  assert.equal(r.saved[0].kind, 'text');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

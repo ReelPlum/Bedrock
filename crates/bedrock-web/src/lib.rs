@@ -55,6 +55,8 @@ pub struct Canvas {
     overlay: gl::Layer,
     css: (f64, f64),
     dpr: f64,
+    /// Geometry of the selection being dragged, built once per drag.
+    floating: Option<(Vec<bedrock_core::stroke::StrokeId>, ChunkMesh)>,
 }
 
 #[wasm_bindgen]
@@ -75,6 +77,7 @@ impl Canvas {
             overlay: gl::Layer::new(overlay, false)?,
             css: (1.0, 1.0),
             dpr: 1.0,
+            floating: None,
         })
     }
 
@@ -352,6 +355,17 @@ impl Canvas {
         ok
     }
 
+    /// The writer says a word is "text" or "math": it is read again by that
+    /// recogniser (and stays that kind as more is written onto it).
+    pub fn set_word_kind(&mut self, word_id: &str, kind: &str) -> bool {
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
+        let Some(w) = self.hw.layout(&self.engine.doc).words.iter().find(|w| w.id == id) else { return false };
+        let strokes = w.strokes.clone();
+        self.engine.doc.set_kind(&strokes, if kind == "math" { "math" } else { "text" });
+        self.engine.invalidate();
+        true
+    }
+
     /// Bounds of linked ink, flat `[x0, y0, x1, y1, ...]`, for underlining.
     pub fn link_bounds(&self) -> Vec<f64> {
         let doc = &self.engine.doc;
@@ -403,13 +417,103 @@ impl Canvas {
         self.engine.invalidate();
     }
 
-    /// `draw` | `erase-stroke` | `erase-partial`
+    /// `draw` | `erase-stroke` | `erase-partial` | `lasso`
     pub fn set_tool(&mut self, tool: &str) {
         self.engine.tool = match tool {
             "erase-stroke" => Tool::EraseStroke,
             "erase-partial" => Tool::ErasePartial,
+            "lasso" => Tool::Lasso,
             _ => Tool::Draw,
         };
+        if self.engine.tool != Tool::Lasso {
+            self.engine.clear_selection();
+        }
+    }
+
+    // ----- selection (lasso tool) ------------------------------------------
+
+    /// The selection as JSON: `{strokes, bounds: [x0, y0, x1, y1] | null,
+    /// word: id | null, grouped}`. `word` is set when the selection is
+    /// exactly one word; `grouped` when the writer made (part of) it one word.
+    pub fn selection_json(&mut self) -> String {
+        let ids = self.engine.selection();
+        let b = self.engine.selection_bounds();
+        let set: std::collections::HashSet<_> = ids.iter().copied().collect();
+        let word = if ids.is_empty() {
+            None
+        } else {
+            self.hw
+                .layout(&self.engine.doc)
+                .words
+                .iter()
+                .find(|w| w.strokes.len() == set.len() && w.strokes.iter().all(|s| set.contains(s)))
+                .map(|w| format!("{:016x}", w.id))
+        };
+        let grouped = self.engine.doc.groups.iter().any(|g| g.iter().any(|s| set.contains(s)));
+        serde_json::json!({
+            "strokes": ids.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "bounds": if ids.is_empty() { serde_json::Value::Null } else { serde_json::json!([b.min.x, b.min.y, b.max.x, b.max.y]) },
+            "word": word,
+            "grouped": grouped,
+        })
+        .to_string()
+    }
+
+    /// The selection loop being drawn, flat `[x, y, ...]` in world units.
+    pub fn lasso_points(&self) -> Vec<f64> {
+        self.engine.lasso().map(|p| p.iter().flat_map(|v| [v.x, v.y]).collect()).unwrap_or_default()
+    }
+
+    /// `[dx, dy]` (world) while the selection is being dragged, else `[]`.
+    pub fn drag_offset(&self) -> Vec<f64> {
+        self.engine.drag_offset().map(|d| vec![d.x, d.y]).unwrap_or_default()
+    }
+
+    /// Select the strokes of a word (e.g. from a menu). False if it is gone.
+    pub fn select_word(&mut self, word_id: &str) -> bool {
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
+        let Some(w) = self.hw.layout(&self.engine.doc).words.iter().find(|w| w.id == id) else { return false };
+        let ids = w.strokes.clone();
+        self.engine.select(ids);
+        true
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.engine.clear_selection();
+    }
+
+    /// Delete the selected strokes (one undo step).
+    pub fn delete_selection(&mut self) -> bool {
+        self.engine.delete_selection()
+    }
+
+    /// Make the selection one word. Returns the word's id ("" if nothing is
+    /// selected).
+    pub fn group_selection(&mut self) -> String {
+        let ids = self.engine.selection();
+        if ids.is_empty() {
+            return String::new();
+        }
+        self.engine.doc.group(&ids);
+        self.engine.invalidate();
+        let set: std::collections::HashSet<_> = ids.iter().copied().collect();
+        self.hw
+            .layout(&self.engine.doc)
+            .words
+            .iter()
+            .find(|w| w.strokes.len() == set.len() && w.strokes.iter().all(|s| set.contains(s)))
+            .map(|w| format!("{:016x}", w.id))
+            .unwrap_or_default()
+    }
+
+    /// Let the automatic word splitting handle the selection again.
+    pub fn ungroup_selection(&mut self) -> bool {
+        let ids = self.engine.selection();
+        let ok = self.engine.doc.ungroup(&ids);
+        if ok {
+            self.engine.invalidate();
+        }
+        ok
     }
 
     pub fn set_eraser_size(&mut self, css_px: f64) {
@@ -476,7 +580,7 @@ impl Canvas {
     }
 
     fn render_scene(&mut self) {
-        let diff = self.scene.sync(&self.engine.doc);
+        let diff = self.scene.sync_hiding(&self.engine.doc, self.engine.floating());
         for k in diff.removed {
             self.base.remove_chunk(k);
         }
@@ -495,6 +599,25 @@ impl Canvas {
     }
 
     fn render_live(&mut self) {
+        if let Some(delta) = self.engine.drag_offset() {
+            // The dragged selection: tessellated once, then drawn shifted
+            // by moving the camera the other way.
+            let ids = self.engine.floating().to_vec();
+            if self.floating.as_ref().is_none_or(|(k, _)| *k != ids) {
+                let mut cm = ChunkMesh::default();
+                for s in self.engine.doc.strokes().iter().filter(|s| ids.contains(&s.id)) {
+                    let m = bedrock_core::tessellate::mesh_for(s, &bedrock_core::tessellate::samples_for(s, &s.points));
+                    cm.append_mesh(&m, s);
+                }
+                self.floating = Some((ids, cm));
+            }
+            let mut cam = self.engine.camera;
+            cam.offset = cam.offset - delta;
+            let mesh = self.floating.as_ref().map(|(_, m)| m);
+            self.overlay.render_live(&cam, self.dpr, mesh);
+            return;
+        }
+        self.floating = None;
         let mesh = match (self.engine.live_mesh(), self.engine.live_stroke()) {
             (Some(m), Some(s)) => {
                 let mut cm = ChunkMesh::default();

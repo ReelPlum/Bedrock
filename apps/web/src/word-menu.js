@@ -1,14 +1,20 @@
 // Hold a handwritten word to open its menu: make it a link (or open or
-// remove one), or correct what the recogniser read.
+// remove one), or correct what the recogniser read. Holding a lasso
+// selection opens the same menu for the selected ink, which can also be
+// made one word (whatever the automatic word splitting thinks) or deleted;
+// linking or correcting a selection makes it one word first.
 
 import { LINK_TYPES, linkType } from './links.js';
 
 export class WordMenu {
-  constructor(el, canvas, stage, { onChange } = {}) {
+  /** `describe(word)` says what the recogniser made of a word, e.g.
+   *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
+  constructor(el, canvas, stage, { onChange, describe } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
+    this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
     const $ = (id) => el.querySelector(`#${id}`);
     this.$ = $;
@@ -23,12 +29,32 @@ export class WordMenu {
       if (l) linkType(l.type)?.open(l.target);
       this.close();
     });
-    $('wm-link').addEventListener('click', () => this._show('link'));
+    $('wm-link').addEventListener('click', () => { if (this._ensureWord()) this._show('link'); });
     $('wm-unlink').addEventListener('click', () => {
       if (this.word && this.canvas.set_word_link(this.word.id, '', '')) this.onChange();
       this.close();
     });
-    $('wm-correct').addEventListener('click', () => this._show('correct'));
+    $('wm-correct').addEventListener('click', () => { if (this._ensureWord()) this._show('correct'); });
+    // Wrongly taken for maths, or maths taken for text: read it again with
+    // the other recogniser.
+    $('wm-kind').addEventListener('click', () => {
+      if (!this._ensureWord()) return;
+      const kind = this.word.kind === 'math' ? 'text' : 'math';
+      if (this.canvas.set_word_kind(this.word.id, kind)) this.onChange();
+      this.close();
+    });
+    $('wm-group').addEventListener('click', () => {
+      this._ensureWord();
+      this.close();
+    });
+    $('wm-ungroup').addEventListener('click', () => {
+      if (this.canvas.ungroup_selection()) this.onChange();
+      this.close();
+    });
+    $('wm-delete').addEventListener('click', () => {
+      if (this.canvas.delete_selection()) this.onChange();
+      this.close();
+    });
     for (const b of el.querySelectorAll('.wm-cancel')) b.addEventListener('click', () => this._show('main'));
     $('wm-link-form').addEventListener('submit', (e) => { e.preventDefault(); this._saveLink(); });
     $('wm-correct-form').addEventListener('submit', (e) => { e.preventDefault(); this._saveText(); });
@@ -59,6 +85,45 @@ export class WordMenu {
     return best;
   }
 
+  /** Open the menu for the lasso selection, if a stage position is on it.
+   *  True if it opened. */
+  openSelectionAt(x, y) {
+    const sel = JSON.parse(this.canvas.selection_json());
+    if (!sel.bounds) return false;
+    const [ox, oy, zoom] = this.canvas.camera();
+    const wx = x / zoom + ox;
+    const wy = y / zoom + oy;
+    const pad = 12 / zoom; // as the core's grab area
+    const [x0, y0, x1, y1] = sel.bounds;
+    if (wx < x0 - pad || wx > x1 + pad || wy < y0 - pad || wy > y1 + pad) return false;
+    this.openSelection(sel);
+    return true;
+  }
+
+  /** Open the menu for a selection (from `canvas.selection_json()`). */
+  openSelection(sel) {
+    const word = sel.word && this._wordById(sel.word);
+    this.open(word || { id: null, bounds: sel.bounds, kind: 'text', text: null, link: null }, sel);
+  }
+
+  _wordById(id) {
+    return JSON.parse(this.canvas.words_json()).find((w) => w.id === id) || null;
+  }
+
+  /** A selection that isn't one word yet becomes one. False if it can't. */
+  _ensureWord() {
+    if (!this.word) return false;
+    if (this.selection && (this.word.id == null || !this.selection.grouped)) {
+      const id = this.canvas.group_selection();
+      const w = id && this._wordById(id);
+      if (!w) return false;
+      this.word = w;
+      this.selection = { ...this.selection, word: id, grouped: true };
+      this.onChange();
+    }
+    return this.word.id != null;
+  }
+
   /** Open the menu for the word at a stage position. True if there was one. */
   openAt(x, y) {
     const w = this.wordAt(x, y);
@@ -67,10 +132,30 @@ export class WordMenu {
     return true;
   }
 
-  open(word) {
+  open(word, selection = null) {
     this.word = word;
+    this.selection = selection;
     const $ = this.$;
-    $('wm-word').textContent = word.text ? `“${word.text}”` : 'Handwritten word';
+    const n = selection?.strokes.length || 0;
+    const maths = word.kind === 'math';
+    $('wm-word').textContent = word.id == null ? `${n} stroke${n === 1 ? '' : 's'} selected`
+      : maths ? (selection ? 'Selected formula' : 'Formula') : selection ? 'Selected word' : 'Handwritten word';
+    const reading = $('wm-reading');
+    reading.replaceChildren();
+    if (word.id != null) {
+      const d = this.describe(word);
+      if (d.text != null) {
+        reading.append(maths ? 'Read as LaTeX ' : 'Read as ', Object.assign(document.createElement('b'), { textContent: d.text === '' ? '(nothing)' : `“${d.text}”` }));
+        if (d.by) reading.append(` · ${d.by}`);
+      } else {
+        reading.textContent = d.waiting;
+      }
+    }
+    reading.hidden = word.id == null;
+    $('wm-kind').textContent = maths ? 'Not maths: read it as text' : 'Read it as maths';
+    $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
+    $('wm-ungroup').hidden = !selection?.grouped;
+    $('wm-delete').hidden = !selection;
     const l = word.link;
     const type = l && linkType(l.type);
     $('wm-link-now').hidden = !l;
@@ -86,6 +171,7 @@ export class WordMenu {
   close() {
     this.el.hidden = true;
     this.word = null;
+    this.selection = null;
     if (document.activeElement && this.el.contains(document.activeElement)) document.activeElement.blur();
   }
 

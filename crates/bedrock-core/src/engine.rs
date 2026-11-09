@@ -15,9 +15,10 @@ use crate::brush::Brush;
 use crate::camera::Camera;
 use crate::document::Document;
 use crate::eraser;
-use crate::geom::Vec2;
+use crate::geom::{Rect, Vec2};
 use crate::input::InputPoint;
-use crate::stroke::{InputDevice, Stroke};
+use crate::selection;
+use crate::stroke::{InputDevice, Stroke, StrokeId};
 use crate::tessellate::{self, Mesh};
 use std::collections::BTreeMap;
 
@@ -37,6 +38,9 @@ pub enum Tool {
     EraseStroke,
     /// Cut away only what the eraser touches.
     ErasePartial,
+    /// Draw a loop around strokes to select them; drag the selection to
+    /// move it.
+    Lasso,
 }
 
 /// One sample as delivered by the platform, in screen space.
@@ -62,8 +66,29 @@ impl ScreenSample {
 
 #[derive(Debug)]
 enum Active {
-    Drawing { pointer: i32, stroke: Stroke, last_screen: Vec2 },
-    Erasing { pointer: i32, last_world: Vec2, partial: bool },
+    Drawing {
+        pointer: i32,
+        stroke: Stroke,
+        last_screen: Vec2,
+    },
+    Erasing {
+        pointer: i32,
+        last_world: Vec2,
+        partial: bool,
+    },
+    /// Drawing a selection loop (world coordinates).
+    Lassoing {
+        pointer: i32,
+        points: Vec<Vec2>,
+        last_screen: Vec2,
+    },
+    /// Dragging the selection: it is drawn `delta` away from where it is
+    /// and moved there on release.
+    Moving {
+        pointer: i32,
+        start: Vec2,
+        delta: Vec2,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +114,8 @@ pub struct Engine {
     /// Eraser radius in screen pixels.
     pub eraser_size: f64,
     pub finger_drawing: bool,
+    /// Selected strokes (lasso tool), in stacking order.
+    selection: Vec<StrokeId>,
     active: Option<Active>,
     predicted: Vec<InputPoint>,
     touch: TouchGesture,
@@ -110,6 +137,7 @@ impl Engine {
             tool: Tool::Draw,
             eraser_size: 12.0,
             finger_drawing: false,
+            selection: Vec::new(),
             active: None,
             predicted: Vec::new(),
             touch: TouchGesture::default(),
@@ -155,6 +183,7 @@ impl Engine {
     /// Replace the document (e.g. after opening a file) and frame its content.
     pub fn set_document(&mut self, doc: Document) {
         self.active = None;
+        self.selection.clear();
         self.predicted.clear();
         self.doc = doc;
         let b = self.doc.bounds();
@@ -217,8 +246,11 @@ impl Engine {
         if !self.draws(kind) || self.active.is_some() {
             return;
         }
-        let tool =
-            if kind == PointerKind::PenEraser && self.tool == Tool::Draw { Tool::EraseStroke } else { self.tool };
+        let tool = if kind == PointerKind::PenEraser && matches!(self.tool, Tool::Draw | Tool::Lasso) {
+            Tool::EraseStroke
+        } else {
+            self.tool
+        };
         match tool {
             Tool::Draw => {
                 let id_ = self.doc.next_id();
@@ -226,6 +258,18 @@ impl Engine {
                 stroke.input_scale = 1.0 / self.camera.zoom;
                 stroke.push(self.to_input(&s, s.time));
                 self.active = Some(Active::Drawing { pointer: id, stroke, last_screen: s.pos() });
+            }
+            Tool::Lasso => {
+                let w = self.camera.screen_to_world(s.pos());
+                // Grab the selection anywhere in its box (plus a finger's
+                // width of slop), otherwise start a new loop.
+                let slop = 12.0 / self.camera.zoom;
+                if !self.selection.is_empty() && self.selection_bounds().inflate(slop).contains(w) {
+                    self.active = Some(Active::Moving { pointer: id, start: w, delta: Vec2::ZERO });
+                } else {
+                    self.selection.clear();
+                    self.active = Some(Active::Lassoing { pointer: id, points: vec![w], last_screen: s.pos() });
+                }
             }
             Tool::EraseStroke | Tool::ErasePartial => {
                 self.doc.begin_group();
@@ -276,6 +320,17 @@ impl Engine {
                 self.erase_segment(from, w, partial);
                 self.dirty = true;
             }
+            Some(Active::Lassoing { pointer, points, last_screen }) if *pointer == id => {
+                if s.pos().distance(*last_screen) >= 2.0 {
+                    *last_screen = s.pos();
+                    points.push(self.camera.screen_to_world(s.pos()));
+                    self.live_dirty = true;
+                }
+            }
+            Some(Active::Moving { pointer, start, delta }) if *pointer == id => {
+                *delta = self.camera.screen_to_world(s.pos()) - *start;
+                self.live_dirty = true;
+            }
             _ => {}
         }
     }
@@ -318,6 +373,14 @@ impl Engine {
             Some(Active::Erasing { pointer, .. }) if pointer == id => {
                 self.doc.end_group();
             }
+            Some(Active::Lassoing { pointer, points, .. }) if pointer == id => {
+                self.selection = selection::strokes_in_lasso(&self.doc, &points);
+            }
+            Some(Active::Moving { pointer, delta, .. }) if pointer == id => {
+                if delta.length() > 0.0 {
+                    self.selection = self.doc.translate(&self.selection, delta);
+                }
+            }
             other => self.active = other,
         }
         self.predicted.clear();
@@ -343,7 +406,10 @@ impl Engine {
 
     fn is_pointer_active(&self, id: i32) -> bool {
         match &self.active {
-            Some(Active::Drawing { pointer, .. }) | Some(Active::Erasing { pointer, .. }) => *pointer == id,
+            Some(Active::Drawing { pointer, .. })
+            | Some(Active::Erasing { pointer, .. })
+            | Some(Active::Lassoing { pointer, .. })
+            | Some(Active::Moving { pointer, .. }) => *pointer == id,
             None => false,
         }
     }
@@ -444,14 +510,82 @@ impl Engine {
 
     pub fn undo(&mut self) -> bool {
         let r = self.doc.undo();
+        if r {
+            self.selection.clear();
+        }
         self.dirty |= r;
         r
     }
 
     pub fn redo(&mut self) -> bool {
         let r = self.doc.redo();
+        if r {
+            self.selection.clear();
+        }
         self.dirty |= r;
         r
+    }
+
+    // ----- selection ---------------------------------------------------------
+
+    /// The selected strokes that still exist, in stacking order.
+    pub fn selection(&self) -> Vec<StrokeId> {
+        self.selection.iter().copied().filter(|id| self.doc.find(*id).is_some()).collect()
+    }
+
+    pub fn select(&mut self, ids: Vec<StrokeId>) {
+        self.selection = ids;
+        self.dirty = true;
+    }
+
+    pub fn clear_selection(&mut self) {
+        if !self.selection.is_empty() {
+            self.selection.clear();
+            self.dirty = true;
+        }
+    }
+
+    /// Ink bounds of the selection (world), empty if nothing is selected.
+    pub fn selection_bounds(&self) -> Rect {
+        selection::bounds(&self.doc, &self.selection)
+    }
+
+    /// The selection loop being drawn (world coordinates).
+    pub fn lasso(&self) -> Option<&[Vec2]> {
+        match &self.active {
+            Some(Active::Lassoing { points, .. }) => Some(points),
+            _ => None,
+        }
+    }
+
+    /// How far the selection is being dragged (world), while it is.
+    pub fn drag_offset(&self) -> Option<Vec2> {
+        match &self.active {
+            Some(Active::Moving { delta, .. }) => Some(*delta),
+            _ => None,
+        }
+    }
+
+    /// Strokes the base layer must leave out right now: the selection while
+    /// it is dragged (it is drawn on the live layer instead).
+    pub fn floating(&self) -> &[StrokeId] {
+        if self.drag_offset().is_some() {
+            &self.selection
+        } else {
+            &[]
+        }
+    }
+
+    /// Delete the selected strokes (one undo step).
+    pub fn delete_selection(&mut self) -> bool {
+        let ids = self.selection();
+        self.selection.clear();
+        if ids.is_empty() {
+            return false;
+        }
+        self.doc.replace(&ids, vec![]);
+        self.dirty = true;
+        true
     }
 
     pub fn pan(&mut self, dx: f64, dy: f64) {
@@ -755,6 +889,84 @@ mod tests {
         assert!(!e.needs_scene_render());
         e.pointer_up(1, PointerKind::Pen, None);
         assert!(e.needs_scene_render());
+    }
+
+    fn lasso(e: &mut Engine, id: i32, pts: &[(f64, f64)], t0: f64) {
+        e.pointer_down(id, PointerKind::Pen, ScreenSample::new(pts[0].0, pts[0].1, 0.5, t0));
+        for (i, p) in pts.iter().enumerate().skip(1) {
+            e.pointer_move(id, PointerKind::Pen, ScreenSample::new(p.0, p.1, 0.5, t0 + i as f64 * 4.0));
+        }
+        e.pointer_up(id, PointerKind::Pen, None);
+    }
+
+    const AROUND_FIRST: [(f64, f64); 5] = [(-10.0, 90.0), (120.0, 90.0), (120.0, 110.0), (-10.0, 110.0), (-10.0, 92.0)];
+
+    #[test]
+    fn lasso_selects_and_drag_moves_as_one_undo_step() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 300.0), (100.0, 300.0), 100.0);
+        let (a, b) = (e.doc.strokes()[0].id, e.doc.strokes()[1].id);
+        e.tool = Tool::Lasso;
+        lasso(&mut e, 2, &AROUND_FIRST, 200.0);
+        assert_eq!(e.selection(), vec![a]);
+        assert_eq!(e.doc.len(), 2, "the loop is not ink");
+        // Drag it 50 px right, 20 down.
+        e.pointer_down(3, PointerKind::Pen, ScreenSample::new(50.0, 100.0, 0.5, 300.0));
+        e.pointer_move(3, PointerKind::Pen, ScreenSample::new(100.0, 120.0, 0.5, 310.0));
+        assert_eq!(e.drag_offset(), Some(Vec2::new(50.0, 20.0)));
+        assert_eq!(e.floating(), &[a], "drawn on the live layer while dragged");
+        e.pointer_up(3, PointerKind::Pen, None);
+        assert!(e.floating().is_empty());
+        let moved = e.selection();
+        assert_eq!(moved.len(), 1);
+        assert_ne!(moved[0], a, "moved strokes get new ids");
+        let m = e.doc.find(moved[0]).unwrap();
+        assert_eq!(m.points[0].pos(), Vec2::new(50.0, 120.0));
+        assert_eq!(e.doc.strokes()[0].id, moved[0], "keeps its place in the stacking order");
+        assert_eq!(e.doc.strokes()[1].id, b);
+        e.undo();
+        assert_eq!(e.doc.strokes()[0].id, a);
+        assert_eq!(e.doc.strokes()[0].points[0].pos(), Vec2::new(0.0, 100.0));
+        assert!(e.selection().is_empty());
+    }
+
+    #[test]
+    fn tapping_outside_the_selection_clears_it_and_a_cancelled_drag_moves_nothing() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        e.tool = Tool::Lasso;
+        lasso(&mut e, 2, &AROUND_FIRST, 100.0);
+        assert_eq!(e.selection().len(), 1);
+        e.pointer_down(3, PointerKind::Pen, ScreenSample::new(50.0, 100.0, 0.5, 300.0));
+        e.pointer_move(3, PointerKind::Pen, ScreenSample::new(90.0, 100.0, 0.5, 310.0));
+        e.pointer_cancel(3, PointerKind::Pen); // e.g. the hold that opens the menu
+        assert_eq!(e.doc.strokes()[0].points[0].pos(), Vec2::new(0.0, 100.0));
+        assert!(!e.doc.can_redo() && e.doc.strokes().len() == 1);
+        assert_eq!(e.selection().len(), 1);
+        lasso(&mut e, 4, &[(600.0, 600.0), (601.0, 601.0)], 400.0);
+        assert!(e.selection().is_empty());
+    }
+
+    #[test]
+    fn pen_eraser_end_still_erases_with_the_lasso() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (500.0, 100.0), 0.0);
+        e.tool = Tool::Lasso;
+        draw(&mut e, 2, PointerKind::PenEraser, (250.0, 50.0), (250.0, 150.0), 100.0);
+        assert!(e.doc.is_empty());
+    }
+
+    #[test]
+    fn delete_selection() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        e.tool = Tool::Lasso;
+        lasso(&mut e, 2, &AROUND_FIRST, 100.0);
+        assert!(e.delete_selection());
+        assert!(e.doc.is_empty());
+        e.undo();
+        assert_eq!(e.doc.len(), 1);
     }
 
     #[test]

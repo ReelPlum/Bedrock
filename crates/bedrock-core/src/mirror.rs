@@ -28,6 +28,14 @@ pub fn meta_only(d: &Document) -> Document {
     if !d.links.is_empty() {
         m.extra.insert("links".into(), serde_json::to_value(&d.links).expect("links serialise"));
     }
+    m.kinds = d.kinds.clone();
+    if !d.kinds.is_empty() {
+        m.extra.insert("kinds".into(), serde_json::to_value(&d.kinds).expect("kinds serialise"));
+    }
+    m.groups = d.groups.clone();
+    if !d.groups.is_empty() {
+        m.extra.insert("groups".into(), serde_json::to_value(&d.groups).expect("groups serialise"));
+    }
     m
 }
 
@@ -193,6 +201,13 @@ mod tests {
         });
         sync(&mut src, &mut m);
         assert_eq!(m.doc().links, src.links);
+        assert_eq!(format::to_json(m.doc()), format::to_json(&src));
+
+        // So do the writer's word groups.
+        let ids: Vec<_> = src.strokes().iter().take(2).map(|s| s.id).collect();
+        src.group(&ids);
+        sync(&mut src, &mut m);
+        assert_eq!(m.doc().live_groups(), vec![ids]);
         assert_eq!(format::to_json(m.doc()), format::to_json(&src));
     }
 

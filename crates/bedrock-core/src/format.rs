@@ -140,13 +140,21 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     if !links.is_empty() {
         root.insert("links".into(), serde_json::to_value(&links).expect("links serialise"));
     }
+    let kinds = doc.live_kinds();
+    if !kinds.is_empty() {
+        root.insert("kinds".into(), serde_json::to_value(&kinds).expect("kinds serialise"));
+    }
+    let groups = doc.live_groups();
+    if !groups.is_empty() {
+        root.insert("groups".into(), serde_json::to_value(&groups).expect("groups serialise"));
+    }
     for (k, v) in &doc.extra {
         root.entry(k.clone()).or_insert_with(|| v.clone());
     }
     serde_json::to_string(&Value::Object(root)).expect("json")
 }
 
-const KNOWN_KEYS: [&str; 12] = [
+const KNOWN_KEYS: [&str; 14] = [
     "format",
     "version",
     "title",
@@ -159,6 +167,8 @@ const KNOWN_KEYS: [&str; 12] = [
     "strokes",
     "recognition",
     "links",
+    "groups",
+    "kinds",
 ];
 
 /// A loaded note plus anything that had to be repaired or skipped.
@@ -282,6 +292,18 @@ pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
         match serde_json::from_value::<Vec<crate::document::Link>>(l.clone()) {
             Ok(l) => doc.links = l,
             Err(e) => warnings.push(format!("links skipped: {e}")),
+        }
+    }
+    if let Some(k) = obj.get("kinds") {
+        match serde_json::from_value::<Vec<crate::document::KindOverride>>(k.clone()) {
+            Ok(k) => doc.kinds = k,
+            Err(e) => warnings.push(format!("text or maths settings skipped: {e}")),
+        }
+    }
+    if let Some(g) = obj.get("groups") {
+        match serde_json::from_value::<Vec<Vec<StrokeId>>>(g.clone()) {
+            Ok(g) => doc.groups = g,
+            Err(e) => warnings.push(format!("word groups skipped: {e}")),
         }
     }
     for (k, v) in obj {
@@ -763,6 +785,20 @@ mod tests {
         let once = to_json(&d);
         let twice = to_json(&from_json(&once, 0).unwrap().doc);
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn word_groups_are_saved_while_their_strokes_exist() {
+        let mut d = sample_doc();
+        let ids: Vec<_> = d.strokes().iter().map(|s| s.id).collect();
+        assert!(ids.len() >= 2);
+        d.group(&ids[..2]);
+        let back = load_bytes(&to_bedrock(&d), 1).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.doc.live_groups(), vec![ids[..2].to_vec()]);
+        assert!(!back.doc.extra.contains_key("groups"));
+        d.replace(&ids[..1], vec![]);
+        assert!(!to_json(&d).contains("\"groups\""), "a group whose strokes are gone is dropped");
     }
 
     #[test]

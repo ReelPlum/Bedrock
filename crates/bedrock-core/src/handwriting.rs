@@ -123,7 +123,12 @@ impl Handwriting {
                     strokes: w.strokes.clone(),
                     bounds: w.bounds,
                     letter_height: lh,
-                    kind: if looks_like_math(doc, w, lh) { Kind::Math } else { Kind::Text },
+                    kind: match doc.kind_of(&w.strokes) {
+                        Some("math") => Kind::Math,
+                        Some(_) => Kind::Text,
+                        None if looks_like_math(doc, w, lh) => Kind::Math,
+                        None => Kind::Text,
+                    },
                     text: Self::text_for(doc, w).map(|r| r.text.clone()),
                     engine: Self::text_for(doc, w).and_then(|r| r.engine.clone()),
                     alternatives: Self::text_for(doc, w).map(|r| r.alternatives.clone()).unwrap_or_default(),
@@ -316,6 +321,36 @@ mod tests {
         assert!(hw.correct(&mut doc, w[0].id, "Bedrock!", Kind::Text));
         assert!(hw.words(&doc)[0].alternatives.contains(&"Bedrok".to_string()));
         assert!(!hw.correct(&mut doc, 12345, "x", Kind::Text), "unknown word");
+    }
+
+    #[test]
+    fn the_writer_can_say_a_word_is_maths_or_text() {
+        let mut doc = Document::new(5);
+        let x = line(&mut doc, 0.0, 100.0, 3);
+        line(&mut doc, x, 100.0, 4);
+        let mut hw = Handwriting::new();
+        let w = hw.words(&doc);
+        assert!(hw.set_text(&mut doc, w[0].id, "abc", Kind::Text, "trocr", None));
+        assert!(hw.correct(&mut doc, w[1].id, "mine", Kind::Text));
+        let r = doc.revision();
+        doc.set_kind(&w[0].strokes, "math");
+        doc.set_kind(&w[1].strokes, "math");
+        assert!(doc.revision() > r, "recognition is scheduled again");
+        let info = hw.words(&doc);
+        assert_eq!(info[0].kind, Kind::Math);
+        assert_eq!(info[0].text, None, "read again, by the formula model");
+        assert_eq!(info[1].text.as_deref(), Some("mine"), "the writer's own text stays");
+        // Writing more of the formula keeps it maths.
+        letter(&mut doc, w[0].bounds.max.x + 2.0, 100.0);
+        let info = hw.words(&doc);
+        assert_eq!(info[0].strokes.len(), w[0].strokes.len() + 1);
+        assert_eq!(info[0].kind, Kind::Math);
+        doc.set_kind(&info[0].strokes, "text");
+        assert_eq!(hw.words(&doc)[0].kind, Kind::Text);
+        assert_eq!(doc.kinds.len(), 2, "the newer say replaced the older one");
+        let back = crate::format::from_json(&crate::format::to_json(&doc), 0).unwrap();
+        assert!(back.warnings.is_empty());
+        assert_eq!(back.doc.live_kinds(), doc.live_kinds());
     }
 
     #[test]

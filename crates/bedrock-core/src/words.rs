@@ -208,14 +208,7 @@ pub fn layout(doc: &Document) -> Layout {
             }
             current.sort_unstable(); // writing order
             let ids: Vec<StrokeId> = current.iter().map(|&i| strokes[i].id).collect();
-            let mut h = 0xcbf2_9ce4_8422_2325u64;
-            for id in &ids {
-                for b in id.0.to_le_bytes() {
-                    h ^= b as u64;
-                    h = h.wrapping_mul(0x0000_0100_0000_01B3);
-                }
-            }
-            out.words.push(Word { id: h, strokes: ids, bounds: *cur_bounds, line: li });
+            out.words.push(Word { id: word_id(&ids), strokes: ids, bounds: *cur_bounds, line: li });
             current.clear();
             *cur_bounds = Rect::EMPTY;
         };
@@ -228,7 +221,63 @@ pub fn layout(doc: &Document) -> Layout {
         }
         flush(&mut current, &mut cur_bounds, &mut out);
     }
+    apply_groups(doc, &mut out);
     out
+}
+
+/// A word's id: a hash of its strokes, so it changes when they do.
+fn word_id(ids: &[StrokeId]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for id in ids {
+        for b in id.0.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    h
+}
+
+/// The writer's own words (strokes they made into one word) override the
+/// automatic split: their strokes leave the words they were put in and
+/// become one word, on the line of its first stroke.
+fn apply_groups(doc: &Document, out: &mut Layout) {
+    let groups = doc.live_groups();
+    if groups.is_empty() {
+        return;
+    }
+    let strokes = doc.strokes();
+    let index: std::collections::HashMap<StrokeId, usize> =
+        strokes.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+    let rect = |id: &StrokeId| index.get(id).map(|&i| ink_bounds(&strokes[i])).unwrap_or(Rect::EMPTY);
+    for mut g in groups {
+        g.sort_by_key(|id| index.get(id).copied().unwrap_or(usize::MAX));
+        let mine: std::collections::HashSet<StrokeId> = g.iter().copied().collect();
+        let bounds = g.iter().fold(Rect::EMPTY, |r, id| r.union(&rect(id)));
+        let line = match out
+            .words
+            .iter()
+            .find(|w| w.strokes.contains(&g[0]))
+            .or_else(|| out.words.iter().find(|w| w.strokes.iter().any(|s| mine.contains(s))))
+        {
+            Some(w) => w.line,
+            None => {
+                // Not writing the layout knew of (e.g. a drawing): a line of its own.
+                out.lines.push(Line { bounds, letter_height: bounds.height().max(1e-6) });
+                out.lines.len() - 1
+            }
+        };
+        for w in &mut out.words {
+            if w.strokes.iter().any(|s| mine.contains(s)) {
+                w.strokes.retain(|s| !mine.contains(s));
+                w.bounds = w.strokes.iter().fold(Rect::EMPTY, |r, id| r.union(&rect(id)));
+                w.id = word_id(&w.strokes);
+            }
+        }
+        out.words.retain(|w| !w.strokes.is_empty());
+        out.words.push(Word { id: word_id(&g), strokes: g, bounds, line });
+    }
+    // Reading order again: line by line, left to right.
+    out.words.sort_by(|a, b| a.line.cmp(&b.line).then(a.bounds.min.x.total_cmp(&b.bounds.min.x)));
 }
 
 /// The word containing `p`, if any (e.g. for tapping a misspelling).
@@ -281,6 +330,26 @@ mod tests {
         let want: Vec<Vec<StrokeId>> = l1.into_iter().chain(l2).collect();
         assert_eq!(got, want);
         assert!(lay.words[..3].iter().all(|w| w.line == 0) && lay.words[3..].iter().all(|w| w.line == 1));
+    }
+
+    #[test]
+    fn writers_groups_override_the_word_split() {
+        let mut doc = Document::new(1);
+        let l1 = write_line(&mut doc, 0.0, 100.0, &[3, 1, 5]);
+        let l2 = write_line(&mut doc, 0.0, 180.0, &[2]);
+        // "Make one word" of the first two words, plus the first letter of
+        // the third (a grouping the automatic split would never make).
+        let mut g: Vec<StrokeId> = l1[0].iter().chain(&l1[1]).copied().collect();
+        g.push(l1[2][0]);
+        doc.group(&g);
+        let lay = layout(&doc);
+        let got: Vec<Vec<StrokeId>> = lay.words.iter().map(|w| w.strokes.clone()).collect();
+        assert_eq!(got, vec![g.clone(), l1[2][1..].to_vec(), l2[0].clone()], "reading order kept");
+        assert_eq!(lay.words[0].line, 0);
+        assert_eq!(lay.words[2].line, 1);
+        assert!(lay.words[1].bounds.min.x > lay.words[0].bounds.max.x, "the rest of the word shrank");
+        doc.ungroup(&g);
+        assert_eq!(layout(&doc).words.len(), 4);
     }
 
     #[test]

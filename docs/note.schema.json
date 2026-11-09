@@ -38,6 +38,23 @@
           "text": { "type": "string", "description": "The linked words as recognised text" }
         }
       }
+    },
+    "groups": {
+      "description": "Strokes the writer made into one word, overriding the automatic word split",
+      "type": "array",
+      "items": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 }
+    },
+    "kinds": {
+      "description": "Strokes the writer said are text or maths; a word with any of these strokes follows it",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["strokes", "kind"],
+        "properties": {
+          "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 },
+          "kind": { "type": "string", "enum": ["text", "math"] }
+        }
+      }
     }
   },
   "additionalProperties": true,

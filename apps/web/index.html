@@ -51,6 +51,7 @@
       <button class="tool" data-brush="marker" title="Marker (4)" aria-label="Marker"><svg viewBox="0 0 24 24"><path d="m6 18 9-12 4 3-9 12H6z"/><path d="M4 21h8"/></svg></button>
       <button class="tool" data-brush="highlighter" title="Highlighter (5)" aria-label="Highlighter"><svg viewBox="0 0 24 24"><path d="m9 15 7-11 4 3-7 11z"/><path d="M9 15v4h4"/><path d="M3 21h9" class="hl"/></svg></button>
       <button class="tool" data-tool="eraser" title="Eraser (E). Whole stroke or partial in tool settings" aria-label="Eraser"><svg viewBox="0 0 24 24"><path d="m7 21-4-4L14 6l6 6-9 9z"/><path d="M7 21h13"/><path d="m9 11 6 6"/></svg><span class="badge" id="eraser-mode">S</span></button>
+      <button class="tool" data-tool="lasso" title="Select (L): draw around ink to select it, drag to move it, hold it for more" aria-label="Select"><svg viewBox="0 0 24 24"><path d="M7.5 17.2C4.8 16 3 14 3 11.5 3 7.4 7 4 12 4s9 3.4 9 7.5-4 7.5-9 7.5c-1 0-2-.1-2.9-.4" stroke-dasharray="3 2.4"/><path d="M8 15.5c-1.6.6-2 2-1.2 3s2.5 1.2 3.2.2"/><path d="M9.8 19c-.2 1-.9 1.7-1.8 2"/></svg></button>
     </div>
     <div class="sep"></div>
     <div class="colors" id="colors" role="radiogroup" aria-label="Color"></div>
@@ -141,11 +142,16 @@
   <div class="word-menu" id="word-menu" hidden role="dialog" aria-label="Word">
     <div class="wm-head"><span class="wm-word" id="wm-word"></span><button class="wm-close" id="wm-close" aria-label="Close">×</button></div>
     <div class="wm-main" id="wm-main">
+      <div class="wm-reading" id="wm-reading"></div>
       <div class="wm-link-now" id="wm-link-now" hidden></div>
       <button type="button" id="wm-open" hidden>Open link</button>
       <button type="button" id="wm-link">Make a link…</button>
       <button type="button" id="wm-unlink" hidden>Remove link</button>
       <button type="button" id="wm-correct">Correct the text…</button>
+      <button type="button" id="wm-kind">Read it as maths</button>
+      <button type="button" id="wm-group" hidden>Make it one word</button>
+      <button type="button" id="wm-ungroup" hidden>Split back into words</button>
+      <button type="button" id="wm-delete" class="wm-danger" hidden>Delete</button>
     </div>
     <form class="wm-form" id="wm-link-form" hidden novalidate>
       <select id="wm-link-type" aria-label="Link to"></select>

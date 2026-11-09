@@ -8,10 +8,10 @@
 //! handwriting recogniser can subscribe to exactly the strokes that appeared
 //! or disappeared instead of rescanning the page.
 
-use crate::geom::Rect;
+use crate::geom::{Rect, Vec2};
 use crate::stroke::{Stroke, StrokeId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -44,7 +44,9 @@ pub struct RecognizedText {
 #[derive(Debug, Clone)]
 enum Op {
     /// Strokes removed (index in the old list) and added (index in the new list).
-    Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)> },
+    /// `renamed` pairs (old id, new id) for strokes that were moved: their
+    /// recognised text, link and word grouping follow them to the new id.
+    Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)>, renamed: Vec<(StrokeId, StrokeId)> },
 }
 
 /// A link on handwriting: a group of strokes (usually one word) that points
@@ -69,6 +71,15 @@ pub struct Link {
     pub text: Option<String>,
 }
 
+/// The writer says which recogniser some ink is for ("text" or "math"),
+/// overriding the guess. A word follows the override if any of its strokes
+/// is in it, so writing more of a formula keeps it maths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KindOverride {
+    pub strokes: Vec<StrokeId>,
+    pub kind: String,
+}
+
 fn url_kind() -> String {
     "url".to_string()
 }
@@ -85,6 +96,10 @@ pub struct Document {
     strokes: Vec<Stroke>,
     pub recognition: Vec<RecognizedText>,
     pub links: Vec<Link>,
+    /// Strokes the writer made into one word (see [`Document::group`]).
+    pub groups: Vec<Vec<StrokeId>>,
+    /// Text or maths, as the writer set it (see [`Document::set_kind`]).
+    pub kinds: Vec<KindOverride>,
     /// Unknown top level fields from newer versions, written back unchanged.
     pub extra: serde_json::Map<String, serde_json::Value>,
     undo: Vec<Vec<Op>>,
@@ -123,6 +138,8 @@ impl Document {
             strokes: Vec::new(),
             recognition: Vec::new(),
             links: Vec::new(),
+            groups: Vec::new(),
+            kinds: Vec::new(),
             extra: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -200,7 +217,7 @@ impl Document {
 
     pub fn add_stroke(&mut self, stroke: Stroke) {
         let idx = self.strokes.len();
-        self.apply_and_record(Op::Replace { removed: vec![], added: vec![(idx, stroke)] });
+        self.apply_and_record(Op::Replace { removed: vec![], added: vec![(idx, stroke)], renamed: vec![] });
     }
 
     /// Remove `remove` and insert each `(parent, piece)` where its parent was
@@ -231,7 +248,119 @@ impl Document {
             added.push((new_index, piece));
             new_index += 1;
         }
-        self.apply_and_record(Op::Replace { removed, added });
+        self.apply_and_record(Op::Replace { removed, added, renamed: vec![] });
+    }
+
+    /// Move strokes by `delta`, as one undo step. Moved strokes get new ids
+    /// (so every cache keyed by id, such as the GPU chunks, sees them as new)
+    /// and keep their place in the stacking order; their recognised text,
+    /// link and word grouping move with them. Returns the new ids, in the
+    /// order of `ids` (unknown ids are skipped).
+    pub fn translate(&mut self, ids: &[StrokeId], delta: Vec2) -> Vec<StrokeId> {
+        let wanted: HashSet<StrokeId> = ids.iter().copied().collect();
+        if wanted.is_empty() || !(delta.x.is_finite() && delta.y.is_finite()) {
+            return Vec::new();
+        }
+        let mut removed = Vec::new();
+        let mut added = Vec::new();
+        let mut renamed = Vec::new();
+        let olds: Vec<(usize, Stroke)> = self
+            .strokes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| wanted.contains(&s.id))
+            .map(|(i, s)| (i, s.clone()))
+            .collect();
+        for (i, old) in olds {
+            let mut moved = old.clone();
+            moved.id = self.next_id();
+            for p in &mut moved.points {
+                p.x += delta.x;
+                p.y += delta.y;
+            }
+            moved.recompute_bounds();
+            renamed.push((old.id, moved.id));
+            removed.push((i, old));
+            added.push((i, moved));
+        }
+        if removed.is_empty() {
+            return Vec::new();
+        }
+        self.apply_and_record(Op::Replace { removed, added, renamed: renamed.clone() });
+        let map: HashMap<StrokeId, StrokeId> = renamed.into_iter().collect();
+        ids.iter().filter_map(|id| map.get(id).copied()).collect()
+    }
+
+    /// Make these strokes one word, whatever the automatic word splitting
+    /// says. Strokes leave any group they were in. Not an undo step (like
+    /// recognised text), but it is saved with the note.
+    pub fn group(&mut self, ids: &[StrokeId]) {
+        let mine: HashSet<StrokeId> = ids.iter().copied().collect();
+        if mine.is_empty() {
+            return;
+        }
+        for g in &mut self.groups {
+            g.retain(|s| !mine.contains(s));
+        }
+        self.groups.retain(|g| g.len() > 1);
+        let ordered: Vec<StrokeId> = self.strokes.iter().map(|s| s.id).filter(|id| mine.contains(id)).collect();
+        if !ordered.is_empty() {
+            self.groups.push(ordered);
+        }
+        self.revision += 1;
+    }
+
+    /// Undo [`Document::group`] for every group that shares a stroke with
+    /// `ids`: their strokes are split into words automatically again.
+    pub fn ungroup(&mut self, ids: &[StrokeId]) -> bool {
+        let mine: HashSet<StrokeId> = ids.iter().copied().collect();
+        let before = self.groups.len();
+        self.groups.retain(|g| !g.iter().any(|s| mine.contains(s)));
+        let changed = self.groups.len() != before;
+        if changed {
+            self.revision += 1;
+        }
+        changed
+    }
+
+    /// Say these strokes are `kind` ("text" or "math"), replacing any
+    /// earlier say on them. What a recogniser read for them is dropped, so
+    /// they are read again by the right one; the writer's own text stays.
+    pub fn set_kind(&mut self, ids: &[StrokeId], kind: &str) {
+        let mine: HashSet<StrokeId> = ids.iter().copied().collect();
+        if mine.is_empty() {
+            return;
+        }
+        self.kinds.retain(|k| !k.strokes.iter().any(|s| mine.contains(s)));
+        self.kinds.push(KindOverride { strokes: ids.to_vec(), kind: kind.to_string() });
+        self.recognition.retain(|r| {
+            r.engine.as_deref() == Some(crate::handwriting::USER) || !r.strokes.iter().any(|s| mine.contains(s))
+        });
+        self.revision += 1;
+    }
+
+    /// The writer's say on what kind some strokes are, if any.
+    pub fn kind_of(&self, ids: &[StrokeId]) -> Option<&str> {
+        self.kinds.iter().rev().find(|k| k.strokes.iter().any(|s| ids.contains(s))).map(|k| k.kind.as_str())
+    }
+
+    /// Kind overrides, limited to strokes that still exist (what is saved).
+    pub fn live_kinds(&self) -> Vec<KindOverride> {
+        let ids: HashSet<StrokeId> = self.strokes.iter().map(|s| s.id).collect();
+        self.kinds
+            .iter()
+            .map(|k| KindOverride {
+                strokes: k.strokes.iter().copied().filter(|s| ids.contains(s)).collect(),
+                kind: k.kind.clone(),
+            })
+            .filter(|k| !k.strokes.is_empty())
+            .collect()
+    }
+
+    /// Word groups whose strokes all still exist (what is saved).
+    pub fn live_groups(&self) -> Vec<Vec<StrokeId>> {
+        let ids: HashSet<StrokeId> = self.strokes.iter().map(|s| s.id).collect();
+        self.groups.iter().filter(|g| !g.is_empty() && g.iter().all(|s| ids.contains(s))).cloned().collect()
     }
 
     fn apply_and_record(&mut self, op: Op) {
@@ -259,8 +388,31 @@ impl Document {
     }
 
     fn apply(&mut self, op: &Op, inverse: bool) {
-        let Op::Replace { removed, added } = op;
+        let Op::Replace { removed, added, renamed } = op;
         let (take, put) = if inverse { (added, removed) } else { (removed, added) };
+        if !renamed.is_empty() {
+            let map: HashMap<StrokeId, StrokeId> =
+                renamed.iter().map(|&(a, b)| if inverse { (b, a) } else { (a, b) }).collect();
+            let rename = |v: &mut Vec<StrokeId>| {
+                for id in v.iter_mut() {
+                    if let Some(n) = map.get(id) {
+                        *id = *n;
+                    }
+                }
+            };
+            for r in &mut self.recognition {
+                rename(&mut r.strokes);
+            }
+            for l in &mut self.links {
+                rename(&mut l.strokes);
+            }
+            for g in &mut self.groups {
+                rename(g);
+            }
+            for k in &mut self.kinds {
+                rename(&mut k.strokes);
+            }
+        }
         for (i, s) in take.iter().rev() {
             debug_assert_eq!(self.strokes[*i].id, s.id);
             self.strokes.remove(*i);
@@ -359,6 +511,68 @@ mod tests {
         assert_eq!(d.len(), 1);
         assert_eq!(d.take_changes(), vec![Change::Added(id)]);
         assert!(!d.redo());
+    }
+
+    #[test]
+    fn moving_strokes_keeps_their_text_link_and_group_through_undo() {
+        let mut d = Document::new(1);
+        let a = stroke(&mut d, 0.0);
+        let b = stroke(&mut d, 5.0);
+        let (ia, ib) = (a.id, b.id);
+        d.add_stroke(a);
+        d.add_stroke(b);
+        d.recognition.push(RecognizedText {
+            id: "w".into(),
+            text: "hi".into(),
+            strokes: vec![ia, ib],
+            alternatives: vec![],
+            confidence: None,
+            language: None,
+            engine: None,
+        });
+        d.links.push(Link {
+            strokes: vec![ia, ib],
+            target: "https://example.com".into(),
+            kind: "url".into(),
+            text: None,
+        });
+        d.group(&[ia, ib]);
+        d.take_changes();
+        let new = d.translate(&[ia, ib], Vec2::new(10.0, 0.0));
+        assert_eq!(new.len(), 2);
+        assert_eq!(d.strokes()[0].points[0].x, 10.0);
+        assert_eq!(d.recognition[0].strokes, new);
+        assert_eq!(d.links[0].strokes, new);
+        assert_eq!(d.live_groups(), vec![new.clone()]);
+        assert_eq!(d.live_links()[0].text.as_deref(), Some("hi"));
+        assert_eq!(d.take_changes().len(), 4, "two removed, two added");
+        d.undo();
+        assert_eq!(d.recognition[0].strokes, vec![ia, ib]);
+        assert_eq!(d.links[0].strokes, vec![ia, ib]);
+        assert_eq!(d.live_groups(), vec![vec![ia, ib]]);
+        d.redo();
+        assert_eq!(d.recognition[0].strokes, new);
+    }
+
+    #[test]
+    fn grouping_moves_strokes_out_of_older_groups() {
+        let mut d = Document::new(1);
+        let ids: Vec<_> = (0..3)
+            .map(|i| {
+                let s = stroke(&mut d, i as f64);
+                let id = s.id;
+                d.add_stroke(s);
+                id
+            })
+            .collect();
+        d.group(&[ids[2], ids[0], ids[1]]);
+        assert_eq!(d.groups, vec![ids.clone()], "kept in stacking order");
+        let r = d.revision();
+        d.group(&[ids[1], ids[2]]);
+        assert!(d.revision() > r, "the layout must be redone");
+        assert_eq!(d.groups, vec![vec![ids[1], ids[2]]], "a group of one is no group");
+        assert!(d.ungroup(&[ids[2]]));
+        assert!(d.groups.is_empty());
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { Minimap } from './minimap.js';
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
+import { SelectionView } from './selection-view.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -109,6 +110,7 @@ async function main() {
   let handwriting = null;
   let recognizerView = null;
   let wordMenu = null;
+  let selectionView = null;
   let lastRevision = -1;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
@@ -118,6 +120,7 @@ async function main() {
         if (rev !== lastRevision) { lastRevision = rev; handwriting.schedule(); recognizerView?.update(); }
         handwriting.draw();
       }
+      selectionView?.draw();
       if (canvas.revision() !== savedRevision) scheduleSave();
       updateUndo();
       if (!hud.hidden) {
@@ -128,7 +131,8 @@ async function main() {
     },
     onCommit: () => scheduleSave(),
     onHover: (p) => showHover(p),
-    onLongPress: (p) => wordMenu?.openAt(p.x, p.y) || false,
+    // Holding the selection opens its menu; holding a word opens the word's.
+    onLongPress: (p) => wordMenu?.openSelectionAt(p.x, p.y) || wordMenu?.openAt(p.x, p.y) || false,
   });
 
   function resize() {
@@ -161,7 +165,20 @@ async function main() {
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
   const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
-  wordMenu = new WordMenu($('word-menu'), canvas, stage, { onChange: wordChanged });
+  wordMenu = new WordMenu($('word-menu'), canvas, stage, {
+    onChange: wordChanged,
+    // What the recogniser made of a word, for the word's menu.
+    describe: (w) => {
+      if (w.text != null) {
+        const by = w.engine === 'user' ? 'checked by you' : w.kind === 'math' ? 'formula model'
+          : handwriting.isCareful(w) ? 'careful model' : 'quick model';
+        return { text: w.text, by };
+      }
+      if (!handwriting.enabled) return { waiting: 'Not read: handwriting recognition is off' };
+      return { waiting: handwriting.status.get(w.id) || 'Waiting to be read…' };
+    },
+  });
+  selectionView = new SelectionView($('marks'), canvas);
   recognizerView = new RecognizerView($('recognizer-view'), handwriting, {
     onChange: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); },
   });
@@ -375,7 +392,7 @@ async function main() {
   let hoverTimer = null;
   function showHover(p) {
     clearTimeout(hoverTimer);
-    if (!p || !settings.hoverPreview) { hoverEl.hidden = true; return; }
+    if (!p || !settings.hoverPreview || (currentTool() === 'lasso' && !p.eraser)) { hoverEl.hidden = true; return; }
     const zoom = canvas.camera()[2];
     const erasing = p.eraser || currentTool() === 'eraser';
     let d;
@@ -407,7 +424,7 @@ async function main() {
     return settings.palettes[settings.brush === 'highlighter' ? 'highlighter' : 'ink'];
   }
   function currentTool() {
-    return settings.tool === 'draw' ? settings.brush : 'eraser';
+    return settings.tool === 'draw' ? settings.brush : settings.tool;
   }
 
   /** Select a brush or the eraser. Tapping the tool that is already active
@@ -419,8 +436,8 @@ async function main() {
       name = settings.prevTool;
     }
     settings.prevTool = cur;
-    if (name === 'eraser') {
-      settings.tool = 'eraser';
+    if (name === 'eraser' || name === 'lasso') {
+      settings.tool = name;
     } else {
       settings.tool = 'draw';
       settings.brush = name;
@@ -428,6 +445,7 @@ async function main() {
     setColorEditing(false);
     saveSettings();
     applyTool();
+    input.requestFrame(); // the selection outline goes with the lasso
   }
 
   /** Calls `fn` when `el` is held for half a second (finger, pen or mouse),
@@ -491,7 +509,7 @@ async function main() {
 
   function setSize(v) {
     if (!Number.isFinite(v)) return;
-    if (settings.tool === 'draw') {
+    if (settings.tool !== 'eraser') {
       const b = currentBrush();
       b.size = v;
       if (b.preset != null) b.presets[b.preset] = v;
@@ -545,14 +563,15 @@ async function main() {
   $('dock').addEventListener('change', (e) => setDock(e.target.value));
 
   function applyTool() {
-    const erasing = settings.tool !== 'draw';
-    canvas.set_tool(erasing ? settings.eraserMode : 'draw');
+    const erasing = settings.tool === 'eraser';
+    canvas.set_tool(settings.tool === 'lasso' ? 'lasso' : erasing ? settings.eraserMode : 'draw');
+    stage.classList.toggle('lasso', settings.tool === 'lasso');
     const b = currentBrush();
     canvas.set_brush(settings.brush, b.color, b.size);
     canvas.set_brush_style(b.style || 'solid', (b.stabilizer || 0) / 100);
     canvas.set_eraser_size(settings.eraserSize);
     for (const btn of toolButtons) {
-      const on = erasing ? btn.dataset.tool === 'eraser' : btn.dataset.brush === settings.brush;
+      const on = settings.tool === 'draw' ? btn.dataset.brush === settings.brush : btn.dataset.tool === settings.tool;
       btn.setAttribute('aria-checked', String(on));
       btn.setAttribute('role', 'radio');
     }
@@ -604,7 +623,7 @@ async function main() {
   }
   function renderStrokePop() {
     const b = currentBrush();
-    const erasing = settings.tool !== 'draw';
+    const erasing = settings.tool === 'eraser';
     $('stroke-brush').textContent = erasing ? 'Eraser' : settings.brush;
     $('pop-brush').hidden = erasing;
     $('pop-eraser').hidden = !erasing;
@@ -652,7 +671,7 @@ async function main() {
   });
 
   for (const btn of toolButtons) {
-    const name = btn.dataset.tool === 'eraser' ? 'eraser' : btn.dataset.brush;
+    const name = btn.dataset.tool || btn.dataset.brush;
     btn.addEventListener('click', () => selectTool(name));
   }
   $('color-input').addEventListener('input', (e) => {
@@ -837,6 +856,13 @@ async function main() {
       selectTool(toolButtons[Number(e.key) - 1].dataset.brush, { noToggle: true });
     } else if (!mod && e.key.toLowerCase() === 'e') {
       selectTool('eraser', { noToggle: true });
+    } else if (!mod && e.key.toLowerCase() === 'l') {
+      selectTool('lasso', { noToggle: true });
+    } else if (!mod && (e.key === 'Delete' || e.key === 'Backspace') && settings.tool === 'lasso') {
+      if (canvas.delete_selection()) input.requestFrame();
+    } else if (e.key === 'Escape' && settings.tool === 'lasso') {
+      canvas.clear_selection();
+      input.requestFrame();
     }
   });
 
@@ -858,7 +884,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

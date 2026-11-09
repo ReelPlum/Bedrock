@@ -145,6 +145,21 @@ saving, so a graph can label the link without the ink. Links are saved only
 while all their strokes exist. `links.md` in the archive lists the same links
 as Markdown.
 
+## The writer's words and maths (`groups`, `kinds` in `note.json`)
+
+```json
+"groups": [["9f2c4e1a7b3d5f60", "0a11b2c3d4e5f607"]],
+"kinds": [{ "strokes": ["9f2c4e1a7b3d5f60"], "kind": "math" }]
+```
+
+Words are normally found automatically from the gaps between strokes. A
+`groups` entry is strokes the writer made into one word with the lasso; it
+overrides the automatic split, and is saved only while all its strokes exist.
+A `kinds` entry says some strokes are `text` or `math` (LaTeX), overriding the
+guess: a word follows it when any of its strokes is listed, so writing more
+onto a formula keeps it maths. Moving strokes gives them new ids; both lists,
+`links` and `recognition` follow the new ids.
+
 ## Designed for real-time handwriting recognition
 
 - Every raw sample is kept with its timestamp (`start` + `t`), plus pressure

@@ -107,7 +107,8 @@ pub struct SceneDiff {
 pub struct Scene {
     chunks: HashMap<u64, ChunkInfo>,
     order: Vec<u64>,
-    revision: Option<u64>,
+    /// Document revision and hash of the hidden strokes last synced.
+    revision: Option<(u64, u64)>,
     /// Geometry of strokes in recently rebuilt chunks. Strokes never change
     /// once committed (erasing makes new ones), so finishing a stroke only
     /// tessellates that stroke; the rest of its chunk comes from here.
@@ -149,10 +150,21 @@ impl Scene {
 
     /// Bring the scene up to date with `doc`. Cheap when nothing changed.
     pub fn sync(&mut self, doc: &Document) -> SceneDiff {
-        if self.revision == Some(doc.revision()) {
+        self.sync_hiding(doc, &[])
+    }
+
+    /// Like [`Scene::sync`], leaving out `hidden` strokes (e.g. a selection
+    /// being dragged, which is drawn elsewhere meanwhile).
+    pub fn sync_hiding(&mut self, doc: &Document, hidden: &[StrokeId]) -> SceneDiff {
+        let mut hidden_key = 0xcbf2_9ce4_8422_2325u64;
+        for id in hidden {
+            fnv(&mut hidden_key, id.0);
+        }
+        if self.revision == Some((doc.revision(), hidden_key)) {
             return SceneDiff::default();
         }
-        self.revision = Some(doc.revision());
+        self.revision = Some((doc.revision(), hidden_key));
+        let hidden: HashSet<StrokeId> = hidden.iter().copied().collect();
         let strokes = doc.strokes();
         let mut groups: Vec<(u64, bool, Vec<usize>)> = Vec::new();
         for highlight_pass in [true, false] {
@@ -168,7 +180,10 @@ impl Scene {
                 *verts = 0;
             };
             for (i, s) in strokes.iter().enumerate() {
-                if (s.brush.kind == BrushKind::Highlighter) != highlight_pass || s.points.is_empty() {
+                if (s.brush.kind == BrushKind::Highlighter) != highlight_pass
+                    || s.points.is_empty()
+                    || hidden.contains(&s.id)
+                {
                     continue;
                 }
                 if is_translucent(s) {
