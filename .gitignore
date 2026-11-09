@@ -3,3 +3,4 @@ apps/web/pkg/
 node_modules/
 *.log
 apps/web/tests/.cache/
+apps/obsidian/dist/

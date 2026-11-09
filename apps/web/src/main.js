@@ -7,6 +7,7 @@ import { WordMenu } from './word-menu.js';
 import { SelectionView } from './selection-view.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
+import { host } from './host.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -116,7 +117,8 @@ async function main() {
     return;
   }
 
-  const store = await NoteStore.open().catch((e) => {
+  // Inside a host app (the Obsidian plugin) the note is the host's file.
+  const store = await (host ? Promise.resolve(host.store()) : NoteStore.open()).catch((e) => {
     toast(`Local storage is unavailable, notes will not be saved: ${e}`, 8000);
     return null;
   });
@@ -383,7 +385,7 @@ async function main() {
   async function newNote() {
     if (saveTimer) await saveNow();
     canvas.new_document(...randomSeed());
-    note = { id: newNoteId(), created: Date.now() };
+    note = { id: host ? host.noteId : newNoteId(), created: Date.now() };
     canvas.set_paper('dots');
     applyDocToUi();
     savedRevision = -1; // a new note is saved on its first stroke
@@ -1048,7 +1050,8 @@ async function main() {
   // ----- start ---------------------------------------------------------------------
   applyDock();
   applyTool();
-  if (settings.lastNote && store && (await store.get(settings.lastNote))) await openNote(settings.lastNote);
+  const startNote = host ? host.noteId : settings.lastNote;
+  if (startNote && store && (await store.get(startNote))) await openNote(startNote);
   else await newNote();
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -1058,6 +1061,16 @@ async function main() {
   // Handy for debugging and for the automated browser tests.
   window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
+  if (host) {
+    host.on('flush', async () => { await saveNow(); await saveCamera(); });
+    // Changed elsewhere (sync, another window): that copy wins.
+    host.on('reload', () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      return openNote(host.noteId);
+    });
+    host.ready();
+  }
 }
 
 main().catch((e) => {

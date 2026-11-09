@@ -36,6 +36,7 @@ crates/bedrock-core   Platform independent engine: input, brushes, geometry, era
                       undo, gestures, scene batching, the note format. Fully unit tested.
 crates/bedrock-web    WebAssembly bindings and the WebGL2 renderer.
 apps/web              The web app (HTML/CSS/JS shell around the Rust canvas) and its browser tests.
+apps/obsidian         The Obsidian plugin: runs apps/web unchanged in a view (see its README).
 docs/                 Note format spec, JSON Schema, iCloud plan.
 scripts/              Build scripts.
 ```
@@ -67,6 +68,7 @@ input-to-frame time.
 cargo test                                   # engine unit tests, Pencil trace replay, format fuzzing
 cargo test --release -p bedrock-core --test perf -- --ignored --nocapture   # 100 000-stroke budget
 cd apps/web && npm install && npx playwright install chromium && npm test   # browser tests
+cd apps/obsidian && npm install && npm test                                 # Obsidian plugin tests
 ```
 
 The browser tests drive the real app in headless Chromium with synthetic
