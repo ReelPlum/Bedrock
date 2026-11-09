@@ -90,7 +90,7 @@ async function main() {
     $('clear').disabled = n === 0;
   }
 
-  /** The sample a backend would store (see docs/training-data.md). */
+  /** The sample a backend would store (not saved yet). */
   function sample() {
     const note = JSON.parse(canvas.export_json());
     const r = stage.getBoundingClientRect();
