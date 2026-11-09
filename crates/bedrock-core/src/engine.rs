@@ -17,6 +17,7 @@ use crate::document::Document;
 use crate::eraser;
 use crate::geom::{Rect, Vec2};
 use crate::input::InputPoint;
+use crate::scribble;
 use crate::selection;
 use crate::stroke::{InputDevice, Stroke, StrokeId};
 use crate::tessellate::{self, Mesh};
@@ -114,6 +115,11 @@ pub struct Engine {
     /// Eraser radius in screen pixels.
     pub eraser_size: f64,
     pub finger_drawing: bool,
+    /// Scribbling over ink erases it (see [`crate::scribble`]).
+    pub scribble_erase: bool,
+    /// Strokes the last scribble erased, until read with
+    /// [`Engine::take_scribble_erased`].
+    scribble_erased: usize,
     /// Selected strokes (lasso tool), in stacking order.
     selection: Vec<StrokeId>,
     active: Option<Active>,
@@ -137,6 +143,8 @@ impl Engine {
             tool: Tool::Draw,
             eraser_size: 12.0,
             finger_drawing: false,
+            scribble_erase: true,
+            scribble_erased: 0,
             selection: Vec::new(),
             active: None,
             predicted: Vec::new(),
@@ -368,7 +376,21 @@ impl Engine {
         }
         match self.active.take() {
             Some(Active::Drawing { pointer, stroke, .. }) if pointer == id => {
-                self.doc.add_stroke(stroke);
+                let erase = if self.scribble_erase
+                    && stroke.brush.kind != crate::brush::BrushKind::Highlighter
+                    && scribble::is_scribble(&stroke)
+                {
+                    scribble::targets(&self.doc, &stroke)
+                } else {
+                    Vec::new()
+                };
+                if erase.is_empty() {
+                    self.doc.add_stroke(stroke);
+                } else {
+                    // The scribble itself is not kept: one undo brings the ink back.
+                    self.scribble_erased = erase.len();
+                    self.doc.replace(&erase, vec![]);
+                }
             }
             Some(Active::Erasing { pointer, .. }) if pointer == id => {
                 self.doc.end_group();
@@ -524,6 +546,11 @@ impl Engine {
         }
         self.dirty |= r;
         r
+    }
+
+    /// How many strokes a scribble erased since the last call (0 if none).
+    pub fn take_scribble_erased(&mut self) -> usize {
+        std::mem::take(&mut self.scribble_erased)
     }
 
     // ----- selection ---------------------------------------------------------
@@ -967,6 +994,47 @@ mod tests {
         assert!(e.doc.is_empty());
         e.undo();
         assert_eq!(e.doc.len(), 1);
+    }
+
+    #[test]
+    fn scribbling_over_a_word_erases_it_in_one_undo_step() {
+        let mut e = eng();
+        // A short "word" and a line far away.
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (140.0, 110.0), 0.0);
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 400.0), (300.0, 400.0), 100.0);
+        let keep = e.doc.strokes()[1].id;
+        let scribble = |e: &mut Engine, t0: f64, y0: f64| {
+            e.pointer_down(2, PointerKind::Pen, ScreenSample::new(95.0, y0, 0.5, t0));
+            for i in 1..=48 {
+                let pass = i / 6;
+                let f = (i % 6) as f64 / 6.0;
+                let x = if pass % 2 == 0 { 95.0 + 50.0 * f } else { 145.0 - 50.0 * f };
+                e.pointer_move(
+                    2,
+                    PointerKind::Pen,
+                    ScreenSample::new(x, y0 + i as f64 * 0.4, 0.5, t0 + i as f64 * 8.0),
+                );
+            }
+            e.pointer_up(2, PointerKind::Pen, None);
+        };
+        scribble(&mut e, 200.0, 96.0);
+        assert_eq!(
+            e.doc.strokes().iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![keep],
+            "word gone, scribble not kept"
+        );
+        assert_eq!(e.take_scribble_erased(), 1);
+        assert_eq!(e.take_scribble_erased(), 0);
+        e.undo();
+        assert_eq!(e.doc.len(), 2);
+        // Over empty paper it is just ink (shading).
+        scribble(&mut e, 400.0, 600.0);
+        assert_eq!(e.doc.len(), 3);
+        // And it can be turned off.
+        e.undo();
+        e.scribble_erase = false;
+        scribble(&mut e, 600.0, 96.0);
+        assert_eq!(e.doc.len(), 3);
     }
 
     #[test]

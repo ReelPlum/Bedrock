@@ -1396,6 +1396,57 @@ test('word menu: says when a word is still waiting to be read, and switches a wo
   await ctx.close();
 });
 
+test('scribbling over a word erases it (one undo brings it back); over empty paper, or with the setting off, it is ink', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.handwriting.enabled = false;
+    const c = bedrock.canvas;
+    const word = () => {
+      for (let k = 0; k < 3; k++) {
+        const x = 300 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+      }
+    };
+    const scribble = (y0) => {
+      t.ev('pointerdown', 2, 'pen', 290, y0, { pressure: 0.6 });
+      for (let i = 1; i <= 60; i++) {
+        const pass = Math.floor(i / 6);
+        const f = (i % 6) / 6;
+        const x = pass % 2 === 0 ? 290 + 80 * f : 370 - 80 * f;
+        t.ev('pointermove', 2, 'pen', x, y0 + i * 0.5, { pressure: 0.6 });
+      }
+      t.ev('pointerup', 2, 'pen', 290, y0 + 30, { pressure: 0 });
+    };
+    word();
+    const out = { before: c.stroke_count() };
+    scribble(272);
+    await t.frame();
+    out.after = c.stroke_count();
+    out.toast = document.querySelector('.toast')?.textContent || '';
+    c.undo();
+    out.undone = c.stroke_count();
+    scribble(500);
+    out.onPaper = c.stroke_count();
+    c.undo();
+    document.getElementById('scribble-erase').click();
+    out.setting = JSON.parse(localStorage.getItem('bedrock.settings.v1')).scribbleErase;
+    scribble(272);
+    out.off = c.stroke_count();
+    return out;
+  });
+  assert.equal(r.before, 3);
+  assert.equal(r.after, 0, 'the word is gone and the scribble is not kept');
+  assert.match(r.toast, /Undo brings it back/);
+  assert.equal(r.undone, 3);
+  assert.equal(r.onPaper, 4, 'a scribble over nothing is ink');
+  assert.equal(r.setting, false);
+  assert.equal(r.off, 4, 'with the setting off it is ink');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

@@ -27,6 +27,7 @@ pub mod mirror;
 pub mod overview;
 pub mod pen;
 pub mod scene;
+pub mod scribble;
 pub mod selection;
 pub mod spell;
 pub mod stroke;

@@ -51,6 +51,7 @@ function loadSettings() {
     recognize: s.recognize !== false,
     recognizeMode: ['live', 'careful', 'both'].includes(s.recognizeMode) ? s.recognizeMode : 'both',
     spelling: s.spelling !== false,
+    scribbleErase: s.scribbleErase !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
     lastNote: s.lastNote || null,
@@ -112,6 +113,7 @@ async function main() {
   let wordMenu = null;
   let selectionView = null;
   let lastRevision = -1;
+  let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
       minimap?.update();
@@ -129,7 +131,14 @@ async function main() {
           + `strokes ${canvas.stroke_count()}  chunks ${canvas.chunk_count()}  zoom ${(zoom * 100).toFixed(0)}%`;
       }
     },
-    onCommit: () => scheduleSave(),
+    onCommit: () => {
+      scheduleSave();
+      // The first time a scribble erases something, say how to get it back.
+      if (canvas.take_scribble_erased() && !scribbleToastShown) {
+        scribbleToastShown = true;
+        toast('Scribbled out. Undo brings it back; turn this off in the menu.', 4000);
+      }
+    },
     onHover: (p) => showHover(p),
     // Holding the selection opens its menu; holding a word opens the word's.
     onLongPress: (p) => wordMenu?.openSelectionAt(p.x, p.y) || wordMenu?.openAt(p.x, p.y) || false,
@@ -808,6 +817,13 @@ async function main() {
   $('show-recognizer').checked = false;
   $('show-recognizer').addEventListener('change', (e) => { recognizerView.visible = e.target.checked; });
   $('rv-close').addEventListener('click', () => { recognizerView.visible = false; $('show-recognizer').checked = false; });
+  canvas.set_scribble_erase(settings.scribbleErase);
+  $('scribble-erase').checked = settings.scribbleErase;
+  $('scribble-erase').addEventListener('change', (e) => {
+    settings.scribbleErase = e.target.checked;
+    canvas.set_scribble_erase(settings.scribbleErase);
+    saveSettings();
+  });
   $('spelling').checked = settings.spelling;
   $('spelling').addEventListener('change', (e) => {
     settings.spelling = e.target.checked;

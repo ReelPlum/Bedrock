@@ -520,6 +520,16 @@ impl Canvas {
         self.engine.eraser_size = css_px.clamp(2.0, 200.0);
     }
 
+    /// Scribbling over ink erases it (on by default).
+    pub fn set_scribble_erase(&mut self, on: bool) {
+        self.engine.scribble_erase = on;
+    }
+
+    /// How many strokes a scribble erased since the last call.
+    pub fn take_scribble_erased(&mut self) -> usize {
+        self.engine.take_scribble_erased()
+    }
+
     pub fn set_finger_drawing(&mut self, on: bool) {
         self.engine.finger_drawing = on;
     }
