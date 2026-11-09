@@ -890,6 +890,81 @@ test('the formula recogniser runs Pix2Text MFR on ONNX Runtime: files at the rep
   await ctx.close();
 });
 
+test('careful reading: the larger model re-reads words after a pause, stops when writing resumes, and follows the menu mode', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    bedrock.minimap.visible = false;
+    const calls = [];
+    let onCareful = null;
+    hw.engine = async ({ quality, word }) => {
+      calls.push(quality);
+      if (quality === 'careful') {
+        onCareful?.();
+        return { text: 'world', engine: 'Xenova/trocr-base-handwritten (fake)' };
+      }
+      return { text: 'wrold', engine: 'Xenova/trocr-small-handwritten (fake)' };
+    };
+    const word = async (x0, y = 300) => {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, y, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, y - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, y, { pressure: 0 });
+      }
+      await t.frame();
+    };
+    const texts = () => JSON.parse(bedrock.canvas.words_json()).map((w) => w.text);
+    const out = {};
+    // Both (default): live first, then the careful pass replaces it.
+    out.defaultMode = hw.mode;
+    await word(150);
+    await hw.run();
+    out.live = texts();
+    const rev = bedrock.canvas.revision();
+    await hw.runCareful();
+    out.careful = texts();
+    out.engine = JSON.parse(bedrock.canvas.words_json())[0].engine;
+    out.revisionKept = bedrock.canvas.revision() === rev;
+    await hw.runCareful();
+    out.calls1 = calls.splice(0);
+    // Writing resumes during a careful pass: it stops after the current word.
+    await word(150, 450);
+    await word(350, 450);
+    onCareful = () => { onCareful = null; hw.schedule(); };
+    await hw.runCareful();
+    out.calls2 = calls.splice(0);
+    // Live only: no careful pass.
+    document.getElementById('recognize-mode').value = 'live';
+    document.getElementById('recognize-mode').dispatchEvent(new Event('change'));
+    await hw.runCareful();
+    out.calls3 = calls.splice(0);
+    // Careful only: the live pass does nothing; the careful one reads new words.
+    document.getElementById('recognize-mode').value = 'careful';
+    document.getElementById('recognize-mode').dispatchEvent(new Event('change'));
+    await word(150, 600);
+    await hw.run();
+    out.calls4 = calls.splice(0);
+    await hw.runCareful();
+    out.calls5 = calls.splice(0);
+    out.saved = JSON.parse(localStorage.getItem('bedrock.settings.v1') || '{}').recognizeMode;
+    return out;
+  });
+  assert.equal(r.defaultMode, 'both');
+  assert.deepEqual(r.live, ['wrold']);
+  assert.deepEqual(r.careful, ['world'], 'careful answer replaces the live one');
+  assert.match(r.engine, /trocr-base-handwritten/);
+  assert.ok(r.revisionKept, 'storing text does not count as an edit (which would stop the pass)');
+  assert.deepEqual(r.calls1, ['fast', 'careful'], 'a word the careful model read is not read again');
+  assert.deepEqual(r.calls2, ['careful'], 'stops when writing resumes');
+  assert.deepEqual(r.calls3, []);
+  assert.deepEqual(r.calls4, []);
+  assert.ok(r.calls5.length >= 1 && r.calls5.every((q) => q === 'careful'), JSON.stringify(r.calls5));
+  assert.equal(r.saved, 'careful', 'mode is remembered');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

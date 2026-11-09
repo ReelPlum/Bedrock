@@ -9,9 +9,13 @@
 // The recogniser is pluggable: by default a worker running TrOCR for text and
 // Pix2Text MFR for formulas, on the device. Anything with the same shape can
 // be set as `engine` (a native recogniser later, or a fake in tests):
-//   async ({ kind: 'text' | 'math', image: Blob, word }) => ({ text, engine })
+//   async ({ kind: 'text' | 'math', image: Blob, word, quality: 'fast' | 'careful' })
+//     => ({ text, engine })
+
+import { MODELS } from './models.js';
 
 const IDLE_MS = 700; // recognise once the pen has rested this long
+const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
 const LETTER_PX = 40; // letter height in the image sent to the recogniser
 const PAD_PX = 12;
 
@@ -29,8 +33,13 @@ export class Handwriting {
     this.worker = null;
     this.pending = new Map(); // request id -> { resolve, reject }
     this.inFlight = new Set(); // word ids being recognised
-    this.failed = new Map(); // word id -> attempts
+    this.failed = new Map(); // 'fast:id' / 'careful:id' -> attempts
+    // 'live': the fast model as you write; 'careful': only the larger model,
+    // once the pen rests; 'both': live, then the careful model re-reads.
+    this.mode = 'both';
     this.timer = null;
+    this.carefulTimer = null;
+    this.carefulRun = 0; // bumped to stop a careful pass when writing resumes
     this.seq = 0;
     this.dictionaryReady = false;
     this.dpr = 1;
@@ -68,31 +77,56 @@ export class Handwriting {
   schedule() {
     if (!this.enabled) return;
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.run(), IDLE_MS);
+    clearTimeout(this.carefulTimer);
+    this.carefulRun++;
+    if (this.mode !== 'careful') this.timer = setTimeout(() => this.run(), IDLE_MS);
+    if (this.mode !== 'live') this.carefulTimer = setTimeout(() => this.runCareful(), CAREFUL_IDLE_MS);
   }
 
-  /** Recognise every word that has no text yet. */
+  _tries(quality, id) { return this.failed.get(`${quality}:${id}`) || 0; }
+
+  /** Live: recognise every word that has no text yet, with the fast model. */
   async run() {
-    if (!this.enabled || this.canvas.is_drawing()) return this.schedule();
+    if (!this.enabled || this.mode === 'careful') return;
+    if (this.canvas.is_drawing()) return this.schedule();
     const words = JSON.parse(this.canvas.words_json());
-    const todo = words.filter((w) => w.text == null && !this.inFlight.has(w.id) && (this.failed.get(w.id) || 0) < 2);
-    await Promise.all(todo.map((w) => this._recognise(w)));
+    const todo = words.filter((w) => w.text == null && !this.inFlight.has(w.id) && this._tries('fast', w.id) < 2);
+    await Promise.all(todo.map((w) => this._recognise(w, 'fast')));
   }
 
-  async _recognise(word) {
+  /** True if the careful model already read this word (formulas have one
+   *  model, so any answer counts). */
+  isCareful(w) {
+    return w.text != null && (w.kind === 'math' || (w.engine || '').startsWith(MODELS.text.careful));
+  }
+
+  /** Careful: re-read words with the larger model, one at a time, stopping
+   *  as soon as writing resumes. */
+  async runCareful() {
+    if (!this.enabled || this.mode === 'live') return;
+    const run = this.carefulRun;
+    const words = JSON.parse(this.canvas.words_json());
+    const todo = words.filter((w) => !this.isCareful(w) && !this.inFlight.has(w.id) && this._tries('careful', w.id) < 2);
+    for (const w of todo) {
+      if (run !== this.carefulRun || !this.enabled || this.canvas.is_drawing()) return;
+      await this._recognise(w, 'careful');
+    }
+  }
+
+  async _recognise(word, quality = 'fast') {
     this.inFlight.add(word.id);
     this._setStatus(word.id, 'Reading…');
     try {
       const image = await this.render(word);
       if (!image) return;
-      const { text, engine } = await this._engine()({ kind: word.kind, image, word });
+      const { text, engine } = await this._engine()({ kind: word.kind, image, word, quality });
       if (typeof text === 'string' && this.canvas.set_word_text(word.id, text, word.kind, engine || 'unknown', -1)) {
         this.status.delete(word.id);
         this.onTextChanged();
       }
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
-      this.failed.set(word.id, (this.failed.get(word.id) || 0) + 1);
+      this.failed.set(`${quality}:${word.id}`, this._tries(quality, word.id) + 1);
       this._setStatus(word.id, `Failed: ${msg}`);
       this.onStatus({ error: msg });
     } finally {
@@ -119,10 +153,10 @@ export class Handwriting {
       };
       this.worker.onerror = (e) => this.onStatus({ error: e.message || 'recogniser failed to start' });
     }
-    return ({ kind, image }) => new Promise((resolve, reject) => {
+    return ({ kind, image, quality }) => new Promise((resolve, reject) => {
       const id = ++this.seq;
       this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ id, kind, image });
+      this.worker.postMessage({ id, kind, image, quality });
     });
   }
 

@@ -1,8 +1,9 @@
 // Handwriting recognition worker: runs the models off the main thread so
 // writing never stutters.
 //
-//  * Text: TrOCR (small, trained on handwritten English lines), through
-//    Transformers.js.
+//  * Text: TrOCR (trained on handwritten English lines), through
+//    Transformers.js: small for live reading, base for the careful re-read
+//    (see models.js).
 //  * Maths: Pix2Text's formula recogniser, MFR 1.5 (breezedeus/pix2text-mfr-1.5,
 //    MIT), which answers in LaTeX. It is a TrOCR-style encoder-decoder, but
 //    its repo keeps plain ONNX files at the top level (encoder_model.onnx,
@@ -15,16 +16,14 @@
 // Everything runs on the device. Libraries are loaded on first use and each
 // model is downloaded once, then cached by the browser.
 //
-// Messages in:  { id, kind: 'text' | 'math', image: Blob }
+// Messages in:  { id, kind: 'text' | 'math', image: Blob, quality?: 'fast' | 'careful' }
 // Messages out: { id, text, engine } | { id, error }
 //               { status: 'loading' | 'ready', kind, progress? }
 
 const TRANSFORMERS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
 const ORT_DIR = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/';
-export const MODELS = {
-  text: 'Xenova/trocr-small-handwritten',
-  math: 'breezedeus/pix2text-mfr-1.5',
-};
+import { MODELS } from './models.js';
+
 // From the model's preprocessor_config.json and generation_config.json.
 export const MFR = {
   size: 384,
@@ -49,10 +48,10 @@ function once(kind, load) {
 
 // ----- text: Transformers.js pipeline ----------------------------------------
 
-function textPipeline() {
-  return once('text', async () => {
+function textPipeline(quality) {
+  return once(`text-${quality}`, async () => {
     lib ||= await import(TRANSFORMERS);
-    const model = MODELS.text;
+    const model = MODELS.text[quality];
     self.postMessage({ status: 'loading', kind: 'text', model });
     const device = 'gpu' in navigator ? 'webgpu' : 'wasm';
     const p = await lib.pipeline('image-to-text', model, {
@@ -67,8 +66,8 @@ function textPipeline() {
   });
 }
 
-async function readText(image) {
-  const p = await textPipeline();
+async function readText(image, quality) {
+  const p = await textPipeline(quality);
   const img = await lib.RawImage.fromBlob(image);
   const out = await p(img, { max_new_tokens: 24 });
   return (Array.isArray(out) ? out[0] : out)?.generated_text ?? '';
@@ -182,9 +181,10 @@ async function readMath(image) {
 
 self.onmessage = async (e) => {
   const { id, kind, image } = e.data;
+  const quality = e.data.quality === 'careful' ? 'careful' : 'fast';
   try {
-    const text = kind === 'math' ? await readMath(image) : await readText(image);
-    self.postMessage({ id, text, engine: kind === 'math' ? `${MODELS.math} (onnxruntime-web)` : `${MODELS.text} (transformers.js)` });
+    const text = kind === 'math' ? await readMath(image) : await readText(image, quality);
+    self.postMessage({ id, text, engine: kind === 'math' ? `${MODELS.math} (onnxruntime-web)` : `${MODELS.text[quality]} (transformers.js)` });
   } catch (err) {
     self.postMessage({ id, error: String(err && err.message ? err.message : err) });
   }

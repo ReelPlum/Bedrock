@@ -285,6 +285,7 @@ impl Canvas {
                     "letterHeight": w.letter_height,
                     "kind": if w.kind == Kind::Math { "math" } else { "text" },
                     "text": w.text,
+                    "engine": w.engine,
                 })
             })
             .collect();

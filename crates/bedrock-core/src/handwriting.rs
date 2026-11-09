@@ -39,6 +39,9 @@ pub struct WordInfo {
     pub kind: Kind,
     /// Recognised text for exactly these strokes, if any.
     pub text: Option<String>,
+    /// The recogniser that produced `text` (so a slower, better one can
+    /// re-read words a fast one did).
+    pub engine: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -113,6 +116,7 @@ impl Handwriting {
                     letter_height: lh,
                     kind: if looks_like_math(doc, w, lh) { Kind::Math } else { Kind::Text },
                     text: Self::text_for(doc, w).map(|r| r.text.clone()),
+                    engine: Self::text_for(doc, w).and_then(|r| r.engine.clone()),
                 }
             })
             .collect()
@@ -211,6 +215,7 @@ mod tests {
         assert!(hw.set_text(&mut doc, w[0].id, "the", Kind::Text, "test", Some(0.9)));
         assert!(hw.set_text(&mut doc, w[1].id, "qiuck", Kind::Text, "test", None));
         assert_eq!(hw.words(&doc)[0].text.as_deref(), Some("the"));
+        assert_eq!(hw.words(&doc)[0].engine.as_deref(), Some("test"));
         let bad = hw.misspelled(&doc);
         assert_eq!(bad, vec![w[1].bounds]);
         assert_eq!(hw.suggestions(&doc, w[1].id, 1), vec!["quick".to_string()]);

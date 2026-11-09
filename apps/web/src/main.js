@@ -47,6 +47,7 @@ function loadSettings() {
     showMinimap: s.showMinimap !== false,
     hoverPreview: s.hoverPreview !== false,
     recognize: s.recognize !== false,
+    recognizeMode: ['live', 'careful', 'both'].includes(s.recognizeMode) ? s.recognizeMode : 'both',
     spelling: s.spelling !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
@@ -153,6 +154,7 @@ async function main() {
     },
   });
   handwriting.enabled = settings.recognize;
+  handwriting.mode = settings.recognizeMode;
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
   recognizerView = new RecognizerView($('recognizer-view'), handwriting);
@@ -762,6 +764,13 @@ async function main() {
     canvas.set_pressure_softness(settings.pressure / 100);
     saveSettings();
     input.requestFrame();
+  });
+  $('recognize-mode').value = settings.recognizeMode;
+  $('recognize-mode').addEventListener('change', (e) => {
+    settings.recognizeMode = e.target.value;
+    handwriting.mode = settings.recognizeMode;
+    saveSettings();
+    handwriting.schedule();
   });
   $('recognize').checked = settings.recognize;
   $('recognize').addEventListener('change', (e) => {

@@ -45,7 +45,7 @@ export class RecognizerView {
       meta.className = 'rv-meta';
       const kind = document.createElement('span');
       kind.className = 'rv-kind';
-      kind.textContent = w.kind === 'math' ? 'Maths' : 'Text';
+      kind.textContent = w.kind === 'math' ? 'Maths' : w.text == null ? 'Text' : this.hw.isCareful(w) ? 'Text · careful' : 'Text · live';
       const text = document.createElement('span');
       text.className = 'rv-text';
       const status = this.hw.status.get(w.id);
