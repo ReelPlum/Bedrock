@@ -1,6 +1,7 @@
 import init, { Canvas, ZipBuilder, peek_title } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
+import { Handwriting } from './handwriting.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -43,6 +44,8 @@ function loadSettings() {
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
     showMinimap: s.showMinimap !== false,
+    recognize: s.recognize !== false,
+    spelling: s.spelling !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
     lastNote: s.lastNote || null,
@@ -99,9 +102,16 @@ async function main() {
   // ----- rendering & input -------------------------------------------------
   const hud = $('hud');
   let minimap = null;
+  let handwriting = null;
+  let lastRevision = -1;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
       minimap?.update();
+      if (handwriting) {
+        const rev = canvas.revision();
+        if (rev !== lastRevision) { lastRevision = rev; handwriting.schedule(); }
+        handwriting.draw();
+      }
       if (canvas.revision() !== savedRevision) scheduleSave();
       updateUndo();
       if (!hud.hidden) {
@@ -124,6 +134,22 @@ async function main() {
     onMove: () => { input.requestFrame(); clearTimeout(camTimer); camTimer = setTimeout(saveCamera, 800); },
     onFit: () => actions.fit(),
   });
+  let modelToastShown = false;
+  handwriting = new Handwriting(canvas, $('marks'), {
+    onTextChanged: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); },
+    onStatus: (m) => {
+      if (m.status === 'loading' && !modelToastShown) {
+        modelToastShown = true;
+        toast('Downloading the handwriting model. This happens once; it then runs on this device.', 6000);
+      } else if (m.error && !handwriting.errorShown) {
+        handwriting.errorShown = true;
+        toast(`Handwriting recognition is not available here (${m.error}).`, 8000);
+      }
+    },
+  });
+  handwriting.enabled = settings.recognize;
+  handwriting.spelling = settings.spelling;
+  handwriting.loadDictionary().then(() => input.requestFrame());
   const redraw = () => { canvas.redraw(); input.requestFrame(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) redraw(); });
   window.addEventListener('pageshow', redraw);
@@ -254,6 +280,7 @@ async function main() {
     $('paper').value = canvas.paper();
     if (saver.available) saver.reset(false); else canvas.take_changes();
     minimap?.reset();
+    handwriting?.schedule();
     savedRevision = canvas.revision();
     setSaveState('Saved');
     updateUndo();
@@ -701,6 +728,20 @@ async function main() {
     saveSettings();
     input.requestFrame();
   });
+  $('recognize').checked = settings.recognize;
+  $('recognize').addEventListener('change', (e) => {
+    settings.recognize = e.target.checked;
+    handwriting.enabled = settings.recognize;
+    if (settings.recognize) handwriting.schedule();
+    saveSettings();
+  });
+  $('spelling').checked = settings.spelling;
+  $('spelling').addEventListener('change', (e) => {
+    settings.spelling = e.target.checked;
+    handwriting.spelling = settings.spelling;
+    saveSettings();
+    input.requestFrame();
+  });
   $('show-minimap').checked = settings.showMinimap;
   minimap.visible = settings.showMinimap;
   $('show-minimap').addEventListener('change', (e) => {
@@ -757,7 +798,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, handwriting, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

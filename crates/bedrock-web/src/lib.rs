@@ -50,6 +50,7 @@ fn seed(hi: u32, lo: u32) -> u64 {
 pub struct Canvas {
     engine: Engine,
     scene: Scene,
+    hw: bedrock_core::handwriting::Handwriting,
     base: gl::Layer,
     overlay: gl::Layer,
     css: (f64, f64),
@@ -69,6 +70,7 @@ impl Canvas {
         Ok(Canvas {
             engine: Engine::new(seed(seed_hi, seed_lo)),
             scene: Scene::new(),
+            hw: bedrock_core::handwriting::Handwriting::new(),
             base: gl::Layer::new(base, true)?,
             overlay: gl::Layer::new(overlay, false)?,
             css: (1.0, 1.0),
@@ -255,6 +257,83 @@ impl Canvas {
             Some(f) => vec![f.origin.x, f.origin.y, f.span],
             None => Vec::new(),
         }
+    }
+
+    // ----- handwriting ------------------------------------------------------
+
+    /// Load the spell-check word list (one word per line).
+    pub fn load_dictionary(&mut self, words: &str) -> usize {
+        let d = bedrock_core::spell::Dictionary::from_list(words);
+        let n = d.len();
+        self.hw.set_dictionary(d);
+        n
+    }
+
+    /// The words on the page as JSON: `[{id, strokes, bounds: [x0, y0, x1,
+    /// y1], letterHeight, kind: "text" | "math", text?}]`. `id` is hex and
+    /// changes whenever the word's strokes change.
+    pub fn words_json(&mut self) -> String {
+        use bedrock_core::handwriting::Kind;
+        let words = self.hw.words(&self.engine.doc);
+        let v: Vec<serde_json::Value> = words
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "id": format!("{:016x}", w.id),
+                    "strokes": w.strokes.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "bounds": [w.bounds.min.x, w.bounds.min.y, w.bounds.max.x, w.bounds.max.y],
+                    "letterHeight": w.letter_height,
+                    "kind": if w.kind == Kind::Math { "math" } else { "text" },
+                    "text": w.text,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(v).to_string()
+    }
+
+    /// Centre lines of a word's strokes for drawing it into an image:
+    /// `[n, width, x0, y0, x1, y1, ...]` per stroke, world units.
+    pub fn word_ink(&mut self, word_id: &str) -> Vec<f64> {
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return Vec::new() };
+        let doc = &self.engine.doc;
+        let Some(w) = self.hw.layout(doc).words.iter().find(|w| w.id == id) else { return Vec::new() };
+        let mut out = Vec::new();
+        for sid in &w.strokes {
+            if let Some(s) = doc.strokes().iter().find(|s| s.id == *sid) {
+                out.push(s.points.len() as f64);
+                out.push(s.brush.size as f64);
+                for p in &s.points {
+                    out.push(p.x);
+                    out.push(p.y);
+                }
+            }
+        }
+        out
+    }
+
+    /// Store recognised text for a word. `kind`: "text" | "math" (LaTeX).
+    /// Returns false if the word changed meanwhile (the answer is dropped).
+    pub fn set_word_text(&mut self, word_id: &str, text: &str, kind: &str, engine: &str, confidence: f64) -> bool {
+        use bedrock_core::handwriting::Kind;
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
+        let kind = if kind == "math" { Kind::Math } else { Kind::Text };
+        let conf = (confidence.is_finite() && confidence >= 0.0).then_some(confidence as f32);
+        let ok = self.hw.set_text(&mut self.engine.doc, id, text, kind, engine, conf);
+        if ok {
+            self.engine.invalidate();
+        }
+        ok
+    }
+
+    /// Bounds of misspelled words, flat `[x0, y0, x1, y1, ...]`.
+    pub fn misspelled(&mut self) -> Vec<f64> {
+        self.hw.misspelled(&self.engine.doc).iter().flat_map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect()
+    }
+
+    /// Spelling suggestions for a word, best first.
+    pub fn suggestions(&mut self, word_id: &str) -> Vec<String> {
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return Vec::new() };
+        self.hw.suggestions(&self.engine.doc, id, 5)
     }
 
     /// Swap in another document. The scene is rebuilt from scratch: it only

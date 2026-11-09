@@ -21,13 +21,16 @@ pub mod engine;
 pub mod eraser;
 pub mod format;
 pub mod geom;
+pub mod handwriting;
 pub mod input;
 pub mod mirror;
 pub mod overview;
 pub mod pen;
 pub mod scene;
+pub mod spell;
 pub mod stroke;
 pub mod tessellate;
+pub mod words;
 pub mod zip;
 
 pub use brush::{Brush, BrushKind};

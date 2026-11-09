@@ -669,6 +669,66 @@ test('the minimap shows the drawing and the view, follows them, shows zoom, fits
   await ctx.close();
 });
 
+test('handwriting: words are recognised, misspellings get a red wavy underline, text is saved', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    for (let i = 0; i < 100 && !hw.dictionaryReady; i++) await new Promise((res) => setTimeout(res, 50));
+    // A fake recogniser: the first word on the line reads "hello", the
+    // second "wrold". It also records what it was given.
+    const seen = [];
+    hw.engine = async ({ kind, image, word }) => {
+      seen.push({ kind, type: image.type, size: image.size });
+      return { text: word.bounds[0] < 300 ? 'hello' : 'wrold', engine: 'fake' };
+    };
+    bedrock.minimap.visible = false;
+    // Two words of zigzag "letters".
+    const word = async (x0) => {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+      }
+      await t.frame();
+    };
+    await word(150);
+    await word(350);
+    await hw.run();
+    await t.frame();
+    await t.frame();
+    const words = JSON.parse(bedrock.canvas.words_json());
+    // Red pixels just under each word.
+    const marks = document.getElementById('marks');
+    const g = marks.getContext('2d');
+    const dpr = marks.width / marks.clientWidth;
+    const red = (x0, x1) => {
+      const d = g.getImageData(x0 * dpr, 300 * dpr, (x1 - x0) * dpr, 12 * dpr).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 100 && d[i] > 150 && d[i + 1] < 120) n++;
+      return n;
+    };
+    const underline = { first: red(150, 230), second: red(350, 430) };
+    const suggestions = bedrock.canvas.suggestions(words[1].id);
+    await bedrock.saveNow();
+    const id = bedrock.noteId;
+    await bedrock.newNote();
+    await bedrock.openNote(id);
+    const reopened = JSON.parse(bedrock.canvas.words_json()).map((w) => w.text);
+    return { n: words.length, texts: words.map((w) => w.text), kinds: words.map((w) => w.kind), seen, underline, suggestions, reopened };
+  });
+  assert.equal(r.n, 2);
+  assert.deepEqual(r.texts, ['hello', 'wrold']);
+  assert.deepEqual(r.kinds, ['text', 'text']);
+  assert.ok(r.seen.length === 2 && r.seen.every((s) => s.type === 'image/png' && s.size > 100), JSON.stringify(r.seen));
+  assert.equal(r.underline.first, 0, 'correct word is not underlined');
+  assert.ok(r.underline.second > 10, `misspelled word is underlined (${r.underline.second} red px)`);
+  assert.equal(r.suggestions[0], 'world');
+  assert.deepEqual(r.reopened, ['hello', 'wrold'], 'recognised text is saved with the note');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
