@@ -63,6 +63,11 @@ struct StrokeJson {
     points: Vec<f64>,
 }
 
+/// Positions are stored to 1/1000 of a world unit: at the deepest zoom
+/// (1600%) that is under 0.02 screen pixels, so saving never moves ink.
+/// (It was 1/100, which was 0.64 px at the old 6400% limit.)
+pub const POSITION_DECIMALS: i32 = 3;
+
 fn round(v: f64, decimals: i32) -> f64 {
     let m = 10f64.powi(decimals);
     let r = (v * m).round() / m;
@@ -96,8 +101,8 @@ fn json_with(doc: &Document, recognition: bool) -> String {
             let mut points = Vec::with_capacity(s.points.len() * CHANNELS.len());
             for p in &s.points {
                 points.extend_from_slice(&[
-                    round(p.x, 2),
-                    round(p.y, 2),
+                    round(p.x, POSITION_DECIMALS),
+                    round(p.y, POSITION_DECIMALS),
                     round(p.pressure as f64, 3),
                     round(p.altitude as f64, 3),
                     round(p.azimuth as f64, 3),
@@ -717,5 +722,23 @@ mod tests {
         assert_eq!(fmt_num(-0.001), "0");
         assert_eq!(fmt_num(2.345), "2.35");
         assert_eq!(fmt_num(-12.5), "-12.5");
+    }
+
+    #[test]
+    fn positions_survive_saving_at_full_zoom_precision() {
+        use crate::camera::{MAX_ZOOM, WORLD_LIMIT};
+        let mut doc = Document::new(5);
+        let id = doc.next_id();
+        let pts: Vec<InputPoint> = (0..20)
+            .map(|i| {
+                InputPoint::new(WORLD_LIMIT - 1.0 - i as f64 * 0.0137, -WORLD_LIMIT + 3.0 + i as f64 * 0.0291, 0.5)
+            })
+            .collect();
+        doc.add_stroke(Stroke::new(id, Brush::default(), 0.0, InputDevice::Pen, pts.clone()));
+        let back = load_bytes(&to_bedrock(&doc), 1).unwrap().doc;
+        for (a, b) in pts.iter().zip(&back.strokes()[0].points) {
+            let screen_px = a.pos().distance(b.pos()) * MAX_ZOOM;
+            assert!(screen_px < 0.02, "a point moved {screen_px} px at full zoom");
+        }
     }
 }

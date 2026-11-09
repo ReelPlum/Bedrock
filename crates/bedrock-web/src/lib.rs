@@ -50,7 +50,6 @@ fn seed(hi: u32, lo: u32) -> u64 {
 pub struct Canvas {
     engine: Engine,
     scene: Scene,
-    minimap: bedrock_core::overview::Region,
     base: gl::Layer,
     overlay: gl::Layer,
     css: (f64, f64),
@@ -70,7 +69,6 @@ impl Canvas {
         Ok(Canvas {
             engine: Engine::new(seed(seed_hi, seed_lo)),
             scene: Scene::new(),
-            minimap: bedrock_core::overview::Region::new(),
             base: gl::Layer::new(base, true)?,
             overlay: gl::Layer::new(overlay, false)?,
             css: (1.0, 1.0),
@@ -205,13 +203,27 @@ impl Canvas {
         self.engine.invalidate();
     }
 
-    /// Minimap area `[x0, y0, x1, y1]` in world units: all the ink plus the
-    /// camera's view; grows only, until another note is opened.
-    pub fn minimap_region(&mut self) -> Vec<f64> {
+    /// Minimap area `[x0, y0, x1, y1]` in world units: the drawing, widened
+    /// as far as needed to keep the camera's view in sight.
+    pub fn minimap_region(&self) -> Vec<f64> {
         let ink = self.engine.doc.bounds();
         let view = self.engine.camera.visible_world();
-        let r = self.minimap.update(&ink, &view);
+        let r = bedrock_core::overview::region(&ink, &view);
         vec![r.min.x, r.min.y, r.max.x, r.max.y]
+    }
+
+    /// The drawing's bounding box `[x0, y0, x1, y1]`, empty if there is no ink.
+    pub fn ink_bounds(&self) -> Vec<f64> {
+        let r = self.engine.doc.bounds();
+        if r.is_empty() {
+            return Vec::new();
+        }
+        vec![r.min.x, r.min.y, r.max.x, r.max.y]
+    }
+
+    /// Zoom limits `[min, max]`.
+    pub fn zoom_limits(&self) -> Vec<f64> {
+        vec![bedrock_core::camera::MIN_ZOOM, bedrock_core::camera::MAX_ZOOM]
     }
 
     /// The camera's view `[x0, y0, x1, y1]` in world units.
@@ -225,13 +237,13 @@ impl Canvas {
         if !(x.is_finite() && y.is_finite()) {
             return;
         }
-        let c = &mut self.engine.camera;
-        c.offset = Vec2::new(x, y) - c.viewport * (0.5 / c.zoom);
+        let zoom = self.engine.camera.zoom;
+        self.engine.camera.center_on(Vec2::new(x, y), zoom);
         self.engine.invalidate();
     }
 
     /// Simplified strokes for the minimap (see `overview::polylines`).
-    pub fn minimap_strokes(&self, tolerance: f64) -> Vec<f32> {
+    pub fn minimap_strokes(&self, tolerance: f64) -> Vec<f64> {
         bedrock_core::overview::polylines(&self.engine.doc, tolerance)
     }
 
@@ -241,7 +253,6 @@ impl Canvas {
     /// blank until you drew something).
     fn replace_document(&mut self, doc: Document) {
         self.engine.set_document(doc);
-        self.minimap.reset();
         self.base.clear_chunks();
         self.scene = Scene::new();
         self.engine.invalidate();
@@ -301,6 +312,7 @@ impl Canvas {
         if x.is_finite() && y.is_finite() && zoom.is_finite() && zoom > 0.0 {
             self.engine.camera.offset = Vec2::new(x, y);
             self.engine.camera.zoom = zoom.clamp(bedrock_core::camera::MIN_ZOOM, bedrock_core::camera::MAX_ZOOM);
+            self.engine.camera.clamp();
             self.engine.invalidate();
         }
     }

@@ -1,9 +1,7 @@
 //! The minimap: a small overview of the whole note with the camera on it.
 //!
-//! * [`Region`] is the area the minimap shows. It always holds all the ink
-//!   and the camera's view, and only ever grows while a note is open, so the
-//!   map stays still while you write and zooms out when the drawing gets
-//!   bigger or you scroll away from it.
+//! * [`region`] is the area the minimap shows: the drawing, widened just
+//!   enough to keep the camera's view in sight.
 //! * [`polylines`] is a coarse copy of every stroke (centre lines only,
 //!   simplified to the minimap's resolution) for drawing it cheaply.
 
@@ -11,54 +9,22 @@ use crate::brush::BrushKind;
 use crate::document::Document;
 use crate::geom::{Rect, Vec2};
 
-/// The area shown on the minimap, in world units.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Region {
-    rect: Option<Rect>,
-}
-
-impl Region {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Forget the area (a different note was opened).
-    pub fn reset(&mut self) {
-        self.rect = None;
-    }
-
-    /// Grow to hold `ink` (may be empty) and `view`, with a margin of 8% so
-    /// nothing touches the minimap's edge. Returns the area to show.
-    pub fn update(&mut self, ink: &Rect, view: &Rect) -> Rect {
-        let mut need = if ink.is_empty() { *view } else { ink.union(view) };
-        let pad = need.width().max(need.height()) * 0.08;
-        need = need.inflate(pad);
-        let r = match self.rect {
-            // Only grow when something is actually outside: re-padding on
-            // every frame would creep outwards.
-            Some(r) if contains_rect(&r, ink) && contains_rect(&r, view) => r,
-            Some(r) => r.union(&need),
-            None => need,
-        };
-        self.rect = Some(r);
-        r
-    }
-
-    pub fn rect(&self) -> Option<Rect> {
-        self.rect
-    }
-}
-
-fn contains_rect(outer: &Rect, inner: &Rect) -> bool {
-    inner.is_empty() || (outer.contains(inner.min) && outer.contains(inner.max))
+/// The area the minimap shows: the drawing's bounding box, widened only as
+/// far as needed to keep the camera's view in sight, plus a small margin.
+/// Zooming out or scrolling away widens it; coming back shrinks it to the
+/// drawing again.
+pub fn region(ink: &Rect, view: &Rect) -> Rect {
+    let need = if ink.is_empty() { *view } else { ink.union(view) };
+    need.inflate(need.width().max(need.height()) * 0.06)
 }
 
 /// Every stroke as a simplified centre line, packed for JavaScript:
 /// `[n, rgba, width, x0, y0, x1, y1, ...]` per stroke, where `n` is the point
-/// count, `rgba` the colour as a `u32` and `width` the brush size. Points
+/// count, `rgba` the colour as a `u32` and `width` the brush size. f64, so
+/// positions far out on the page keep their precision. Points
 /// closer than `tolerance` (world units) to the last kept one are skipped.
 /// Highlighters come first so ink is drawn over them.
-pub fn polylines(doc: &Document, tolerance: f64) -> Vec<f32> {
+pub fn polylines(doc: &Document, tolerance: f64) -> Vec<f64> {
     let tol = tolerance.max(0.0);
     let mut out = Vec::new();
     for highlights in [true, false] {
@@ -77,15 +43,15 @@ pub fn polylines(doc: &Document, tolerance: f64) -> Vec<f32> {
             for (i, p) in s.points.iter().enumerate() {
                 let q = p.pos();
                 if i == end || last.is_none_or(|l| l.distance(q) >= tol) {
-                    out.push(q.x as f32);
-                    out.push(q.y as f32);
+                    out.push(q.x);
+                    out.push(q.y);
                     last = Some(q);
                     n += 1;
                 }
             }
-            out[head] = n as f32;
-            out[head + 1] = f32::from_bits(rgba);
-            out[head + 2] = s.brush.max_width();
+            out[head] = n as f64;
+            out[head + 1] = rgba as f64;
+            out[head + 2] = s.brush.max_width() as f64;
         }
     }
     out
@@ -104,25 +70,21 @@ mod tests {
     }
 
     #[test]
-    fn region_holds_ink_and_view_and_only_grows() {
-        let mut g = Region::new();
-        let a = g.update(&r(0.0, 0.0, 100.0, 100.0), &r(0.0, 0.0, 50.0, 50.0));
-        assert!(a.contains(Vec2::new(0.0, 0.0)) && a.contains(Vec2::new(100.0, 100.0)));
-        // Same input: stays exactly put (no creeping).
-        assert_eq!(g.update(&r(0.0, 0.0, 100.0, 100.0), &r(10.0, 10.0, 60.0, 60.0)), a);
-        // The camera leaves the area: it grows to include the view.
-        let b = g.update(&r(0.0, 0.0, 100.0, 100.0), &r(500.0, 0.0, 600.0, 50.0));
-        assert!(b.contains(Vec2::new(600.0, 50.0)) && b.contains(Vec2::new(0.0, 0.0)));
-        // Coming back doesn't shrink it.
-        assert_eq!(g.update(&r(0.0, 0.0, 100.0, 100.0), &r(0.0, 0.0, 50.0, 50.0)), b);
-        // More ink further out grows it again.
-        let c = g.update(&r(0.0, -400.0, 100.0, 100.0), &r(0.0, 0.0, 50.0, 50.0));
-        assert!(c.contains(Vec2::new(0.0, -400.0)) && c.contains(Vec2::new(600.0, 50.0)));
-        g.reset();
-        assert_eq!(g.rect(), None);
+    fn region_follows_ink_and_view_and_shrinks_back() {
+        let ink = r(0.0, 0.0, 100.0, 100.0);
+        let home = region(&ink, &r(0.0, 0.0, 50.0, 50.0));
+        assert!(home.contains(Vec2::new(0.0, 0.0)) && home.contains(Vec2::new(100.0, 100.0)));
+        assert!(home.width() < 120.0, "hugs the drawing: {home:?}");
+        // The camera leaves: the area widens to keep it in sight.
+        let away = region(&ink, &r(500.0, 0.0, 600.0, 50.0));
+        assert!(away.contains(Vec2::new(600.0, 50.0)) && away.contains(Vec2::new(0.0, 0.0)));
+        // Coming back shrinks it to the drawing again.
+        assert_eq!(region(&ink, &r(0.0, 0.0, 50.0, 50.0)), home);
+        // Zoomed out with the drawing in view: the view decides.
+        let out = region(&ink, &r(-1000.0, -1000.0, 1000.0, 1000.0));
+        assert!(out.contains(Vec2::new(-1000.0, -1000.0)));
         // An empty note shows just the view.
-        let d = g.update(&Rect::EMPTY, &r(0.0, 0.0, 50.0, 50.0));
-        assert!(d.width() < 60.0);
+        assert!(region(&Rect::EMPTY, &r(0.0, 0.0, 50.0, 50.0)).width() < 60.0);
     }
 
     #[test]
@@ -141,7 +103,7 @@ mod tests {
         let n = p[0] as usize;
         assert_eq!(p.len(), 3 + 2 * n);
         assert!((10..=12).contains(&n), "{n} points");
-        assert_eq!(p[1].to_bits(), 0xff00_00ff);
+        assert_eq!(p[1] as u32, 0xff00_00ff);
         assert_eq!((p[3], p[4]), (0.0, 0.0));
         assert_eq!((p[p.len() - 2], p[p.len() - 1]), (50.0, 0.0));
     }

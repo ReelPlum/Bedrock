@@ -122,6 +122,7 @@ async function main() {
   new ResizeObserver(resize).observe(stage);
   minimap = new Minimap($('minimap'), canvas, {
     onMove: () => { input.requestFrame(); clearTimeout(camTimer); camTimer = setTimeout(saveCamera, 800); },
+    onFit: () => actions.fit(),
   });
   const redraw = () => { canvas.redraw(); input.requestFrame(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) redraw(); });

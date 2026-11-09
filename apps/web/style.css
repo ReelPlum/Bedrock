@@ -169,7 +169,7 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .minimap {
   position: fixed; z-index: 2;
   top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right));
-  width: 168px; height: 112px; padding: 0; overflow: hidden;
+  width: 168px; padding: 0; overflow: hidden;
   background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: 12px; box-shadow: var(--shadow);
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
 }
@@ -179,3 +179,8 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
   .minimap { top: calc(max(10px, env(safe-area-inset-top)) + 58px); }
   body:has(.toolbar[data-dock="top"]) .minimap { top: calc(max(10px, env(safe-area-inset-top)) + 124px); }
 }
+.minimap-bar { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 4px 0 10px; border-top: 1px solid var(--chrome-border); font-size: 12px; color: var(--muted); }
+.minimap-zoom { font-variant-numeric: tabular-nums; }
+.minimap-fit { display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 8px; font-size: 12px; color: var(--ink); }
+.minimap-fit:hover, .minimap-fit:active { background: rgba(0, 0, 0, 0.05); }
+.minimap-fit svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

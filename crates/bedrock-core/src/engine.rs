@@ -168,7 +168,7 @@ impl Engine {
     }
 
     fn to_input(&self, s: &ScreenSample, start_time: f64) -> InputPoint {
-        let w = self.camera.screen_to_world(s.pos());
+        let w = crate::camera::clamp_to_world(self.camera.screen_to_world(s.pos()));
         InputPoint {
             x: w.x,
             y: w.y,

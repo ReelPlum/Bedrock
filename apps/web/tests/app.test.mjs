@@ -604,7 +604,7 @@ test('an opened note shows its ink straight away, without touching the canvas', 
   await ctx.close();
 });
 
-test('the minimap shows the drawing and the view, grows with them, and moves the camera', async () => {
+test('the minimap shows the drawing and the view, follows them, shows zoom, fits, and moves the camera', async () => {
   const { page, ctx, errors } = await openApp(env, { viewport: { width: 1180, height: 820 } });
   const r = await page.evaluate(async () => {
     const mm = document.getElementById('minimap');
@@ -620,7 +620,7 @@ test('the minimap shows the drawing and the view, grows with them, and moves the
     for (let i = 0; i < 4; i++) await t.line(200, 200 + i * 60, 800, 220 + i * 60, { pressure: 0.9 });
     await new Promise((res) => setTimeout(res, 500));
     await t.frame();
-    const ink = dark();
+    const inkPx = dark();
     const area1 = bedrock.canvas.minimap_region();
     // Scroll far away: the area grows to include the view.
     bedrock.canvas.pan(-3000, 0);
@@ -636,17 +636,32 @@ test('the minimap shows the drawing and the view, grows with them, and moves the
     ev('pointerdown'); ev('pointerup');
     await t.frame();
     const back = bedrock.canvas.view_rect();
+    // Back at the drawing, the area shrinks to it again.
+    const area3 = bedrock.canvas.minimap_region();
+    // Zoom label, and the fit button.
+    bedrock.canvas.set_camera(5000, 5000, 0.5);
+    bedrock.input.requestFrame();
+    await t.frame();
+    const zoomText = document.getElementById('zoom-level').textContent;
+    document.getElementById('btn-fit').click();
+    await t.frame();
+    const fitted = bedrock.canvas.view_rect();
+    const ink = bedrock.canvas.ink_bounds();
     document.getElementById('show-minimap').click();
     const hidden = mm.hidden;
     const saved = JSON.parse(localStorage.getItem('bedrock.settings.v1')).showMinimap;
-    return { visibleAtStart, emptyInk, ink, area1, area2, view, back, hidden, saved, strokes: bedrock.canvas.stroke_count() };
+    return { visibleAtStart, emptyInk, ink: inkPx, area1, area2, area3, view, back, zoomText, fitted, inkBox: ink, hidden, saved, strokes: bedrock.canvas.stroke_count() };
   });
   assert.ok(r.visibleAtStart);
   assert.equal(r.emptyInk, 0);
   assert.ok(r.ink > 20, `minimap shows ink (${r.ink} px)`);
-  assert.ok(r.area2[2] >= r.view[2] && r.area2[0] <= r.area1[0], `area ${r.area2} holds view ${r.view} and the ink`);
+  assert.ok(r.area2[2] >= r.view[2] && r.area2[0] <= r.inkBox[0], `area ${r.area2} holds view ${r.view} and the ink ${r.inkBox}`);
   assert.ok(r.back[0] < r.view[0] - 1000, `tapping moved the view from ${r.view[0]} to ${r.back[0]}`);
   assert.equal(r.strokes, 4, 'tapping the minimap does not draw');
+  assert.ok(r.area3[2] - r.area3[0] < (r.area2[2] - r.area2[0]) / 2, `area shrank back from ${r.area2} to ${r.area3}`);
+  assert.equal(r.zoomText, '50%');
+  const [f, b] = [r.fitted, r.inkBox];
+  assert.ok(f[0] <= b[0] && f[1] <= b[1] && f[2] >= b[2] && f[3] >= b[3], `fit shows ${b} in ${f}`);
   assert.ok(r.hidden);
   assert.equal(r.saved, false);
   assert.deepEqual(errors, []);

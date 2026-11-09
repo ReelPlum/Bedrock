@@ -133,8 +133,15 @@
     <ul id="note-list"></ul>
   </aside>
 
-  <div class="minimap" id="minimap" hidden aria-label="Minimap: tap or drag to move around the note">
-    <canvas></canvas>
+  <div class="minimap" id="minimap" hidden>
+    <canvas aria-label="Minimap: tap or drag to move around the note"></canvas>
+    <div class="minimap-bar">
+      <span class="minimap-zoom" id="zoom-level" role="status" aria-label="Zoom level">100%</span>
+      <button class="minimap-fit" id="btn-fit" title="Show the whole drawing" aria-label="Show the whole drawing">
+        <svg viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><rect x="8.5" y="8.5" width="7" height="7" rx="1"/></svg>
+        Fit
+      </button>
+    </div>
   </div>
 
   <div id="hud" class="hud" hidden></div>
