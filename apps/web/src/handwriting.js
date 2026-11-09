@@ -34,11 +34,16 @@ export class Handwriting {
     this.dpr = 1;
   }
 
-  /** Load the spell-check word list (gzip, decompressed by the browser). */
-  async loadDictionary(url = 'dict/en.txt.gz') {
+  /** Load the spell-check word list: gzip (decompressed by the browser), or
+   *  plain text where a host can't serve .gz files. */
+  async loadDictionary(urls = ['dict/en.txt.gz', 'dict/en.txt']) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      let res = null;
+      for (const url of urls) {
+        res = await fetch(url).catch(() => null);
+        if (res && res.ok) break;
+      }
+      if (!res || !res.ok) throw new Error('no word list');
       // Some hosts already undo the gzip (Content-Encoding): check the magic.
       const bytes = new Uint8Array(await res.arrayBuffer());
       let text;
