@@ -469,7 +469,7 @@ impl Canvas {
     /// This device's pressure curve: up to six inner points, flat
     /// `[x, y, ...]` in 0..=1 (the ends (0,0) and (1,1) are fixed).
     pub fn set_pressure_points(&mut self, flat: &[f32]) {
-        let pts: Vec<(f32, f32)> = flat.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+        let pts: Vec<(f32, f32)> = flat.as_chunks::<2>().0.iter().map(|&[x, y]| (x, y)).collect();
         let before = bedrock_core::pen::pressure_points();
         bedrock_core::pen::set_pressure_points(&pts);
         if bedrock_core::pen::pressure_points() != before {
