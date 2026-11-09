@@ -51,12 +51,14 @@ function once(kind, load) {
 function textPipeline(quality) {
   return once(`text-${quality}`, async () => {
     lib ||= await import(TRANSFORMERS);
+    if (lib.env?.backends?.onnx?.wasm) lib.env.backends.onnx.wasm.numThreads = 1;
     const model = MODELS.text[quality];
     self.postMessage({ status: 'loading', kind: 'text', model });
     const device = 'gpu' in navigator ? 'webgpu' : 'wasm';
     const p = await lib.pipeline('image-to-text', model, {
       device,
       dtype: 'q8',
+      session_options: { enableCpuMemArena: false, enableMemPattern: false },
       progress_callback: (e) => {
         if (e.status === 'progress') self.postMessage({ status: 'loading', kind: 'text', model, progress: e.progress });
       },
@@ -108,6 +110,7 @@ function mathModel() {
     lib ||= tf;
     ort.env.wasm.wasmPaths = ORT_DIR;
     ort.env.logLevel = 'error'; // not its CPU-detection warnings
+    ort.env.wasm.numThreads = 1; // no cross-origin isolation, and less memory
     const base = `https://huggingface.co/${model}/resolve/main/`;
     const shares = { 'encoder_model.onnx': 0.75, 'decoder_model.onnx': 0.25 };
     const done = {};
@@ -121,7 +124,9 @@ function mathModel() {
       fetchCached(`${base}decoder_model.onnx`, progress('decoder_model.onnx')),
       lib.AutoTokenizer.from_pretrained(model),
     ]);
-    const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
+    // No arena or memory patterns: lower peak memory, which iPad Safari's
+    // WebAssembly limit needs more than the last bit of speed.
+    const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all', enableCpuMemArena: false, enableMemPattern: false };
     const encoder = await ort.InferenceSession.create(enc, opts);
     const decoder = await ort.InferenceSession.create(dec, opts);
     self.postMessage({ status: 'ready', kind: 'math', model });
@@ -186,6 +191,7 @@ self.onmessage = async (e) => {
     const text = kind === 'math' ? await readMath(image) : await readText(image, quality);
     self.postMessage({ id, text, engine: kind === 'math' ? `${MODELS.math} (onnxruntime-web)` : `${MODELS.text[quality]} (transformers.js)` });
   } catch (err) {
-    self.postMessage({ id, error: String(err && err.message ? err.message : err) });
+    const model = kind === 'math' ? MODELS.math : MODELS.text[quality];
+    self.postMessage({ id, error: `${model}: ${String(err && err.message ? err.message : err)}` });
   }
 };

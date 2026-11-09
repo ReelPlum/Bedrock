@@ -965,6 +965,53 @@ test('careful reading: the larger model re-reads words after a pause, stops when
   await ctx.close();
 });
 
+test('each recognition model runs in its own worker, and one that runs out of memory is restarted', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    const made = [];
+    const Real = window.Worker;
+    // A stand-in worker: the first math request runs out of memory.
+    let mathCalls = 0;
+    window.Worker = class {
+      constructor() { this.terminated = false; made.push(this); }
+      postMessage(m) {
+        const reply = m.kind === 'math' && ++mathCalls === 1
+          ? { id: m.id, error: 'breezedeus/pix2text-mfr-1.5: WebAssembly.Memory(): could not allocate memory' }
+          : { id: m.id, text: `${m.kind}/${m.quality}`, engine: 'fake' };
+        setTimeout(() => this.onmessage({ data: reply }), 0);
+      }
+      terminate() { this.terminated = true; }
+    };
+    const image = new Blob(['x'], { type: 'image/png' });
+    hw.engine = null;
+    const run = hw._engine();
+    const out = {};
+    out.fast = (await run({ kind: 'text', image, quality: 'fast' })).text;
+    out.careful = (await run({ kind: 'text', image, quality: 'careful' })).text;
+    out.oom = await run({ kind: 'math', image }).then(() => 'ok', (e) => e.message);
+    out.afterOom = [...hw.workers.keys()].sort();
+    out.terminated = made.filter((w) => w.terminated).length;
+    out.math = (await run({ kind: 'math', image })).text;
+    out.slots = [...hw.workers.keys()].sort();
+    out.made = made.length;
+    hw.dropWorker('text-careful');
+    out.dropped = [...hw.workers.keys()].sort();
+    window.Worker = Real;
+    return out;
+  });
+  assert.equal(r.fast, 'text/fast');
+  assert.equal(r.careful, 'text/careful');
+  assert.match(r.oom, /pix2text-mfr-1\.5: .*memory/, 'the error names the model');
+  assert.deepEqual(r.afterOom, ['text-careful', 'text-fast'], 'the worker that ran out of memory is gone');
+  assert.equal(r.terminated, 1);
+  assert.equal(r.math, 'math/undefined', 'a fresh worker takes the next request');
+  assert.deepEqual(r.slots, ['math', 'text-careful', 'text-fast']);
+  assert.equal(r.made, 4);
+  assert.deepEqual(r.dropped, ['math', 'text-fast']);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

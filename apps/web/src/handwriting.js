@@ -30,7 +30,7 @@ export class Handwriting {
     this.enabled = true;
     this.spelling = true;
     this.engine = null; // null: the built-in worker, created on first use
-    this.worker = null;
+    this.workers = new Map(); // 'text-fast' | 'text-careful' | 'math' -> Worker
     this.pending = new Map(); // request id -> { resolve, reject }
     this.inFlight = new Set(); // word ids being recognised
     this.failed = new Map(); // 'fast:id' / 'careful:id' -> attempts
@@ -111,6 +111,9 @@ export class Handwriting {
       if (run !== this.carefulRun || !this.enabled || this.canvas.is_drawing()) return;
       await this._recognise(w, 'careful');
     }
+    // Pass finished: give the larger model's memory back until next time,
+    // unless it is the only model in use.
+    if (todo.length && this.mode === 'both') this.dropWorker('text-careful');
   }
 
   async _recognise(word, quality = 'fast') {
@@ -139,24 +142,55 @@ export class Handwriting {
     this.onWordStatus(id, text);
   }
 
+  /** Each model runs in its own worker: its own WebAssembly memory, which
+   *  iPad Safari keeps small, and it can be dropped to free that memory. */
+  _slot(kind, quality) {
+    return kind === 'math' ? 'math' : quality === 'careful' ? 'text-careful' : 'text-fast';
+  }
+
+  _worker(slot) {
+    let w = this.workers.get(slot);
+    if (w) return w;
+    w = new Worker(new URL('./recognizer-worker.js', import.meta.url), { type: 'module' });
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.status) return this.onStatus(m);
+      const p = this.pending.get(m.id);
+      if (!p) return;
+      this.pending.delete(m.id);
+      if (m.error) {
+        // Out of memory leaves the worker's heap unusable: start afresh.
+        if (/memory/i.test(m.error)) this.dropWorker(slot);
+        p.reject(new Error(m.error));
+      } else p.resolve(m);
+    };
+    w.onerror = (e) => {
+      this.onStatus({ error: e.message || 'recogniser failed to start' });
+      this.dropWorker(slot);
+    };
+    this.workers.set(slot, w);
+    return w;
+  }
+
+  /** Stop a model's worker and free its memory (it reloads from the
+   *  browser's cache when next needed). */
+  dropWorker(slot) {
+    const w = this.workers.get(slot);
+    if (!w) return;
+    w.terminate();
+    this.workers.delete(slot);
+    for (const [id, p] of this.pending) {
+      if (p.slot === slot) { this.pending.delete(id); p.reject(new Error('recogniser stopped')); }
+    }
+  }
+
   _engine() {
     if (this.engine) return this.engine;
-    if (!this.worker) {
-      this.worker = new Worker(new URL('./recognizer-worker.js', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (e) => {
-        const m = e.data;
-        if (m.status) return this.onStatus(m);
-        const p = this.pending.get(m.id);
-        if (!p) return;
-        this.pending.delete(m.id);
-        if (m.error) p.reject(new Error(m.error)); else p.resolve(m);
-      };
-      this.worker.onerror = (e) => this.onStatus({ error: e.message || 'recogniser failed to start' });
-    }
     return ({ kind, image, quality }) => new Promise((resolve, reject) => {
+      const slot = this._slot(kind, quality);
       const id = ++this.seq;
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ id, kind, image, quality });
+      this.pending.set(id, { resolve, reject, slot });
+      this._worker(slot).postMessage({ id, kind, image, quality });
     });
   }
 
