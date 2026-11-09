@@ -559,6 +559,11 @@ test('saving happens in the background and the saved note matches exactly', asyn
   const { page } = await openApp(env, { context });
   const r = await page.evaluate(async () => {
     const c = bedrock.canvas;
+    // This measures the saver alone. Recognition would otherwise wake up
+    // during the measured save, and the first word image it draws starts
+    // the browser's canvas rasteriser, which takes ~800 ms in a headless
+    // browser without a GPU (CI) and has nothing to do with saving.
+    bedrock.handwriting.enabled = false;
     // A big note: 800 handwriting-sized strokes.
     let id = 100;
     for (let s = 0; s < 800; s++) {
