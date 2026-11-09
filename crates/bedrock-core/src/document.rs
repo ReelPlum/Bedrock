@@ -437,12 +437,57 @@ impl Document {
             .filter(|l| !l.strokes.is_empty() && l.strokes.iter().all(|s| ids.contains(s)))
             .map(|l| {
                 let mut l = l.clone();
-                if let Some(r) = self.recognition.iter().find(|r| r.strokes == l.strokes) {
-                    l.text = Some(r.text.clone());
+                if let Some(t) = self.text_of(&l.strokes) {
+                    l.text = Some(t);
                 }
                 l
             })
             .collect()
+    }
+
+    /// Recognised text of some strokes: the words read from them, in
+    /// writing order, joined by spaces. None if nothing was read.
+    pub fn text_of(&self, strokes: &[StrokeId]) -> Option<String> {
+        let mine: HashSet<StrokeId> = strokes.iter().copied().collect();
+        let index: HashMap<StrokeId, usize> = self.strokes.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+        let mut parts: Vec<(usize, &str)> = self
+            .recognition
+            .iter()
+            .filter(|r| !r.strokes.is_empty() && r.strokes.iter().all(|s| mine.contains(s)))
+            .map(|r| {
+                (r.strokes.iter().filter_map(|s| index.get(s)).copied().min().unwrap_or(usize::MAX), r.text.as_str())
+            })
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        parts.sort_by_key(|p| p.0);
+        Some(parts.iter().map(|p| p.1).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "))
+    }
+
+    /// Make these strokes (any number of words) a link, replacing links on
+    /// any of them; an empty target removes those links.
+    pub fn set_link(&mut self, strokes: &[StrokeId], target: &str, kind: &str) {
+        let mine: HashSet<StrokeId> = strokes.iter().copied().collect();
+        self.links.retain(|l| !l.strokes.iter().any(|s| mine.contains(s)));
+        let target = target.trim();
+        if !target.is_empty() && !strokes.is_empty() {
+            self.links.push(Link {
+                strokes: strokes.to_vec(),
+                target: target.to_string(),
+                kind: kind.to_string(),
+                text: None,
+            });
+        }
+        self.revision += 1;
+    }
+
+    /// The link a word belongs to (all its strokes are in the link).
+    pub fn link_of(&self, word: &[StrokeId]) -> Option<&Link> {
+        if word.is_empty() {
+            return None;
+        }
+        self.links.iter().rev().find(|l| word.iter().all(|s| l.strokes.contains(s)))
     }
 
     pub fn undo(&mut self) -> bool {

@@ -68,7 +68,7 @@ export class RecognizerView {
     const kind = document.createElement('span');
     kind.className = 'rv-kind';
     const yours = w.engine === 'user';
-    kind.textContent = w.kind === 'math' ? 'Maths'
+    kind.textContent = w.kind === 'drawing' ? 'Not a word' : w.kind === 'math' ? 'Maths'
       : yours ? 'Yours'
         : w.text == null ? 'Text'
           : this.hw.isCareful(w) ? 'Careful' : 'Live';

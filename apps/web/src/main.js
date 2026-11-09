@@ -133,6 +133,11 @@ async function main() {
     },
     onCommit: () => {
       scheduleSave();
+      // One-finger double tap: eraser, and back to the tool before.
+      if (canvas.take_gesture() === 'toggle-eraser') {
+        const back = settings.prevTool && settings.prevTool !== 'eraser' ? settings.prevTool : settings.brush;
+        selectTool(currentTool() === 'eraser' ? back : 'eraser', { noToggle: true });
+      }
       // The first time a scribble erases something, say how to get it back.
       if (canvas.take_scribble_erased() && !scribbleToastShown) {
         scribbleToastShown = true;

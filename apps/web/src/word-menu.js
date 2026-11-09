@@ -29,20 +29,18 @@ export class WordMenu {
       if (l) linkType(l.type)?.open(l.target);
       this.close();
     });
-    $('wm-link').addEventListener('click', () => { if (this._ensureWord()) this._show('link'); });
+    // Linking a selection leaves its words as they are.
+    $('wm-link').addEventListener('click', () => this._show('link'));
     $('wm-unlink').addEventListener('click', () => {
-      if (this.word && this.canvas.set_word_link(this.word.id, '', '')) this.onChange();
+      if (this.word && this._link('', '')) this.onChange();
       this.close();
     });
     $('wm-correct').addEventListener('click', () => { if (this._ensureWord()) this._show('correct'); });
     // Wrongly taken for maths, or maths taken for text: read it again with
     // the other recogniser.
-    $('wm-kind').addEventListener('click', () => {
-      if (!this._ensureWord()) return;
-      const kind = this.word.kind === 'math' ? 'text' : 'math';
-      if (this.canvas.set_word_kind(this.word.id, kind)) this.onChange();
-      this.close();
-    });
+    $('wm-kind').addEventListener('click', () => this._setKind(this.word?.kind === 'text' ? 'math' : 'text'));
+    // A drawing or doodle: never read or spell-checked.
+    $('wm-drawing').addEventListener('click', () => this._setKind('drawing'));
     $('wm-group').addEventListener('click', () => {
       this._ensureWord();
       this.close();
@@ -103,11 +101,22 @@ export class WordMenu {
   /** Open the menu for a selection (from `canvas.selection_json()`). */
   openSelection(sel) {
     const word = sel.word && this._wordById(sel.word);
-    this.open(word || { id: null, bounds: sel.bounds, kind: 'text', text: null, link: null }, sel);
+    const link = JSON.parse(this.canvas.selection_link_json());
+    this.open(word || { id: null, bounds: sel.bounds, kind: 'text', text: null, link }, sel);
   }
 
   _wordById(id) {
     return JSON.parse(this.canvas.words_json()).find((w) => w.id === id) || null;
+  }
+
+  /** Say what the word (or selection, which stays as many words) is. */
+  _setKind(kind) {
+    if (!this.word) return;
+    const ok = this.selection && !this.selection.word
+      ? this.canvas.set_selection_kind(kind)
+      : this.canvas.set_word_kind(this.word.id, kind);
+    if (ok) this.onChange();
+    this.close();
   }
 
   /** A selection that isn't one word yet becomes one. False if it can't. */
@@ -138,12 +147,13 @@ export class WordMenu {
     const $ = this.$;
     const n = selection?.strokes.length || 0;
     const maths = word.kind === 'math';
+    const drawing = word.kind === 'drawing';
     $('wm-word').textContent = word.id == null ? `${n} stroke${n === 1 ? '' : 's'} selected`
-      : maths ? (selection ? 'Selected formula' : 'Formula') : selection ? 'Selected word' : 'Handwritten word';
+      : drawing ? 'Not a word' : maths ? (selection ? 'Selected formula' : 'Formula') : selection ? 'Selected word' : 'Handwritten word';
     const reading = $('wm-reading');
     reading.replaceChildren();
     if (word.id != null) {
-      const d = this.describe(word);
+      const d = drawing ? { waiting: 'Left as a drawing: never read or spell-checked' } : this.describe(word);
       if (d.text != null) {
         reading.append(maths ? 'Read as LaTeX ' : 'Read as ', Object.assign(document.createElement('b'), { textContent: d.text === '' ? '(nothing)' : `“${d.text}”` }));
         if (d.by) reading.append(` · ${d.by}`);
@@ -152,7 +162,9 @@ export class WordMenu {
       }
     }
     reading.hidden = word.id == null;
-    $('wm-kind').textContent = maths ? 'Not maths: read it as text' : 'Read it as maths';
+    $('wm-kind').textContent = drawing ? 'It is writing: read it' : maths ? 'Not maths: read it as text' : 'Read it as maths';
+    $('wm-drawing').hidden = drawing;
+    $('wm-correct').hidden = drawing;
     $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
@@ -195,6 +207,12 @@ export class WordMenu {
     if (!this.el.hidden) this._place();
   }
 
+  /** Link (or unlink, with '') the word, or the whole selection. */
+  _link(target, type) {
+    if (this.selection && !this.selection.word) return this.canvas.set_selection_link(target, type);
+    return this.canvas.set_word_link(this.word.id, target, type);
+  }
+
   _typeChanged() {
     const t = linkType(this.$('wm-link-type').value);
     const input = this.$('wm-link-target');
@@ -211,7 +229,7 @@ export class WordMenu {
       err.hidden = false;
       return;
     }
-    if (this.canvas.set_word_link(this.word.id, target, t.id)) this.onChange();
+    if (this._link(target, t.id)) this.onChange();
     this.close();
   }
 

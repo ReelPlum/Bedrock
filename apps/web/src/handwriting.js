@@ -90,7 +90,7 @@ export class Handwriting {
     if (!this.enabled || this.mode === 'careful') return;
     if (this.canvas.is_drawing()) return this.schedule();
     const words = JSON.parse(this.canvas.words_json());
-    const todo = words.filter((w) => w.text == null && !this.inFlight.has(w.id) && this._tries('fast', w.id) < 2);
+    const todo = words.filter((w) => w.kind !== 'drawing' && w.text == null && !this.inFlight.has(w.id) && this._tries('fast', w.id) < 2);
     await Promise.all(todo.map((w) => this._recognise(w, 'fast')));
   }
 
@@ -106,7 +106,7 @@ export class Handwriting {
     if (!this.enabled || this.mode === 'live') return;
     const run = this.carefulRun;
     const words = JSON.parse(this.canvas.words_json());
-    const todo = words.filter((w) => !this.isCareful(w) && !this.inFlight.has(w.id) && this._tries('careful', w.id) < 2);
+    const todo = words.filter((w) => w.kind !== 'drawing' && !this.isCareful(w) && !this.inFlight.has(w.id) && this._tries('careful', w.id) < 2);
     for (const w of todo) {
       if (run !== this.carefulRun || !this.enabled || this.canvas.is_drawing()) return;
       await this._recognise(w, 'careful');

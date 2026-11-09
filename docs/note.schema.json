@@ -52,7 +52,7 @@
         "required": ["strokes", "kind"],
         "properties": {
           "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 },
-          "kind": { "type": "string", "enum": ["text", "math"] }
+          "kind": { "type": "string", "enum": ["text", "math", "drawing"] }
         }
       }
     }

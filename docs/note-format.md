@@ -155,7 +155,8 @@ as Markdown.
 Words are normally found automatically from the gaps between strokes. A
 `groups` entry is strokes the writer made into one word with the lasso; it
 overrides the automatic split, and is saved only while all its strokes exist.
-A `kinds` entry says some strokes are `text` or `math` (LaTeX), overriding the
+A `kinds` entry says some strokes are `text`, `math` (LaTeX) or `drawing`
+(not writing: never read or spell-checked), overriding the
 guess: a word follows it when any of its strokes is listed, so writing more
 onto a formula keeps it maths. Moving strokes gives them new ids; both lists,
 `links` and `recognition` follow the new ids.

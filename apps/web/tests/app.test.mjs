@@ -1447,6 +1447,86 @@ test('scribbling over a word erases it (one undo brings it back); over empty pap
   await ctx.close();
 });
 
+test('a lassoed paragraph becomes one link but stays separate words; "Not a word" is never read; a one-finger double tap toggles the eraser', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    const reads = [];
+    hw.engine = async ({ word }) => { reads.push(word.id); return { text: `w${word.strokes.length}`, engine: 'fake' }; };
+    bedrock.minimap.visible = false;
+    const c = bedrock.canvas;
+    const $ = (id) => document.getElementById(id);
+    const word = (x0, n, y = 300) => {
+      for (let k = 0; k < n; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, y, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, y - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, y, { pressure: 0 });
+      }
+    };
+    word(300, 3);
+    word(420, 2);
+    word(300, 1, 400); // a doodle on the next line
+    await t.frame();
+    await hw.run();
+    const words = () => JSON.parse(c.words_json());
+    const out = {};
+    document.querySelector('[data-tool="lasso"]').click();
+    const loop = [[285, 250], [480, 250], [480, 320], [285, 320], [283, 255]];
+    t.ev('pointerdown', 2, 'pen', ...loop[0], { pressure: 0.5 });
+    for (const p of loop.slice(1)) t.ev('pointermove', 2, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 2, 'pen', 283, 255, { pressure: 0 });
+    bedrock.wordMenu.openSelection(JSON.parse(c.selection_json()));
+    $('wm-link').click();
+    $('wm-link-target').value = 'example.com';
+    document.querySelector('#wm-link-form .wm-save').click();
+    out.words = words().map((w) => [w.text, w.link?.target ?? null]);
+    out.linkText = JSON.parse(c.export_json()).links.map((l) => l.text);
+    out.underlines = c.link_bounds().length / 4;
+    bedrock.wordMenu.openSelection(JSON.parse(c.selection_json()));
+    out.linkNow = $('wm-link-now').textContent;
+    bedrock.wordMenu.close();
+    // The doodle: not a word.
+    const doodle = words().find((w) => w.bounds[1] > 350);
+    bedrock.wordMenu.open(doodle);
+    out.drawingOffered = !$('wm-drawing').hidden;
+    $('wm-drawing').click();
+    const readsBefore = reads.length;
+    await hw.run();
+    await hw.runCareful();
+    const d = words().find((w) => w.bounds[1] > 350);
+    out.doodle = [d.kind, d.text, reads.slice(readsBefore).filter((id) => id === d.id).length];
+    bedrock.wordMenu.open(d);
+    out.doodleMenu = [$('wm-word').textContent, $('wm-kind').textContent, $('wm-drawing').hidden];
+    bedrock.wordMenu.close();
+    // One-finger double tap: eraser, then back to the lasso.
+    const tap = async () => {
+      t.ev('pointerdown', 9, 'touch', 700, 600);
+      t.ev('pointerup', 9, 'touch', 700, 600);
+      await new Promise((res) => setTimeout(res, 60));
+    };
+    const tool = () => document.querySelector('.tool[aria-checked="true"]')?.dataset.tool || document.querySelector('.tool[aria-checked="true"]')?.dataset.brush;
+    await tap(); await tap();
+    out.afterDouble = tool();
+    await tap(); await tap();
+    out.afterSecond = tool();
+    out.strokes = c.stroke_count();
+    return out;
+  });
+  assert.deepEqual(r.words, [['w3', 'https://example.com/'], ['w2', 'https://example.com/'], ['w1', null]], 'still two words, both linked');
+  assert.deepEqual(r.linkText, ['w3 w2']);
+  assert.equal(r.underlines, 2, 'underlined word by word');
+  assert.equal(r.linkNow, 'Links to example.com');
+  assert.ok(r.drawingOffered);
+  assert.deepEqual(r.doodle, ['drawing', null, 0], 'not read, by either model');
+  assert.deepEqual(r.doodleMenu, ['Not a word', 'It is writing: read it', true]);
+  assert.equal(r.afterDouble, 'eraser');
+  assert.equal(r.afterSecond, 'lasso');
+  assert.equal(r.strokes, 6, 'taps draw nothing');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('a .bedrock export opens again with identical strokes', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

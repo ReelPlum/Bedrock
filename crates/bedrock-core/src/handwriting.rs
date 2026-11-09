@@ -32,6 +32,28 @@ pub const USER: &str = "user";
 pub enum Kind {
     Text,
     Math,
+    /// The writer said it is not writing (a drawing, a doodle): it is never
+    /// read or spell-checked.
+    Drawing,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Text => "text",
+            Kind::Math => "math",
+            Kind::Drawing => "drawing",
+        }
+    }
+
+    /// "math", "drawing", anything else is text.
+    pub fn parse(s: &str) -> Kind {
+        match s {
+            "math" => Kind::Math,
+            "drawing" => Kind::Drawing,
+            _ => Kind::Text,
+        }
+    }
 }
 
 /// A word as the recogniser sees it.
@@ -124,15 +146,14 @@ impl Handwriting {
                     bounds: w.bounds,
                     letter_height: lh,
                     kind: match doc.kind_of(&w.strokes) {
-                        Some("math") => Kind::Math,
-                        Some(_) => Kind::Text,
+                        Some(k) => Kind::parse(k),
                         None if looks_like_math(doc, w, lh) => Kind::Math,
                         None => Kind::Text,
                     },
                     text: Self::text_for(doc, w).map(|r| r.text.clone()),
                     engine: Self::text_for(doc, w).and_then(|r| r.engine.clone()),
                     alternatives: Self::text_for(doc, w).map(|r| r.alternatives.clone()).unwrap_or_default(),
-                    link: doc.links.iter().find(|l| l.strokes == w.strokes).cloned(),
+                    link: doc.link_of(&w.strokes).cloned(),
                 }
             })
             .collect()
@@ -198,17 +219,9 @@ impl Handwriting {
     pub fn set_link(&mut self, doc: &mut Document, id: u64, target: &str, kind: &str) -> bool {
         self.refresh(doc);
         let Some(w) = self.layout.words.iter().find(|w| w.id == id) else { return false };
-        let mine: HashSet<StrokeId> = w.strokes.iter().copied().collect();
-        doc.links.retain(|l| !l.strokes.iter().any(|s| mine.contains(s)));
-        let target = target.trim();
-        if !target.is_empty() {
-            doc.links.push(Link {
-                strokes: w.strokes.clone(),
-                target: target.to_string(),
-                kind: kind.to_string(),
-                text: None,
-            });
-        }
+        // A word inside a longer link changes (or removes) that whole link.
+        let strokes = doc.link_of(&w.strokes).map(|l| l.strokes.clone()).unwrap_or_else(|| w.strokes.clone());
+        doc.set_link(&strokes, target, kind);
         true
     }
 
@@ -351,6 +364,36 @@ mod tests {
         let back = crate::format::from_json(&crate::format::to_json(&doc), 0).unwrap();
         assert!(back.warnings.is_empty());
         assert_eq!(back.doc.live_kinds(), doc.live_kinds());
+    }
+
+    #[test]
+    fn not_a_word_is_never_read_and_long_links_keep_their_words() {
+        let mut doc = Document::new(6);
+        let x = line(&mut doc, 0.0, 100.0, 3);
+        let x = line(&mut doc, x, 100.0, 4);
+        line(&mut doc, x, 100.0, 2);
+        let mut hw = Handwriting::new();
+        let w = hw.words(&doc);
+        for (i, t) in ["see", "the", "docs"].iter().enumerate() {
+            assert!(hw.set_text(&mut doc, w[i].id, t, Kind::Text, "test", None));
+        }
+        // A link over the first two words: they stay two words.
+        let both: Vec<StrokeId> = w[0].strokes.iter().chain(&w[1].strokes).copied().collect();
+        doc.set_link(&both, "https://example.com", "url");
+        let info = hw.words(&doc);
+        assert_eq!(info.len(), 3);
+        assert!(info[0].link.is_some() && info[1].link.is_some() && info[2].link.is_none());
+        assert_eq!(doc.live_links()[0].text.as_deref(), Some("see the"));
+        // Changing the link from one of its words changes the whole link.
+        assert!(hw.set_link(&mut doc, info[1].id, "https://example.org", "url"));
+        assert_eq!(doc.links.len(), 1);
+        assert_eq!(doc.links[0].strokes, both);
+        // The last one is a doodle, not a word.
+        doc.set_kind(&info[2].strokes, "drawing");
+        let info = hw.words(&doc);
+        assert_eq!(info[2].kind, Kind::Drawing);
+        assert_eq!(info[2].text, None);
+        assert_eq!(Kind::parse(Kind::Drawing.name()), Kind::Drawing);
     }
 
     #[test]

@@ -102,6 +102,13 @@ struct TouchGesture {
     cancelled: bool,
 }
 
+/// Gestures whose meaning lives in the app (e.g. which tool is current).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gesture {
+    /// One-finger double tap: switch between the eraser and the tool before.
+    ToggleEraser,
+}
+
 pub const TAP_MAX_MS: f64 = 300.0;
 pub const TAP_MAX_MOVE: f64 = 12.0;
 /// Longest pause between the two taps of a double tap.
@@ -117,6 +124,8 @@ pub struct Engine {
     pub finger_drawing: bool,
     /// Scribbling over ink erases it (see [`crate::scribble`]).
     pub scribble_erase: bool,
+    /// A gesture for the app to act on (see [`Engine::take_gesture`]).
+    gesture: Option<Gesture>,
     /// Strokes the last scribble erased, until read with
     /// [`Engine::take_scribble_erased`].
     scribble_erased: usize,
@@ -145,6 +154,7 @@ impl Engine {
             finger_drawing: false,
             scribble_erase: true,
             scribble_erased: 0,
+            gesture: None,
             selection: Vec::new(),
             active: None,
             predicted: Vec::new(),
@@ -508,7 +518,9 @@ impl Engine {
         if self.touch.touches.is_empty() {
             let t = std::mem::take(&mut self.touch);
             let tap = !t.cancelled && time - t.start_time <= TAP_MAX_MS && t.moved <= TAP_MAX_MOVE;
-            if !tap || !(2..=3).contains(&t.max_touches) {
+            // One finger counts only when fingers don't draw (then a tap is a dot).
+            let fingers_ok = (2..=3).contains(&t.max_touches) || (t.max_touches == 1 && !self.finger_drawing);
+            if !tap || !fingers_ok {
                 self.last_tap = None;
                 return;
             }
@@ -517,10 +529,14 @@ impl Engine {
                 if n == t.max_touches && t.start_time - end <= DOUBLE_TAP_GAP_MS);
             if double {
                 self.last_tap = None;
-                if t.max_touches == 2 {
-                    self.undo();
-                } else {
-                    self.redo();
+                match t.max_touches {
+                    1 => self.gesture = Some(Gesture::ToggleEraser),
+                    2 => {
+                        self.undo();
+                    }
+                    _ => {
+                        self.redo();
+                    }
                 }
             } else {
                 self.last_tap = Some((t.max_touches, time));
@@ -546,6 +562,11 @@ impl Engine {
         }
         self.dirty |= r;
         r
+    }
+
+    /// The last gesture the app should act on, once.
+    pub fn take_gesture(&mut self) -> Option<Gesture> {
+        self.gesture.take()
     }
 
     /// How many strokes a scribble erased since the last call (0 if none).
@@ -783,6 +804,27 @@ mod tests {
         assert_eq!(e.doc.len(), 1, "a single two-finger tap does nothing");
         tap(&mut e, 2, 1200.0);
         assert!(e.doc.is_empty(), "the second tap undoes");
+    }
+
+    #[test]
+    fn one_finger_double_tap_asks_to_toggle_the_eraser() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        tap(&mut e, 1, 1000.0);
+        assert_eq!(e.take_gesture(), None, "one tap is nothing");
+        tap(&mut e, 1, 1200.0);
+        assert_eq!(e.take_gesture(), Some(Gesture::ToggleEraser));
+        assert_eq!(e.take_gesture(), None, "only once");
+        assert_eq!(e.doc.len(), 1, "no ink, no undo");
+        // Taps too far apart, or a pan, don't count.
+        tap(&mut e, 1, 3000.0);
+        tap(&mut e, 1, 4000.0);
+        assert_eq!(e.take_gesture(), None);
+        // With finger drawing on, a finger tap is a dot instead.
+        e.finger_drawing = true;
+        tap(&mut e, 1, 5000.0);
+        tap(&mut e, 1, 5200.0);
+        assert_eq!(e.take_gesture(), None);
     }
 
     #[test]

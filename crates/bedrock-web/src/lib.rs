@@ -276,7 +276,6 @@ impl Canvas {
     /// y1], letterHeight, kind: "text" | "math", text?}]`. `id` is hex and
     /// changes whenever the word's strokes change.
     pub fn words_json(&mut self) -> String {
-        use bedrock_core::handwriting::Kind;
         let words = self.hw.words(&self.engine.doc);
         let v: Vec<serde_json::Value> = words
             .iter()
@@ -286,7 +285,7 @@ impl Canvas {
                     "strokes": w.strokes.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                     "bounds": [w.bounds.min.x, w.bounds.min.y, w.bounds.max.x, w.bounds.max.y],
                     "letterHeight": w.letter_height,
-                    "kind": if w.kind == Kind::Math { "math" } else { "text" },
+                    "kind": w.kind.name(),
                     "text": w.text,
                     "engine": w.engine,
                     "alternatives": w.alternatives,
@@ -322,7 +321,7 @@ impl Canvas {
     pub fn set_word_text(&mut self, word_id: &str, text: &str, kind: &str, engine: &str, confidence: f64) -> bool {
         use bedrock_core::handwriting::Kind;
         let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
-        let kind = if kind == "math" { Kind::Math } else { Kind::Text };
+        let kind = Kind::parse(kind);
         let conf = (confidence.is_finite() && confidence >= 0.0).then_some(confidence as f32);
         let ok = self.hw.set_text(&mut self.engine.doc, id, text, kind, engine, conf);
         if ok {
@@ -337,7 +336,7 @@ impl Canvas {
     pub fn correct_word(&mut self, word_id: &str, text: &str, kind: &str) -> bool {
         use bedrock_core::handwriting::Kind;
         let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
-        let kind = if kind == "math" { Kind::Math } else { Kind::Text };
+        let kind = Kind::parse(kind);
         let ok = self.hw.correct(&mut self.engine.doc, id, text, kind);
         if ok {
             self.engine.invalidate();
@@ -355,22 +354,67 @@ impl Canvas {
         ok
     }
 
-    /// The writer says a word is "text" or "math": it is read again by that
+    /// The writer says a word is "text", "math" or "drawing" (not a word): it is read again by that
     /// recogniser (and stays that kind as more is written onto it).
     pub fn set_word_kind(&mut self, word_id: &str, kind: &str) -> bool {
         let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
         let Some(w) = self.hw.layout(&self.engine.doc).words.iter().find(|w| w.id == id) else { return false };
         let strokes = w.strokes.clone();
-        self.engine.doc.set_kind(&strokes, if kind == "math" { "math" } else { "text" });
+        self.engine.doc.set_kind(&strokes, bedrock_core::handwriting::Kind::parse(kind).name());
         self.engine.invalidate();
         true
     }
 
-    /// Bounds of linked ink, flat `[x0, y0, x1, y1, ...]`, for underlining.
-    pub fn link_bounds(&self) -> Vec<f64> {
-        let doc = &self.engine.doc;
+    /// Link the selected strokes (any number of words, which stay separate
+    /// words); an empty target removes links on them.
+    pub fn set_selection_link(&mut self, target: &str, kind: &str) -> bool {
+        let ids = self.engine.selection();
+        if ids.is_empty() {
+            return false;
+        }
+        self.engine.doc.set_link(&ids, target, kind);
+        self.engine.invalidate();
+        true
+    }
+
+    /// Say the selected strokes are "text", "math" or "drawing", without grouping them.
+    pub fn set_selection_kind(&mut self, kind: &str) -> bool {
+        let ids = self.engine.selection();
+        if ids.is_empty() {
+            return false;
+        }
+        self.engine.doc.set_kind(&ids, bedrock_core::handwriting::Kind::parse(kind).name());
+        self.engine.invalidate();
+        true
+    }
+
+    /// The link on the selection: `{target, type}` if all of it is one link.
+    pub fn selection_link_json(&self) -> String {
+        let ids = self.engine.selection();
+        match self.engine.doc.link_of(&ids) {
+            Some(l) => serde_json::json!({ "target": l.target, "type": l.kind }).to_string(),
+            None => "null".into(),
+        }
+    }
+
+    /// Bounds of linked ink, flat `[x0, y0, x1, y1, ...]`, for underlining:
+    /// one per word, so a linked paragraph is underlined line by line.
+    pub fn link_bounds(&mut self) -> Vec<f64> {
         let mut out = Vec::new();
-        for l in doc.live_links() {
+        let links = self.engine.doc.live_links();
+        let layout = self.hw.layout(&self.engine.doc).clone();
+        let doc = &self.engine.doc;
+        for l in links {
+            let mut any = false;
+            for w in
+                layout.words.iter().filter(|w| !w.strokes.is_empty() && w.strokes.iter().all(|s| l.strokes.contains(s)))
+            {
+                out.extend_from_slice(&[w.bounds.min.x, w.bounds.min.y, w.bounds.max.x, w.bounds.max.y]);
+                any = true;
+            }
+            if any {
+                continue;
+            }
             let mut r: Option<bedrock_core::geom::Rect> = None;
             for s in doc.strokes().iter().filter(|s| l.strokes.contains(&s.id)) {
                 let b = s.bounds();
@@ -523,6 +567,14 @@ impl Canvas {
     /// Scribbling over ink erases it (on by default).
     pub fn set_scribble_erase(&mut self, on: bool) {
         self.engine.scribble_erase = on;
+    }
+
+    /// A finger gesture for the app, once: "toggle-eraser" or "".
+    pub fn take_gesture(&mut self) -> String {
+        match self.engine.take_gesture() {
+            Some(bedrock_core::engine::Gesture::ToggleEraser) => "toggle-eraser".into(),
+            None => String::new(),
+        }
     }
 
     /// How many strokes a scribble erased since the last call.
