@@ -25,6 +25,27 @@ const DOCKS = ['bottom', 'top', 'left', 'right'];
 const SETTINGS_KEY = 'bedrock.settings.v1';
 const AUTOSAVE_MS = 400; // research target: every stroke saved locally within a second
 
+// Pen feel: what each brush does when its tuning is left at "usual"
+// (mirrors brush.rs). Values 0..100.
+const TUNE_KEYS = ['taper_start', 'taper_end', 'taper_fade', 'pressure', 'speed'];
+const TUNE_DEFAULTS = {
+  pen: { taper_start: 50, taper_end: 50, taper_fade: 0, pressure: 100, speed: 50 },
+  pencil: { taper_start: 50, taper_end: 50, taper_fade: 0, pressure: 100, speed: 25 },
+  fountain: { taper_start: 50, taper_end: 50, taper_fade: 0, pressure: 100, speed: 38 },
+  marker: { taper_start: 0, taper_end: 0, taper_fade: 0, pressure: 100, speed: 0 },
+  highlighter: { taper_start: 0, taper_end: 0, taper_fade: 0, pressure: 100, speed: 0 },
+};
+const MAX_CURVE_POINTS = 6;
+
+function validCurve(c) {
+  if (!Array.isArray(c)) return null;
+  const pts = c.filter((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))
+    .map(([x, y]) => [Math.min(0.98, Math.max(0.02, x)), Math.min(1, Math.max(0, y))])
+    .sort((a, b) => a[0] - b[0])
+    .slice(0, MAX_CURVE_POINTS);
+  return pts;
+}
+
 function loadSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch (_) { /* private mode */ }
@@ -36,6 +57,8 @@ function loadSettings() {
     brushes: Object.fromEntries(Object.entries(DEFAULT_BRUSHES).map(([k, d]) => {
       const b = { ...structuredClone(d), ...((s.brushes || {})[k] || {}) };
       if (!Array.isArray(b.presets) || b.presets.length !== 3) b.presets = [...d.presets];
+      const tune = b.tune && typeof b.tune === 'object' ? b.tune : {};
+      b.tune = Object.fromEntries(TUNE_KEYS.map((t) => [t, Number.isFinite(tune[t]) ? Math.max(0, Math.min(100, tune[t])) : null]));
       return [k, b];
     })),
     palettes: {
@@ -54,6 +77,11 @@ function loadSettings() {
     scribbleErase: s.scribbleErase !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
+    // A hand-made pressure curve: inner points [[x, y], ...] in 0..1, or
+    // null to follow the firm/soft slider.
+    pressureCurve: validCurve(s.pressureCurve),
+    // Steady-hand smoothing for every pen, 0..100.
+    smoothing: Number.isFinite(s.smoothing) ? Math.max(0, Math.min(100, s.smoothing)) : 0,
     lastNote: s.lastNote || null,
   };
 }
@@ -583,13 +611,14 @@ async function main() {
     const b = currentBrush();
     canvas.set_brush(settings.brush, b.color, b.size);
     canvas.set_brush_style(b.style || 'solid', (b.stabilizer || 0) / 100);
+    canvas.set_brush_tuning(...TUNE_KEYS.map((t) => (b.tune[t] == null ? -1 : b.tune[t] / 100)));
     canvas.set_eraser_size(settings.eraserSize);
     for (const btn of toolButtons) {
       const on = settings.tool === 'draw' ? btn.dataset.brush === settings.brush : btn.dataset.tool === settings.tool;
       btn.setAttribute('aria-checked', String(on));
       btn.setAttribute('role', 'radio');
     }
-    $('eraser-mode').textContent = settings.eraserMode === 'erase-stroke' ? 'S' : 'P';
+    $('eraser-mode').textContent = { 'erase-stroke': 'S', 'erase-partial': 'P', 'erase-trim': 'T' }[settings.eraserMode] || 'S';
     const palette = currentPalette();
     colorsEl.replaceChildren(...palette.map((c, i) => {
       const sw = document.createElement('button');
@@ -654,6 +683,18 @@ async function main() {
     $('pop-size-value').textContent = size;
     $('stabilizer').value = b.stabilizer || 0;
     $('stabilizer-value').textContent = stabilizerLabel(b.stabilizer || 0);
+    $('eraser-hint').textContent = {
+      'erase-stroke': 'Removes whole strokes you touch.',
+      'erase-partial': 'Rubs out only the ink under the eraser.',
+      'erase-trim': 'Cuts a stroke back to where it crosses other lines, like trimming an overshoot.',
+    }[settings.eraserMode] || '';
+    const usual = TUNE_DEFAULTS[settings.brush] || TUNE_DEFAULTS.pen;
+    for (const t of TUNE_KEYS) {
+      const v = b.tune[t];
+      $(`tune-${t}`).value = v == null ? usual[t] : v;
+      $(`tune-${t}-value`).textContent = v == null ? `Usual (${usual[t]}%)` : `${v}%`;
+    }
+    $('tune-reset').disabled = TUNE_KEYS.every((t) => b.tune[t] == null);
   }
   function setStrokePop(open) {
     strokePop.hidden = !open;
@@ -678,6 +719,19 @@ async function main() {
       applyTool();
     });
   }
+  for (const el of strokePop.querySelectorAll('[data-tune]')) {
+    el.addEventListener('input', () => {
+      currentBrush().tune[el.dataset.tune] = parseInt(el.value, 10) || 0;
+      saveSettings();
+      applyTool();
+    });
+  }
+  $('tune-reset').addEventListener('click', () => {
+    const b = currentBrush();
+    for (const t of TUNE_KEYS) b.tune[t] = null;
+    saveSettings();
+    applyTool();
+  });
   $('stabilizer').addEventListener('input', (e) => {
     currentBrush().stabilizer = parseInt(e.target.value, 10) || 0;
     saveSettings();
@@ -795,13 +849,110 @@ async function main() {
     if (Math.abs(v) < 5) return 'Normal';
     return v < 0 ? 'Firm' : 'Soft';
   }
-  $('pressure').value = settings.pressure;
-  $('pressure-value').textContent = pressureLabel(settings.pressure);
-  canvas.set_pressure_softness(settings.pressure / 100);
+  // The firm/soft slider sets a one-point curve; dragging the curve's
+  // points makes a custom one ("Custom" until the slider is moved again).
+  const curveEl = $('pressure-curve');
+  function applyPressure() {
+    if (settings.pressureCurve) canvas.set_pressure_points(new Float32Array(settings.pressureCurve.flat()));
+    else canvas.set_pressure_softness(settings.pressure / 100);
+    $('pressure').value = settings.pressure;
+    $('pressure-value').textContent = settings.pressureCurve ? 'Custom' : pressureLabel(settings.pressure);
+    drawCurve();
+    input.requestFrame();
+  }
+  function curvePoints() {
+    const flat = canvas.pressure_points();
+    const pts = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
+    return pts;
+  }
+  function drawCurve() {
+    const n = 48;
+    const ys = canvas.pressure_curve_samples(n);
+    let d = '';
+    ys.forEach((y, i) => { d += `${i ? 'L' : 'M'}${(100 * i / (n - 1)).toFixed(2)} ${(100 - 100 * y).toFixed(2)}`; });
+    $('pressure-curve-line').setAttribute('d', d);
+    const g = $('pressure-curve-points');
+    g.replaceChildren(...curvePoints().map(([x, y], i) => {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('cx', 100 * x);
+      c.setAttribute('cy', 100 - 100 * y);
+      c.setAttribute('r', 4);
+      c.dataset.index = i;
+      return c;
+    }));
+  }
+  function curveAt(e) {
+    const r = curveEl.getBoundingClientRect();
+    return [Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height))];
+  }
+  let dragPoint = null;
+  let lastTap = { i: -1, t: 0 };
+  curveEl.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    let pts = curvePoints();
+    let i = e.target.dataset?.index != null ? parseInt(e.target.dataset.index, 10) : -1;
+    const now = performance.now();
+    if (i >= 0 && lastTap.i === i && now - lastTap.t < 350) {
+      pts.splice(i, 1); // double tap: remove the point
+      settings.pressureCurve = pts;
+      lastTap = { i: -1, t: 0 };
+      saveSettings();
+      applyPressure();
+      return;
+    }
+    if (i < 0) {
+      if (pts.length >= MAX_CURVE_POINTS) { toast(`At most ${MAX_CURVE_POINTS} points`, 1500); return; }
+      pts.push(curveAt(e));
+      pts.sort((a, b) => a[0] - b[0]);
+      settings.pressureCurve = pts;
+      applyPressure();
+      pts = curvePoints();
+      const [x] = curveAt(e);
+      i = pts.reduce((best, p, k) => (Math.abs(p[0] - x) < Math.abs(pts[best][0] - x) ? k : best), 0);
+    }
+    lastTap = { i, t: now };
+    dragPoint = i;
+    curveEl.setPointerCapture(e.pointerId);
+  });
+  curveEl.addEventListener('pointermove', (e) => {
+    if (dragPoint == null) return;
+    const pts = curvePoints();
+    if (!pts[dragPoint]) return;
+    const [x, y] = curveAt(e);
+    // Keep the points in order: a point can't pass its neighbours.
+    const lo = dragPoint > 0 ? pts[dragPoint - 1][0] + 0.02 : 0.02;
+    const hi = dragPoint < pts.length - 1 ? pts[dragPoint + 1][0] - 0.02 : 0.98;
+    pts[dragPoint] = [Math.min(hi, Math.max(lo, x)), y];
+    settings.pressureCurve = pts;
+    applyPressure();
+  });
+  const endDrag = () => { if (dragPoint != null) { dragPoint = null; saveSettings(); } };
+  curveEl.addEventListener('pointerup', endDrag);
+  curveEl.addEventListener('pointercancel', endDrag);
+  $('pressure-curve-reset').addEventListener('click', (e) => {
+    e.stopPropagation();
+    settings.pressureCurve = null;
+    settings.pressure = 0;
+    saveSettings();
+    applyPressure();
+  });
+  applyPressure();
   $('pressure').addEventListener('input', (e) => {
     settings.pressure = parseInt(e.target.value, 10) || 0;
-    $('pressure-value').textContent = pressureLabel(settings.pressure);
-    canvas.set_pressure_softness(settings.pressure / 100);
+    settings.pressureCurve = null;
+    saveSettings();
+    applyPressure();
+  });
+  function smoothingLabel(v) { return v ? `${v}%` : 'Off'; }
+  $('smoothing').value = settings.smoothing;
+  $('smoothing-value').textContent = smoothingLabel(settings.smoothing);
+  canvas.set_smoothing(settings.smoothing / 100);
+  $('smoothing').addEventListener('input', (e) => {
+    settings.smoothing = parseInt(e.target.value, 10) || 0;
+    $('smoothing-value').textContent = smoothingLabel(settings.smoothing);
+    canvas.set_smoothing(settings.smoothing / 100);
     saveSettings();
     input.requestFrame();
   });

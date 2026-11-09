@@ -593,9 +593,15 @@ test('saving happens in the background and the saved note matches exactly', asyn
     await new Promise((res) => setTimeout(res, 50));
     obs?.disconnect();
     const saved = await bedrock.store.get(bedrock.noteId);
+    // Everything but the save time: an autosave can stamp the open note
+    // again between this save and the comparison (CI flake).
+    const sameNote = (a, b) => {
+      const strip = (j) => { const n = JSON.parse(j); delete n.modified; return JSON.stringify(n); };
+      return strip(a) === strip(b);
+    };
     const back = new bedrock.canvas.constructor(document.createElement('canvas'), document.createElement('canvas'), 1, 2);
     back.load(saved.data, 1, 2);
-    return { stats: bedrock.saveStats, background: bedrock.backgroundSaving, sync, longest: longest.ms, same: back.export_json() === c.export_json(), strokes: back.stroke_count() };
+    return { stats: bedrock.saveStats, background: bedrock.backgroundSaving, sync, longest: longest.ms, same: sameNote(back.export_json(), c.export_json()), strokes: back.stroke_count() };
   });
   assert.ok(r.background, 'saver worker is running');
   assert.deepEqual({ ...r.stats, background: r.stats.background > 0 }, { background: true, resyncs: 0, direct: 0 }, 'saved from the worker copy, no fallbacks');
@@ -1604,5 +1610,168 @@ test('ink latency: handling and drawing a pen sample fits in half a frame', asyn
   });
   console.log(`p95 Bedrock work ${r.work.toFixed(2)} ms, p95 input→frame incl. browser frame wait ${r.frame.toFixed(1)} ms`);
   assert.ok(r.work < budget, `p95 work per pen sample ${r.work.toFixed(2)} ms exceeds ${budget} ms`);
+  await ctx.close();
+});
+
+test('pen feel: tuning is saved with new strokes, per brush, and "usual" leaves it out', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    document.getElementById('btn-stroke').click();
+    const usualLabel = document.getElementById('tune-taper_end-value').textContent;
+    const set = (k, v) => { const el = document.getElementById(`tune-${k}`); el.value = v; el.dispatchEvent(new Event('input')); };
+    set('taper_end', 90);
+    set('pressure', 20);
+    set('taper_fade', 40);
+    await t.line(200, 200, 700, 200, { pressure: 0.6 });
+    // Switching brushes and back keeps the pen's tuning; the marker has none.
+    document.querySelector('[data-brush="marker"]').click();
+    await t.line(200, 400, 700, 400, { pressure: 0.6 });
+    document.querySelector('[data-brush="pen"]').click();
+    await t.line(200, 600, 700, 600, { pressure: 0.6 });
+    const note = JSON.parse(bedrock.canvas.export_json());
+    const saved = JSON.parse(localStorage.getItem('bedrock.settings.v1')).brushes.pen.tune;
+    document.getElementById('tune-reset').click();
+    await t.line(200, 700, 700, 700, { pressure: 0.6 });
+    const after = JSON.parse(bedrock.canvas.export_json()).strokes.at(-1).brush;
+    const pick = (b) => ({ taper_end: b.taper_end, pressure: b.pressure, taper_fade: b.taper_fade, taper_start: b.taper_start });
+    return { usualLabel, strokes: note.strokes.map((s) => pick(s.brush)), saved, after: pick(after) };
+  });
+  assert.equal(r.usualLabel, 'Usual (50%)');
+  assert.deepEqual(r.strokes[0], { taper_end: 0.9, pressure: 0.2, taper_fade: 0.4, taper_start: undefined });
+  assert.deepEqual(r.strokes[1], { taper_end: undefined, pressure: undefined, taper_fade: undefined, taper_start: undefined });
+  assert.deepEqual(r.strokes[2], r.strokes[0]);
+  assert.deepEqual(r.saved, { taper_start: null, taper_end: 90, taper_fade: 40, pressure: 20, speed: null });
+  assert.deepEqual(r.after, { taper_end: undefined, pressure: undefined, taper_fade: undefined, taper_start: undefined });
+  await ctx.close();
+});
+
+test('pen feel: less pressure sensitivity keeps light and hard lines closer in width', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const width = (y) => {
+      let n = 0;
+      for (let yy = y - 30; yy <= y + 30; yy += 0.5) { const [r] = bedrock.canvas.pixel_at(450, yy); if (r < 128) n++; }
+      return n / 2;
+    };
+    await t.line(200, 100, 700, 100, { pressure: 0.1 });
+    await t.line(200, 200, 700, 200, { pressure: 1.0 });
+    document.getElementById('btn-stroke').click();
+    const el = document.getElementById('tune-pressure');
+    el.value = 0;
+    el.dispatchEvent(new Event('input'));
+    await t.line(200, 400, 700, 400, { pressure: 0.1 });
+    await t.line(200, 500, 700, 500, { pressure: 1.0 });
+    await t.frame();
+    return { usual: [width(100), width(200)], flat: [width(400), width(500)] };
+  });
+  assert.ok(r.usual[1] > r.usual[0] * 1.5, `usual pen responds to pressure: ${r.usual}`);
+  assert.ok(Math.abs(r.flat[1] - r.flat[0]) <= 1, `no sensitivity: same width ${r.flat}`);
+  await ctx.close();
+});
+
+test('trim eraser cuts an overshoot back to the crossing, keeps the rest', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    await t.line(200, 300, 700, 300); // horizontal
+    await t.line(300, 200, 300, 600); // vertical crossing it at (300, 300)
+    document.querySelector('[data-tool="eraser"]').click();
+    document.getElementById('btn-stroke').click();
+    document.querySelector('[data-eraser="erase-trim"]').click();
+    const badge = document.getElementById('eraser-mode').textContent;
+    const hint = document.getElementById('eraser-hint').textContent;
+    // Swipe across the vertical line's top overshoot (above the crossing).
+    await t.line(260, 240, 340, 240);
+    const ink = (x, y) => bedrock.canvas.pixel_at(x, y)[0] < 128;
+    return {
+      badge, hint: hint.length > 0,
+      overshoot: ink(300, 220), below: ink(300, 450), horizontal: ink(600, 300),
+      strokes: bedrock.canvas.stroke_count(),
+      mode: JSON.parse(localStorage.getItem('bedrock.settings.v1')).eraserMode,
+    };
+  });
+  assert.deepEqual(r, { badge: 'T', hint: true, overshoot: false, below: true, horizontal: true, strokes: 2, mode: 'erase-trim' });
+  await ctx.close();
+});
+
+test('pressure curve: points can be added and dragged, it is remembered, and soft/firm still works', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    document.getElementById('btn-menu').click();
+    const svg = document.getElementById('pressure-curve');
+    const box = svg.getBoundingClientRect();
+    const at = (x, y) => ({ clientX: box.left + x * box.width, clientY: box.top + (1 - y) * box.height, pointerId: 9, bubbles: true });
+    // Tap at (0.5, 0.5) adds a point, then drag it up to (0.4, 0.8): a soft curve.
+    svg.dispatchEvent(new PointerEvent('pointerdown', at(0.5, 0.5)));
+    svg.dispatchEvent(new PointerEvent('pointermove', at(0.4, 0.8)));
+    svg.dispatchEvent(new PointerEvent('pointerup', at(0.4, 0.8)));
+    const pts = Array.from(bedrock.canvas.pressure_points());
+    const mid = bedrock.canvas.pressure_curve_samples(3)[1];
+    const label = document.getElementById('pressure-value').textContent;
+    const saved = JSON.parse(localStorage.getItem('bedrock.settings.v1')).pressureCurve;
+    const circles = svg.querySelectorAll('circle').length;
+    // Moving the firm/soft slider replaces the custom curve.
+    const slider = document.getElementById('pressure');
+    slider.value = -60;
+    slider.dispatchEvent(new Event('input'));
+    const firmMid = bedrock.canvas.pressure_curve_samples(3)[1];
+    const after = JSON.parse(localStorage.getItem('bedrock.settings.v1')).pressureCurve;
+    return { pts, mid, label, saved, circles, firmMid, after, label2: document.getElementById('pressure-value').textContent };
+  });
+  assert.equal(r.pts.length, 2);
+  assert.ok(Math.abs(r.pts[0] - 0.4) < 0.03 && Math.abs(r.pts[1] - 0.8) < 0.03, `dragged point ${r.pts}`);
+  assert.ok(r.mid > 0.8, `soft curve lifts half pressure (${r.mid})`);
+  assert.equal(r.label, 'Custom');
+  assert.equal(r.saved.length, 1);
+  assert.equal(r.circles, 1);
+  assert.ok(r.firmMid < 0.45, `firm curve lowers half pressure (${r.firmMid})`);
+  assert.equal(r.after, null);
+  assert.equal(r.label2, 'Firm');
+  await ctx.close();
+});
+
+test('pressure curve and steady hand survive a reload', async () => {
+  const { page, ctx } = await openApp(env);
+  await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1') || '{}');
+    s.pressureCurve = [[0.3, 0.6], [0.7, 0.95]];
+    s.smoothing = 60;
+    localStorage.setItem('bedrock.settings.v1', JSON.stringify(s));
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock?.canvas);
+  const r = await page.evaluate(() => ({
+    pts: Array.from(bedrock.canvas.pressure_points()).map((v) => Math.round(v * 100) / 100),
+    smoothing: document.getElementById('smoothing').value,
+    label: document.getElementById('smoothing-value').textContent,
+  }));
+  assert.deepEqual(r, { pts: [0.3, 0.6, 0.7, 0.95], smoothing: '60', label: '60%' });
+  await ctx.close();
+});
+
+test('steady hand smooths a shaky line, old ink included', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    // Zig-zag 6 px up and down: how far the ink strays from the middle.
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let i = 1; i <= 60; i++) t.ev('pointermove', 1, 'pen', 200 + i * 8, 300 + (i % 2 ? 6 : -6), { pressure: 0.5 });
+    t.ev('pointerup', 1, 'pen', 680, 300, { pressure: 0 });
+    await t.frame();
+    const spread = () => {
+      let lo = Infinity, hi = -Infinity;
+      // A few peaks and troughs (pixel reads are slow).
+      for (const x of [352, 360, 368, 376]) for (let yy = 290; yy <= 310; yy += 1) {
+        if (bedrock.canvas.pixel_at(x, yy)[0] < 128) { lo = Math.min(lo, yy); hi = Math.max(hi, yy); }
+      }
+      return hi - lo;
+    };
+    const off = spread();
+    const el = document.getElementById('smoothing');
+    el.value = 100;
+    el.dispatchEvent(new Event('input'));
+    await t.frame();
+    return { off, on: spread(), saved: JSON.parse(localStorage.getItem('bedrock.settings.v1')).smoothing };
+  });
+  assert.ok(r.on < r.off * 0.8, `smoothed line wobbles less: ${r.on} vs ${r.off}`);
+  assert.equal(r.saved, 100);
   await ctx.close();
 });

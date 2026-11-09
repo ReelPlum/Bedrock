@@ -97,6 +97,123 @@ pub fn split(
     Some(pieces)
 }
 
+/// Where segments `p0 p1` and `q0 q1` cross: the parameter along `p0 p1`
+/// (0..=1), or None if they don't.
+fn crossing(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> Option<f64> {
+    let r = p1 - p0;
+    let s = q1 - q0;
+    let den = r.x * s.y - r.y * s.x;
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let d = q0 - p0;
+    let t = (d.x * s.y - d.y * s.x) / den;
+    let u = (d.x * r.y - d.y * r.x) / den;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(t)
+}
+
+fn lerp_point(a: &InputPoint, b: &InputPoint, t: f64) -> InputPoint {
+    let pos = a.pos().lerp(b.pos(), t);
+    InputPoint {
+        x: pos.x,
+        y: pos.y,
+        pressure: a.pressure + (b.pressure - a.pressure) * t as f32,
+        altitude: a.altitude + (b.altitude - a.altitude) * t as f32,
+        azimuth: a.azimuth,
+        t: a.t + (b.t - a.t) * t,
+    }
+}
+
+/// Trimmer eraser (as Fresco's): cut out the part of `stroke` under the
+/// eraser segment `a b`, from the nearest place before it where the stroke
+/// crosses another stroke (or itself) to the nearest one after it. With no
+/// crossings on a side, the cut runs to that end; with none at all, the
+/// whole stroke goes. Returns the pieces that remain (possibly none), or
+/// None if the eraser doesn't touch the stroke.
+pub fn trim(
+    stroke: &Stroke,
+    others: &[&Stroke],
+    a: Vec2,
+    b: Vec2,
+    radius: f64,
+    mut new_id: impl FnMut() -> StrokeId,
+) -> Option<Vec<Stroke>> {
+    if !touches(stroke, a, b, radius) {
+        return None;
+    }
+    let pts = &stroke.points;
+    if pts.len() < 2 {
+        return Some(Vec::new());
+    }
+    // Position along the stroke as (segment index, t within it), compared
+    // as a single number i + t.
+    let hit = pts
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| {
+            let d = segment_segment_distance(w[0].pos(), w[1].pos(), a, b);
+            // Where along this segment the eraser is closest.
+            let mid = a.lerp(b, 0.5);
+            let seg = w[1].pos() - w[0].pos();
+            let len2 = seg.dot(seg);
+            let t = if len2 > 0.0 { ((mid - w[0].pos()).dot(seg) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            (d, i as f64 + t)
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+        .map(|x| x.1)
+        .unwrap_or(0.0);
+    let mut cuts: Vec<f64> = Vec::new();
+    for (i, w) in pts.windows(2).enumerate() {
+        let (p0, p1) = (w[0].pos(), w[1].pos());
+        let seg_rect = segment_rect(p0, p1, 0.0);
+        for o in others {
+            if !o.bounds().intersects(&seg_rect) {
+                continue;
+            }
+            for v in o.points.windows(2) {
+                if let Some(t) = crossing(p0, p1, v[0].pos(), v[1].pos()) {
+                    cuts.push(i as f64 + t);
+                }
+            }
+        }
+        // Crossing itself (a loop), skipping neighbouring segments.
+        for (j, v) in pts.windows(2).enumerate() {
+            if j + 1 < i || j > i + 1 {
+                if let Some(t) = crossing(p0, p1, v[0].pos(), v[1].pos()) {
+                    cuts.push(i as f64 + t);
+                }
+            }
+        }
+    }
+    let lo = cuts.iter().copied().filter(|c| *c < hit).fold(None, |m: Option<f64>, c| Some(m.map_or(c, |m| m.max(c))));
+    let hi = cuts.iter().copied().filter(|c| *c > hit).fold(None, |m: Option<f64>, c| Some(m.map_or(c, |m| m.min(c))));
+    let at = |pos: f64| {
+        let i = (pos.floor() as usize).min(pts.len() - 2);
+        lerp_point(&pts[i], &pts[i + 1], pos - i as f64)
+    };
+    let mut pieces = Vec::new();
+    let mut make = |run: Vec<InputPoint>| {
+        let len: f64 = run.windows(2).map(|w| w[0].pos().distance(w[1].pos())).sum();
+        if run.len() >= 2 && len > 1e-6 {
+            let mut s = Stroke::new(new_id(), stroke.brush, stroke.start_time, stroke.device, run);
+            s.input_scale = stroke.input_scale;
+            s.derived_from = if stroke.derived_from.is_empty() { vec![stroke.id] } else { stroke.derived_from.clone() };
+            pieces.push(s);
+        }
+    };
+    if let Some(lo) = lo {
+        let mut run: Vec<InputPoint> = pts.iter().take(lo.floor() as usize + 1).copied().collect();
+        run.push(at(lo));
+        make(run);
+    }
+    if let Some(hi) = hi {
+        let mut run = vec![at(hi)];
+        run.extend(pts.iter().skip(hi.floor() as usize + 1).copied());
+        make(run);
+    }
+    Some(pieces)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +223,39 @@ mod tests {
     fn hline(id: u64, y: f64) -> Stroke {
         let pts = (0..=10).map(|i| InputPoint::new(i as f64 * 10.0, y, 0.5).at(i as f64)).collect();
         Stroke::new(StrokeId(id), Brush::default(), 1000.0, InputDevice::Pen, pts)
+    }
+
+    fn vline(id: u64, x: f64) -> Stroke {
+        let pts = (0..=10).map(|i| InputPoint::new(x, -50.0 + i as f64 * 10.0, 0.5).at(i as f64)).collect();
+        Stroke::new(StrokeId(id), Brush::default(), 1000.0, InputDevice::Pen, pts)
+    }
+
+    #[test]
+    fn trimmer_cuts_between_crossings() {
+        // A horizontal line crossed by vertical lines at x = 20 and x = 70.
+        let h = hline(1, 0.0);
+        let (v1, v2) = (vline(2, 20.0), vline(3, 70.0));
+        let mut next = 100;
+        let mut id = || {
+            next += 1;
+            StrokeId(next)
+        };
+        // Erase in the middle: the part between 20 and 70 goes.
+        let pieces = trim(&h, &[&v1, &v2], Vec2::new(45.0, -5.0), Vec2::new(45.0, 5.0), 2.0, &mut id).unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert!((pieces[0].points.last().unwrap().x - 20.0).abs() < 1e-9);
+        assert!((pieces[1].points[0].x - 70.0).abs() < 1e-9);
+        assert_eq!(pieces[0].points[0].x, 0.0);
+        assert_eq!(pieces[1].points.last().unwrap().x, 100.0);
+        assert!(pieces.iter().all(|p| p.derived_from == vec![StrokeId(1)]));
+        // Erase the end: it goes back to the last crossing only.
+        let pieces = trim(&h, &[&v1, &v2], Vec2::new(90.0, -5.0), Vec2::new(90.0, 5.0), 2.0, &mut id).unwrap();
+        assert_eq!(pieces.len(), 1);
+        assert!((pieces[0].points.last().unwrap().x - 70.0).abs() < 1e-9);
+        // No crossings: the whole stroke goes.
+        assert!(trim(&h, &[], Vec2::new(45.0, -5.0), Vec2::new(45.0, 5.0), 2.0, &mut id).unwrap().is_empty());
+        // Missed: nothing happens.
+        assert!(trim(&h, &[&v1], Vec2::new(45.0, 30.0), Vec2::new(45.0, 40.0), 2.0, &mut id).is_none());
     }
 
     #[test]

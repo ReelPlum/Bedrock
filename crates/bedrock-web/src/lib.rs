@@ -187,9 +187,16 @@ impl Canvas {
     pub fn set_brush(&mut self, kind: &str, color: &str, size: f32) -> Result<(), JsValue> {
         let kind = BrushKind::from_name(kind).ok_or_else(|| JsValue::from_str("unknown brush"))?;
         let color = Rgba::parse(color).ok_or_else(|| JsValue::from_str("invalid color"))?;
-        let (style, stabilizer) = (self.engine.brush.style, self.engine.brush.stabilizer);
-        self.engine.brush =
-            Brush::new(kind, color, size.clamp(0.2, 200.0)).with_style(style).with_stabilizer(stabilizer);
+        let old = &self.engine.brush;
+        let mut brush =
+            Brush::new(kind, color, size.clamp(0.2, 200.0)).with_style(old.style).with_stabilizer(old.stabilizer);
+        // The tuning stays too (set it with `set_brush_tuning`).
+        brush.taper_start = old.taper_start;
+        brush.taper_end = old.taper_end;
+        brush.taper_fade = old.taper_fade;
+        brush.pressure = old.pressure;
+        brush.speed = old.speed;
+        self.engine.brush = brush;
         Ok(())
     }
 
@@ -452,20 +459,73 @@ impl Canvas {
     /// Pressure feel for this device, -1 (firm) ..= 1 (soft), 0 = linear.
     /// Only changes how pressure is drawn; the file keeps raw pressure.
     pub fn set_pressure_softness(&mut self, softness: f32) {
-        if (bedrock_core::pen::pressure_softness() - softness).abs() < 1e-6 {
+        let before = bedrock_core::pen::pressure_points();
+        bedrock_core::pen::set_pressure_softness(softness);
+        if bedrock_core::pen::pressure_points() != before {
+            self.retessellate();
+        }
+    }
+
+    /// This device's pressure curve: up to six inner points, flat
+    /// `[x, y, ...]` in 0..=1 (the ends (0,0) and (1,1) are fixed).
+    pub fn set_pressure_points(&mut self, flat: &[f32]) {
+        let pts: Vec<(f32, f32)> = flat.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+        let before = bedrock_core::pen::pressure_points();
+        bedrock_core::pen::set_pressure_points(&pts);
+        if bedrock_core::pen::pressure_points() != before {
+            self.retessellate();
+        }
+    }
+
+    /// The curve's inner points, flat `[x, y, ...]`.
+    pub fn pressure_points(&self) -> Vec<f32> {
+        bedrock_core::pen::pressure_points().into_iter().flat_map(|(x, y)| [x, y]).collect()
+    }
+
+    /// The pressure curve sampled at `n` evenly spaced pressures, for
+    /// drawing it in the settings.
+    pub fn pressure_curve_samples(&self, n: usize) -> Vec<f32> {
+        let c = bedrock_core::pen::pressure_curve();
+        let n = n.clamp(2, 512);
+        (0..n).map(|i| c.apply(i as f32 / (n - 1) as f32)).collect()
+    }
+
+    /// Steady-hand smoothing for every pen, 0 ..= 1 (for shaky hands).
+    pub fn set_smoothing(&mut self, amount: f32) {
+        if (bedrock_core::pen::smoothing() - amount).abs() < 1e-6 {
             return;
         }
-        bedrock_core::pen::set_pressure_softness(softness);
+        bedrock_core::pen::set_smoothing(amount);
+        self.retessellate();
+    }
+
+    /// Re-draw every stroke from its raw samples (after a rendering setting
+    /// changed).
+    fn retessellate(&mut self) {
         self.base.clear_chunks();
         self.scene = Scene::new();
         self.engine.invalidate();
     }
 
-    /// `draw` | `erase-stroke` | `erase-partial` | `lasso`
+    /// The current pen's tuning, each 0..=1, or negative for the pen's own
+    /// default: start and end taper, taper fade, pressure sensitivity and
+    /// speed thinning. Saved with each stroke drawn from now on.
+    pub fn set_brush_tuning(&mut self, taper_start: f32, taper_end: f32, taper_fade: f32, pressure: f32, speed: f32) {
+        use bedrock_core::brush::tuning;
+        let b = &mut self.engine.brush;
+        b.taper_start = tuning(taper_start);
+        b.taper_end = tuning(taper_end);
+        b.taper_fade = tuning(taper_fade);
+        b.pressure = tuning(pressure);
+        b.speed = tuning(speed);
+    }
+
+    /// `draw` | `erase-stroke` | `erase-partial` | `erase-trim` | `lasso`
     pub fn set_tool(&mut self, tool: &str) {
         self.engine.tool = match tool {
             "erase-stroke" => Tool::EraseStroke,
             "erase-partial" => Tool::ErasePartial,
+            "erase-trim" => Tool::EraseTrim,
             "lasso" => Tool::Lasso,
             _ => Tool::Draw,
         };

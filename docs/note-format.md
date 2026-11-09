@@ -91,6 +91,13 @@ and angles, 1 for time.
 | `brush.size` | Nominal width in world units at full pressure. |
 | `brush.style` | Optional: `solid` (default, omitted), `dashed` or `dotted`. Dash and dot spacing scale with `size`. Readers that don't know a style draw the line solid. |
 | `brush.stabilizer` | Optional, 0 to 1 (default 0, omitted). How strongly rendering smooths shaky lines. It is applied when drawing, so `points` always hold the raw samples and the setting can be changed later without losing data. |
+| `brush.taper_start` | Optional, 0 to 1. How strongly the start of the stroke thins. Omitted means the pen's usual feel (0.5 for pen, pencil and fountain pen, 0 for marker and highlighter), so old notes keep their look while defaults improve. |
+| `brush.taper_end` | Optional, 0 to 1. How strongly the end thins; quick lifts thin more. Omitted: as `taper_start`. |
+| `brush.taper_fade` | Optional, 0 to 1 (default 0). How much tapered ends also fade out. |
+| `brush.pressure` | Optional, 0 to 1 (default 1). How much pressure changes the line: 0 draws like a ballpoint at a fixed width. |
+| `brush.speed` | Optional, 0 to 1. How much faster strokes get thinner. Omitted: the pen's usual amount. |
+
+The device's pressure curve and steady-hand smoothing are reader settings, not saved in the note: they change how the raw `pressure` and `points` are drawn on that device.
 | `device` | `pen`, `mouse` or `touch`. |
 | `start` | Unix time in milliseconds of the first sample. With `t` this gives the absolute time of every sample, which preserves writing order and pauses for handwriting recognition. |
 | `derivedFrom` | Optional. Ids of the original strokes this one was cut from by the eraser. |

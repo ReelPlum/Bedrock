@@ -39,6 +39,8 @@ pub enum Tool {
     EraseStroke,
     /// Cut away only what the eraser touches.
     ErasePartial,
+    /// Cut a stroke back to where it crosses other strokes.
+    EraseTrim,
     /// Draw a loop around strokes to select them; drag the selection to
     /// move it.
     Lasso,
@@ -75,7 +77,7 @@ enum Active {
     Erasing {
         pointer: i32,
         last_world: Vec2,
-        partial: bool,
+        mode: Tool,
     },
     /// Drawing a selection loop (world coordinates).
     Lassoing {
@@ -124,6 +126,8 @@ pub struct Engine {
     pub finger_drawing: bool,
     /// Scribbling over ink erases it (see [`crate::scribble`]).
     pub scribble_erase: bool,
+    /// Pieces the trimmer made during the current swipe.
+    trimmed: std::collections::HashSet<StrokeId>,
     /// A gesture for the app to act on (see [`Engine::take_gesture`]).
     gesture: Option<Gesture>,
     /// Strokes the last scribble erased, until read with
@@ -155,6 +159,7 @@ impl Engine {
             scribble_erase: true,
             scribble_erased: 0,
             gesture: None,
+            trimmed: Default::default(),
             selection: Vec::new(),
             active: None,
             predicted: Vec::new(),
@@ -289,12 +294,12 @@ impl Engine {
                     self.active = Some(Active::Lassoing { pointer: id, points: vec![w], last_screen: s.pos() });
                 }
             }
-            Tool::EraseStroke | Tool::ErasePartial => {
+            Tool::EraseStroke | Tool::ErasePartial | Tool::EraseTrim => {
                 self.doc.begin_group();
+                self.trimmed.clear();
                 let w = self.camera.screen_to_world(s.pos());
-                let partial = tool == Tool::ErasePartial;
-                self.active = Some(Active::Erasing { pointer: id, last_world: w, partial });
-                self.erase_segment(w, w, partial);
+                self.active = Some(Active::Erasing { pointer: id, last_world: w, mode: tool });
+                self.erase_segment(w, w, tool);
             }
         }
         self.predicted.clear();
@@ -331,11 +336,11 @@ impl Engine {
                 stroke.push(p);
                 self.live_dirty = true;
             }
-            Some(Active::Erasing { pointer, last_world, partial }) if *pointer == id => {
+            Some(Active::Erasing { pointer, last_world, mode }) if *pointer == id => {
                 let w = self.camera.screen_to_world(s.pos());
-                let (from, partial) = (*last_world, *partial);
+                let (from, mode) = (*last_world, *mode);
                 *last_world = w;
-                self.erase_segment(from, w, partial);
+                self.erase_segment(from, w, mode);
                 self.dirty = true;
             }
             Some(Active::Lassoing { pointer, points, last_screen }) if *pointer == id => {
@@ -446,9 +451,43 @@ impl Engine {
         }
     }
 
-    fn erase_segment(&mut self, a: Vec2, b: Vec2, partial: bool) {
+    fn erase_segment(&mut self, a: Vec2, b: Vec2, mode: Tool) {
         let radius = self.eraser_size / self.camera.zoom / 2.0;
-        if partial {
+        if mode == Tool::EraseTrim {
+            // One cut per stroke per swipe (as Fresco): pieces made during
+            // this swipe are left alone, so dragging over a crossing doesn't
+            // eat the neighbouring segment too.
+            let candidates: Vec<Stroke> = self
+                .doc
+                .strokes()
+                .iter()
+                .filter(|s| !self.trimmed.contains(&s.id) && eraser::touches(s, a, b, radius))
+                .cloned()
+                .collect();
+            let mut removed = Vec::new();
+            let mut pieces = Vec::new();
+            for s in &candidates {
+                let others: Vec<Stroke> = self
+                    .doc
+                    .strokes()
+                    .iter()
+                    .filter(|o| o.id != s.id && o.bounds().intersects(&s.bounds()))
+                    .cloned()
+                    .collect();
+                let refs: Vec<&Stroke> = others.iter().collect();
+                let doc = &mut self.doc;
+                if let Some(parts) = eraser::trim(s, &refs, a, b, radius, || doc.next_id()) {
+                    removed.push(s.id);
+                    for p in parts {
+                        self.trimmed.insert(p.id);
+                        pieces.push((s.id, p));
+                    }
+                }
+            }
+            if !removed.is_empty() {
+                self.doc.replace(&removed, pieces);
+            }
+        } else if mode == Tool::ErasePartial {
             let mut removed = Vec::new();
             let mut pieces = Vec::new();
             let candidates: Vec<Stroke> =
@@ -935,6 +974,47 @@ mod tests {
         e.undo();
         assert_eq!(e.doc.len(), 1);
         assert_eq!(e.doc.strokes()[0].id, original);
+    }
+
+    #[test]
+    fn trimmer_cuts_back_to_crossings() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (500.0, 100.0), 0.0); // the line
+        draw(&mut e, 1, PointerKind::Pen, (200.0, 0.0), (200.0, 200.0), 100.0); // crossings
+        draw(&mut e, 1, PointerKind::Pen, (300.0, 0.0), (300.0, 200.0), 200.0);
+        let line = e.doc.strokes()[0].id;
+        e.tool = Tool::EraseTrim;
+        let (v1, v2) = (e.doc.strokes()[1].clone(), e.doc.strokes()[2].clone());
+        let swipe = |e: &mut Engine, pts: &[(f64, f64)], t0: f64| {
+            e.pointer_down(2, PointerKind::Pen, ScreenSample::new(pts[0].0, pts[0].1, 0.5, t0));
+            for (i, p) in pts.iter().enumerate().skip(1) {
+                e.pointer_move(2, PointerKind::Pen, ScreenSample::new(p.0, p.1, 0.5, t0 + i as f64 * 10.0));
+            }
+            e.pointer_up(2, PointerKind::Pen, None);
+        };
+        let pieces = |e: &Engine| -> Vec<(f64, f64)> {
+            e.doc
+                .strokes()
+                .iter()
+                .filter(|s| s.derived_from == vec![line])
+                .map(|s| (s.points[0].x, s.points.last().unwrap().x))
+                .collect()
+        };
+        // Across the left end: it goes back to the first crossing.
+        swipe(&mut e, &[(100.0, 80.0), (100.0, 120.0)], 300.0);
+        let p = pieces(&e);
+        assert_eq!(p.len(), 1);
+        assert!((p[0].0 - 200.0).abs() < 1e-6 && p[0].1 == 500.0, "{p:?}");
+        // A second swipe between the crossings cuts out that segment only.
+        swipe(&mut e, &[(250.0, 80.0), (250.0, 120.0)], 400.0);
+        let p = pieces(&e);
+        assert_eq!(p.len(), 1);
+        assert!((p[0].0 - 300.0).abs() < 1e-6 && p[0].1 == 500.0, "{p:?}");
+        assert!(e.doc.find(v1.id).is_some() && e.doc.find(v2.id).is_some(), "the crossing lines are untouched");
+        e.undo();
+        e.undo();
+        assert_eq!(e.doc.len(), 3);
+        assert_eq!(e.doc.strokes()[0].id, line);
     }
 
     #[test]

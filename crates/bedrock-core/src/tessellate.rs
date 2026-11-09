@@ -123,6 +123,16 @@ pub fn stabilize(points: &[InputPoint], amount: f32) -> Vec<InputPoint> {
     pen::pulled_string(points, pen::stabilizer_radius(amount))
 }
 
+/// The stabiliser as strokes use it: the pen's amount plus steady-hand
+/// smoothing, easing off at speed (see [`pen::pulled_string_eased`]).
+fn stabilize_eased(points: &[InputPoint], amount: f32, px: f64) -> Vec<InputPoint> {
+    let a = pen::effective_stabilizer(amount);
+    if a <= 0.0 {
+        return points.to_vec();
+    }
+    pen::pulled_string_eased(points, pen::stabilizer_radius(a) * px, px)
+}
+
 /// Interpolated input points along a Catmull-Rom spline through `pts`.
 fn resample(pts: &[InputPoint], step: f64) -> Vec<InputPoint> {
     if pts.len() < 2 {
@@ -199,7 +209,7 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finishe
         let all = pen::filter_points(points, px);
         smoothed.extend(all.iter().skip(real).copied());
     }
-    let cleaned = if brush.stabilizer > 0.0 { stabilize(&smoothed, brush.stabilizer) } else { smoothed };
+    let cleaned = stabilize_eased(&smoothed, brush.stabilizer, px);
     // Dense resampling: capsules are cheap on the GPU and long straight runs
     // are merged again afterwards, so curves can be finely sampled.
     let step = (size * 0.15).clamp(0.15, 0.75) * scale.max(1.0);
@@ -263,21 +273,63 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finishe
         .collect();
     calm_widths(&mut out, &arc, size);
     if brush.tapers() {
-        taper(&mut out, &arc, finished, dedup[n - 1].pressure);
+        let ends = Ends {
+            start: brush.taper_start(),
+            end: brush.taper_end(),
+            fade: brush.taper_fade(),
+            last_pressure: dedup[n - 1].pressure,
+            end_speed: if pen::has_timing(points) { end_speed(&points[..real], px) } else { 0.0 },
+            // Fingers and mice have no pressure to shape the ends, so they
+            // get a fuller taper (Procreate's "touch taper").
+            synthetic: stroke.device != crate::stroke::InputDevice::Pen,
+        };
+        taper(&mut out, &arc, finished, &ends);
     }
     out
 }
 
-/// Ends shaped by arc length (so 60 Hz and 240 Hz input taper alike):
-/// * start: the radius grows from 40% to full over one stroke width, as a
-///   nib does when it touches down. Pencil pressure in the first
-///   milliseconds is unreliable, so this doesn't rely on it.
-/// * end (finished strokes only): when the pen was lifted while still
-///   pressing (a flicked lift that pressure doesn't catch), ease the last
-///   stroke width down to 65%.
+/// Pen speed over the last few milliseconds before it lifted, in input
+/// pixels per millisecond (so zoom doesn't change it).
+fn end_speed(points: &[InputPoint], px: f64) -> f64 {
+    let Some(last) = points.last() else { return 0.0 };
+    let Some(from) = points.iter().rev().find(|p| last.t - p.t >= END_SPEED_MS) else { return 0.0 };
+    let dt = last.t - from.t;
+    if dt <= 0.0 {
+        return 0.0;
+    }
+    last.pos().distance(from.pos()) / px.max(1e-9) / dt
+}
+
+/// How far back [`end_speed`] looks.
+const END_SPEED_MS: f64 = 16.0;
+
+/// How a stroke's ends are shaped (see [`taper`]).
+struct Ends {
+    start: f32,
+    end: f32,
+    fade: f32,
+    last_pressure: f32,
+    /// Input pixels per millisecond as the pen lifted.
+    end_speed: f64,
+    /// No pressure (finger, mouse): taper fully.
+    synthetic: bool,
+}
+
+/// Ends shaped by arc length (so 60 Hz and 240 Hz input taper alike), each
+/// by an amount 0..=1 from the brush:
+/// * start: grows from thin to full, as a nib does when it touches down
+///   (0.5: from 40% over one stroke width; 1: from 5% over two). Pencil
+///   pressure in the first milliseconds is unreliable, so this doesn't
+///   rely on it.
+/// * end (finished strokes only; 0.5: down to 65% over one width). Pressure
+///   already thins a lift that eases off, so the taper is for lifts that
+///   don't: still pressing, or flicked away fast (velocity taper, as in
+///   Fresco). A fast flick tapers up to 80% more.
+/// * fade: tapered ends also lose opacity, for a dry-ink look.
 ///
-/// Strokes shorter than two widths (dots, short ticks) keep their full width.
-fn taper(s: &mut [Sample], arc: &[f64], finished: bool, last_pressure: f32) {
+/// Fingers and mice taper at least 0.7 at both ends. Strokes shorter than
+/// two widths (dots, short ticks) keep their full width.
+fn taper(s: &mut [Sample], arc: &[f64], finished: bool, e: &Ends) {
     let n = s.len();
     let total = arc[n - 1];
     let w = s.iter().map(|x| x.width).fold(0.0, f64::max);
@@ -288,20 +340,39 @@ fn taper(s: &mut [Sample], arc: &[f64], finished: bool, last_pressure: f32) {
         let t = t.clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    for i in 0..n {
-        let t = arc[i] / w;
-        if t >= 1.0 {
-            break;
-        }
-        s[i].width *= 0.4 + 0.6 * ease(t);
-    }
-    if finished && last_pressure > 0.35 {
-        for i in (0..n).rev() {
-            let t = (total - arc[i]) / w;
-            if t >= 1.0 {
+    let fuller = |a: f32| if e.synthetic && a > 0.0 { a.max(0.7) } else { a } as f64;
+    let fade = e.fade as f64;
+    let mut shape = |i: usize, f: f64| {
+        s[i].width *= f;
+        s[i].opacity *= (1.0 - fade * (1.0 - f)) as f32;
+    };
+    let start = fuller(e.start);
+    if start > 0.0 {
+        let len = (w * 2.0 * start).min(total * 0.5);
+        let min = (1.0 - 1.2 * start).max(0.05);
+        for (i, &a) in arc.iter().enumerate().take(n) {
+            if a >= len {
                 break;
             }
-            s[i].width *= 0.65 + 0.35 * ease(t);
+            shape(i, min + (1.0 - min) * ease(a / len));
+        }
+    }
+    let end = fuller(e.end);
+    if finished && end > 0.0 {
+        let smooth = |a: f64, b: f64, x: f64| ease((x - a) / (b - a));
+        let flick = smooth(0.5, 2.5, e.end_speed);
+        let pressing = if e.synthetic { 1.0 } else { smooth(0.1, 0.35, e.last_pressure as f64) };
+        let k = pressing.max(flick);
+        let amount = (end * (1.0 + 0.8 * flick)).min(1.0);
+        let len = (w * 2.0 * amount).min(total * 0.5);
+        let min = 1.0 - 0.7 * amount;
+        for i in (0..n).rev() {
+            let d = total - arc[i];
+            if d >= len {
+                break;
+            }
+            let f = min + (1.0 - min) * ease(d / len);
+            shape(i, 1.0 - k * (1.0 - f));
         }
     }
 }
@@ -973,6 +1044,53 @@ mod tests {
         let pts = (0..40).map(|i| InputPoint::new(i as f64 * 3.0, 0.0, 0.8).at(i as f64 * 4.0)).collect();
         let m = samples(&pen_stroke(25, BrushKind::Marker, 6.0, pts));
         assert!((m[0].width - m[m.len() / 2].width).abs() < 1e-9);
+    }
+
+    #[test]
+    fn taper_settings_fingers_and_flicks() {
+        // A 100-unit line at 0.4 px/ms (slow), pressing to the end.
+        let line = |speed_ms: f64, pressure: f32| -> Vec<InputPoint> {
+            (0..50).map(|i| InputPoint::new(i as f64 * 2.0, 0.0, pressure).at(i as f64 * 2.0 / speed_ms)).collect()
+        };
+        let run = |brush: Brush, device: InputDevice, pts: Vec<InputPoint>| {
+            let mut st = Stroke::new(StrokeId(30), brush, 0.0, device, pts);
+            st.input_scale = 1.0;
+            samples(&st)
+        };
+        let pen = Brush::new(BrushKind::Pen, Rgba::BLACK, 6.0);
+        let mid = |s: &[Sample]| s[s.len() / 2];
+        // No start taper: full width from the first sample.
+        let flat = run(Brush { taper_start: Some(0.0), ..pen }, InputDevice::Pen, line(0.4, 0.8));
+        assert!(flat[0].width > mid(&flat).width * 0.95);
+        // A strong one starts much thinner than the default.
+        let strong = run(Brush { taper_start: Some(1.0), ..pen }, InputDevice::Pen, line(0.4, 0.8));
+        let normal = run(pen, InputDevice::Pen, line(0.4, 0.8));
+        assert!(strong[0].width < normal[0].width * 0.3);
+        // Fade: the tapered ends also get lighter.
+        let faded = run(Brush { taper_fade: Some(1.0), ..pen }, InputDevice::Pen, line(0.4, 0.8));
+        assert!(faded[0].opacity < mid(&faded).opacity * 0.6);
+        assert!((normal[0].opacity - mid(&normal).opacity).abs() < 1e-6, "no fade by default");
+        // A light lift is already thinned by pressure: no extra end taper...
+        let light = run(pen, InputDevice::Pen, line(0.4, 0.05));
+        assert!(light.last().unwrap().width > mid(&light).width * 0.95);
+        // ...unless it was flicked away fast.
+        let flick = run(pen, InputDevice::Pen, line(4.0, 0.05));
+        assert!(flick.last().unwrap().width < mid(&flick).width * 0.6, "velocity taper");
+        // A flick tapers more than a slow lift that was still pressing.
+        let fast = run(pen, InputDevice::Pen, line(4.0, 0.8));
+        assert!(fast.last().unwrap().width < normal.last().unwrap().width);
+        // Fingers have no pressure: both ends taper fully, even on a marker
+        // set to taper a little.
+        let finger = run(
+            Brush { taper_end: Some(0.2), taper_start: Some(0.2), ..Brush::new(BrushKind::Marker, Rgba::BLACK, 6.0) },
+            InputDevice::Touch,
+            line(0.4, 0.5),
+        );
+        assert!(finger[0].width < mid(&finger).width * 0.3);
+        assert!(finger.last().unwrap().width < mid(&finger).width * 0.6);
+        // A marker left alone still doesn't taper, even from a finger.
+        let marker = run(Brush::new(BrushKind::Marker, Rgba::BLACK, 6.0), InputDevice::Touch, line(0.4, 0.5));
+        assert!((marker[0].width - mid(&marker).width).abs() < 1e-9);
     }
 
     #[test]

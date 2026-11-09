@@ -75,10 +75,12 @@
     <label class="pop-row" for="pop-size">Size <output id="pop-size-value"></output></label>
     <input type="range" id="pop-size" min="0.5" max="30" step="0.5" aria-label="Size">
     <div class="pop-eraser" id="pop-eraser">
-      <div class="segmented two" role="radiogroup" aria-label="Eraser mode">
+      <div class="segmented three" role="radiogroup" aria-label="Eraser mode">
         <button role="radio" data-eraser="erase-stroke">Whole stroke</button>
         <button role="radio" data-eraser="erase-partial">Partial</button>
+        <button role="radio" data-eraser="erase-trim" title="Cuts the stroke back to where it crosses other lines">Trim</button>
       </div>
+      <p class="pop-hint" id="eraser-hint"></p>
     </div>
     <div class="pop-brush" id="pop-brush">
     <div class="pop-row">Line style</div>
@@ -90,6 +92,21 @@
     <label class="pop-row" for="stabilizer">Stabiliser <output id="stabilizer-value">Off</output></label>
     <input type="range" id="stabilizer" min="0" max="100" step="5" aria-label="Stabiliser">
     <p class="pop-hint">Smooths shaky lines. Higher values lag slightly behind the tip.</p>
+    <details class="pen-tuning" id="pen-tuning">
+      <summary>Pen feel</summary>
+      <label class="pop-row" for="tune-taper_start">Start taper <output id="tune-taper_start-value"></output></label>
+      <input type="range" id="tune-taper_start" data-tune="taper_start" min="0" max="100" step="5">
+      <label class="pop-row" for="tune-taper_end">End taper <output id="tune-taper_end-value"></output></label>
+      <input type="range" id="tune-taper_end" data-tune="taper_end" min="0" max="100" step="5">
+      <label class="pop-row" for="tune-taper_fade">Taper fade <output id="tune-taper_fade-value"></output></label>
+      <input type="range" id="tune-taper_fade" data-tune="taper_fade" min="0" max="100" step="5">
+      <label class="pop-row" for="tune-pressure">Pressure <output id="tune-pressure-value"></output></label>
+      <input type="range" id="tune-pressure" data-tune="pressure" min="0" max="100" step="5">
+      <label class="pop-row" for="tune-speed">Thinner when fast <output id="tune-speed-value"></output></label>
+      <input type="range" id="tune-speed" data-tune="speed" min="0" max="100" step="5">
+      <p class="pop-hint">Saved with each stroke you draw. A quick flick thins the end more.</p>
+      <button type="button" class="pop-reset" id="tune-reset">Back to this pen's usual feel</button>
+    </details>
     </div>
   </div>
 
@@ -122,6 +139,19 @@
       <output id="pressure-value">Normal</output>
       <input type="range" id="pressure" min="-100" max="100" step="5" aria-label="Pen pressure, firm to soft">
       <span class="scale"><span>Firm</span><span>Soft</span></span>
+      <svg id="pressure-curve" class="curve" viewBox="0 0 100 100" role="img" aria-label="Pressure curve: how hard you press (across) against how the line responds (up). Drag the points, tap to add one, double-tap one to remove it.">
+        <path class="grid" d="M25 0V100M50 0V100M75 0V100M0 25H100M0 50H100M0 75H100"/>
+        <path class="diag" d="M0 100L100 0"/>
+        <path class="line" id="pressure-curve-line"/>
+        <g id="pressure-curve-points"></g>
+      </svg>
+      <span class="scale"><span>Light touch</span><button type="button" class="link" id="pressure-curve-reset">Reset curve</button><span>Hard</span></span>
+    </div>
+    <div class="row pressure-row">
+      <label for="smoothing">Steady hand</label>
+      <output id="smoothing-value">Off</output>
+      <input type="range" id="smoothing" min="0" max="100" step="5" aria-label="Steady-hand smoothing for every pen">
+      <span class="scale"><span>Off</span><span>Smoothest</span></span>
     </div>
     <label class="row"><input type="checkbox" id="finger-draw"> Draw with finger</label>
     <label class="row"><input type="checkbox" id="recognize"> Recognise handwriting (on this device)</label>

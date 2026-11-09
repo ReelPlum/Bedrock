@@ -140,8 +140,11 @@ pub fn filter_points(points: &[InputPoint], scale: f64) -> Vec<InputPoint> {
     let t0 = points[0].t;
     let reliable = points.iter().find(|p| p.t - t0 >= UNRELIABLE_START_MS).map(|p| p.pressure);
     let duration = points[n - 1].t - t0;
-    let mut pos = OneEuro2::new(POS_MIN_CUTOFF, POS_BETA, POS_D_CUTOFF);
-    let mut pr = OneEuro::new(PRESSURE_CUTOFF, 0.0, 1.0);
+    // Steady-hand smoothing lowers the cutoffs: slow wobble is filtered
+    // harder, while the speed term still lets deliberate motion through.
+    let calm = 1.0 - 0.75 * smoothing() as f64;
+    let mut pos = OneEuro2::new(POS_MIN_CUTOFF * calm, POS_BETA, POS_D_CUTOFF);
+    let mut pr = OneEuro::new(PRESSURE_CUTOFF * calm, 0.0, 1.0);
     let mut alt = OneEuro::new(TILT_CUTOFF, 0.0, 1.0);
     let mut az_c = OneEuro::new(TILT_CUTOFF, 0.0, 1.0);
     let mut az_s = OneEuro::new(TILT_CUTOFF, 0.0, 1.0);
@@ -368,68 +371,205 @@ pub fn pulled_string(points: &[InputPoint], radius: f64) -> Vec<InputPoint> {
     out
 }
 
+/// The stabiliser, easing off at speed: the string shortens as the pen
+/// moves faster (by half at [`EASE_SPEED`] input px/ms), so heavy smoothing
+/// still lets quick, deliberate strokes through with little lag while slow
+/// wobble is held back. `px` is world units per input pixel. Without
+/// timestamps it is the plain [`pulled_string`].
+pub fn pulled_string_eased(points: &[InputPoint], radius: f64, px: f64) -> Vec<InputPoint> {
+    if points.len() < 3 || radius <= 0.0 {
+        return points.to_vec();
+    }
+    if !has_timing(points) {
+        return pulled_string(points, radius);
+    }
+    let px = px.max(1e-9);
+    let mut out = Vec::with_capacity(points.len() + 1);
+    let mut ink = points[0];
+    out.push(ink);
+    let mut speed = 0.0f64;
+    for w in points.windows(2) {
+        let (a, p) = (w[0], w[1]);
+        let dt = p.t - a.t;
+        if dt > 0.0 {
+            let v = a.pos().distance(p.pos()) / px / dt;
+            // Smooth the speed over ~20 ms so one jumpy sample doesn't matter.
+            let k = 1.0 - (-dt / 20.0).exp();
+            speed += (v - speed) * k;
+        }
+        let r = radius / (1.0 + speed / EASE_SPEED);
+        let d = ink.pos().distance(p.pos());
+        if d > r {
+            let mut q = p;
+            let k = (d - r) / d;
+            q.x = ink.x + (p.x - ink.x) * k;
+            q.y = ink.y + (p.y - ink.y) * k;
+            ink = q;
+            out.push(q);
+        }
+    }
+    let last = *points.last().unwrap();
+    if ink.pos().distance(last.pos()) > 1e-6 {
+        out.push(last);
+    }
+    out
+}
+
+/// Pen speed (input px/ms) at which the stabiliser's string is half length.
+pub const EASE_SPEED: f64 = 1.5;
+
 /// Stabiliser radius (world units) for a slider value 0..=1.
 pub fn stabilizer_radius(amount: f32) -> f64 {
     (amount.clamp(0.0, 1.0) as f64).powf(1.5) * 12.0
 }
 
-/// A pressure response curve: the cubic Bézier from (0,0) to (1,1) with
-/// control points `p1` and `p2` (x within 0..=1, so it is a function, and y
-/// within 0..=1, so it is monotone).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The person's pressure response: a smooth, monotone curve from (0,0) to
+/// (1,1) through up to [`MAX_CURVE_POINTS`] points they place (as
+/// Procreate's global pressure curve). Bending it up gives a full line from
+/// a light touch; bending it down needs a firmer press. Device-local: it
+/// calibrates the hand, not the note, and the file keeps raw pressure.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PressureCurve {
-    pub p1: (f32, f32),
-    pub p2: (f32, f32),
+    /// Knots including both ends, x strictly increasing, y non-decreasing.
+    knots: Vec<(f32, f32)>,
+    /// Hermite slopes at the knots (Fritsch-Carlson, so no overshoot).
+    slopes: Vec<f32>,
 }
 
+pub const MAX_CURVE_POINTS: usize = 6;
+
 impl PressureCurve {
-    pub const LINEAR: PressureCurve = PressureCurve { p1: (1.0 / 3.0, 1.0 / 3.0), p2: (2.0 / 3.0, 2.0 / 3.0) };
+    pub fn linear() -> Self {
+        Self::from_points(&[])
+    }
+
+    /// A curve through these inner points (x, y in 0..=1). Points are
+    /// sorted, clamped, thinned to [`MAX_CURVE_POINTS`] and made monotone,
+    /// so any input gives a valid curve.
+    pub fn from_points(points: &[(f32, f32)]) -> Self {
+        let mut inner: Vec<(f32, f32)> = points
+            .iter()
+            .filter(|p| p.0.is_finite() && p.1.is_finite())
+            .map(|&(x, y)| (x.clamp(0.01, 0.99), y.clamp(0.0, 1.0)))
+            .collect();
+        inner.sort_by(|a, b| a.0.total_cmp(&b.0));
+        inner.dedup_by(|b, a| (b.0 - a.0).abs() < 0.01);
+        inner.truncate(MAX_CURVE_POINTS);
+        let mut knots = vec![(0.0, 0.0)];
+        knots.extend(inner);
+        knots.push((1.0, 1.0));
+        // Monotone: never lower than the knot before.
+        for i in 1..knots.len() {
+            knots[i].1 = knots[i].1.max(knots[i - 1].1);
+        }
+        let n = knots.len();
+        let d: Vec<f32> = (0..n - 1).map(|i| (knots[i + 1].1 - knots[i].1) / (knots[i + 1].0 - knots[i].0)).collect();
+        let mut m = vec![0.0f32; n];
+        m[0] = d[0];
+        m[n - 1] = d[n - 2];
+        for i in 1..n - 1 {
+            m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
+        }
+        for i in 0..n - 1 {
+            if d[i] == 0.0 {
+                m[i] = 0.0;
+                m[i + 1] = 0.0;
+                continue;
+            }
+            let (a, b) = (m[i] / d[i], m[i + 1] / d[i]);
+            let h = a.hypot(b);
+            if h > 3.0 {
+                m[i] = 3.0 * a / h * d[i];
+                m[i + 1] = 3.0 * b / h * d[i];
+            }
+        }
+        PressureCurve { knots, slopes: m }
+    }
 
     /// `softness` in -1 (firm: needs more pressure) ..= 1 (soft: light touch
-    /// gives a full line). 0 is linear.
+    /// gives a full line). 0 is linear. The older single-slider setting.
     pub fn from_softness(softness: f32) -> Self {
-        let s = softness.clamp(-1.0, 1.0) * 0.25;
-        PressureCurve { p1: (1.0 / 3.0 - s, 1.0 / 3.0 + s), p2: (2.0 / 3.0 - s, 2.0 / 3.0 + s) }
+        let s = if softness.is_finite() { softness.clamp(-1.0, 1.0) } else { 0.0 };
+        if s == 0.0 {
+            return Self::linear();
+        }
+        Self::from_points(&[(0.5, 0.5 + 0.3 * s)])
+    }
+
+    /// The inner points (without the fixed ends).
+    pub fn points(&self) -> Vec<(f32, f32)> {
+        self.knots[1..self.knots.len() - 1].to_vec()
+    }
+
+    pub fn is_linear(&self) -> bool {
+        self.knots.iter().all(|(x, y)| (x - y).abs() < 1e-6)
     }
 
     pub fn apply(&self, x: f32) -> f32 {
-        let x = x.clamp(0.0, 1.0);
-        if *self == Self::LINEAR {
+        let x = if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 };
+        if self.knots.len() == 2 {
             return x;
         }
-        let bez = |a: f32, b: f32, t: f32| {
-            let u = 1.0 - t;
-            3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
-        };
-        // x(t) is increasing; find t by bisection.
-        let (mut lo, mut hi) = (0.0f32, 1.0f32);
-        for _ in 0..24 {
-            let mid = 0.5 * (lo + hi);
-            if bez(self.p1.0, self.p2.0, mid) < x {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        bez(self.p1.1, self.p2.1, 0.5 * (lo + hi)).clamp(0.0, 1.0)
+        let i = self.knots.windows(2).position(|w| x <= w[1].0).unwrap_or(self.knots.len() - 2);
+        let ((x0, y0), (x1, y1)) = (self.knots[i], self.knots[i + 1]);
+        let h = x1 - x0;
+        let t = (x - x0) / h;
+        let (t2, t3) = (t * t, t * t * t);
+        let v = (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+            + (t3 - 2.0 * t2 + t) * h * self.slopes[i]
+            + (-2.0 * t3 + 3.0 * t2) * y1
+            + (t3 - t2) * h * self.slopes[i + 1];
+        v.clamp(0.0, 1.0)
     }
 }
 
-static SOFTNESS: AtomicU32 = AtomicU32::new(0); // f32 bits; 0.0
+static CURVE: std::sync::RwLock<Vec<(f32, f32)>> = std::sync::RwLock::new(Vec::new());
 
-/// Set the device's pressure feel (-1 firm ..= 1 soft). Rendering only:
+/// Set the device's pressure curve from its inner points. Rendering only:
 /// the file keeps raw pressure. Callers must re-tessellate afterwards.
-pub fn set_pressure_softness(softness: f32) {
-    let s = if softness.is_finite() { softness.clamp(-1.0, 1.0) } else { 0.0 };
-    SOFTNESS.store(s.to_bits(), Ordering::Relaxed);
+pub fn set_pressure_points(points: &[(f32, f32)]) {
+    let c = PressureCurve::from_points(points);
+    if let Ok(mut g) = CURVE.write() {
+        *g = c.points();
+    }
 }
 
-pub fn pressure_softness() -> f32 {
-    f32::from_bits(SOFTNESS.load(Ordering::Relaxed))
+/// Set the device's pressure feel from one value (-1 firm ..= 1 soft).
+pub fn set_pressure_softness(softness: f32) {
+    set_pressure_points(&PressureCurve::from_softness(softness).points());
+}
+
+pub fn pressure_points() -> Vec<(f32, f32)> {
+    CURVE.read().map(|g| g.clone()).unwrap_or_default()
 }
 
 pub fn pressure_curve() -> PressureCurve {
-    PressureCurve::from_softness(pressure_softness())
+    PressureCurve::from_points(&pressure_points())
+}
+
+static SMOOTHING: AtomicU32 = AtomicU32::new(0); // f32 bits; 0.0
+
+/// Steady-hand smoothing for every pen, 0 ..= 1 (Procreate's accessibility
+/// setting for tremors): it strengthens each pen's stabiliser and the
+/// jitter filter. Device-local, rendering only. Re-tessellate afterwards.
+pub fn set_smoothing(amount: f32) {
+    let a = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+    SMOOTHING.store(a.to_bits(), Ordering::Relaxed);
+}
+
+pub fn smoothing() -> f32 {
+    f32::from_bits(SMOOTHING.load(Ordering::Relaxed))
+}
+
+/// A pen's stabiliser with the steady-hand smoothing added on top.
+pub fn effective_stabilizer(brush_amount: f32) -> f32 {
+    stabilizer_with(brush_amount, smoothing())
+}
+
+/// A pen's stabiliser `brush_amount` with steady-hand smoothing `global`.
+pub fn stabilizer_with(brush_amount: f32, global: f32) -> f32 {
+    let g = global.clamp(0.0, 1.0) * 0.7;
+    1.0 - (1.0 - brush_amount.clamp(0.0, 1.0)) * (1.0 - g)
 }
 
 #[cfg(test)]
@@ -470,6 +610,71 @@ mod tests {
         for w in d.windows(2) {
             assert!(w[0].pos().distance(w[1].pos()) >= 0.5 || w[1] == *pts.last().unwrap());
         }
+    }
+
+    #[test]
+    fn pressure_curve_through_points_is_smooth_and_monotone() {
+        // Any points, even messy ones, give a valid curve.
+        let c = PressureCurve::from_points(&[(0.7, 0.6), (0.2, 0.5), (0.4, 0.3), (f32::NAN, 0.1), (0.9, 2.0)]);
+        assert_eq!(c.apply(0.0), 0.0);
+        assert_eq!(c.apply(1.0), 1.0);
+        let mut last = 0.0;
+        for i in 0..=200 {
+            let y = c.apply(i as f32 / 200.0);
+            assert!(y >= last - 1e-6, "monotone");
+            last = y;
+        }
+        assert!((c.apply(0.2) - 0.5).abs() < 1e-5, "passes through its points");
+        assert!(
+            PressureCurve::from_points(&[
+                (0.1, 0.1),
+                (0.2, 0.2),
+                (0.3, 0.3),
+                (0.4, 0.4),
+                (0.5, 0.5),
+                (0.6, 0.6),
+                (0.7, 0.7),
+                (0.8, 0.8)
+            ])
+            .points()
+            .len()
+                == MAX_CURVE_POINTS
+        );
+        assert!(PressureCurve::linear().is_linear());
+        // A light hand: bend the curve up.
+        let light = PressureCurve::from_points(&[(0.2, 0.5)]);
+        assert!(light.apply(0.2) > 0.45 && light.apply(0.6) > 0.6);
+    }
+
+    #[test]
+    fn eased_stabiliser_follows_fast_strokes_closer() {
+        // The same zigzag drawn slowly and quickly.
+        let zig = |ms_per_pt: f64| -> Vec<InputPoint> {
+            (0..200)
+                .map(|i| {
+                    InputPoint::new(i as f64 * 0.5, if i % 2 == 0 { 0.0 } else { 1.0 }, 0.5).at(i as f64 * ms_per_pt)
+                })
+                .collect()
+        };
+        let wobble = |p: &[InputPoint]| {
+            p.iter().map(|q| q.y).fold(f64::MIN, f64::max) - p.iter().skip(5).map(|q| q.y).fold(f64::MAX, f64::min)
+        };
+        let slow = pulled_string_eased(&zig(8.0), 4.0, 1.0);
+        let fast = pulled_string_eased(&zig(1.0), 4.0, 1.0);
+        assert!(slow.len() < fast.len(), "the string is shorter at speed, so more points pass");
+        assert!(wobble(&slow) <= 1.0);
+        // Without timing it is the plain pulled string.
+        let untimed: Vec<_> = zig(0.0).into_iter().map(|p| p.at(0.0)).collect();
+        assert_eq!(pulled_string_eased(&untimed, 4.0, 1.0), pulled_string(&untimed, 4.0));
+    }
+
+    #[test]
+    fn steady_hand_smoothing_adds_to_every_pen() {
+        // (Pure function: tests run in parallel, so no global changes here.)
+        assert_eq!(stabilizer_with(0.0, 0.0), 0.0);
+        assert!((stabilizer_with(0.4, 0.0) - 0.4).abs() < 1e-6);
+        assert!(stabilizer_with(0.0, 1.0) > 0.6);
+        assert!(stabilizer_with(0.5, 1.0) > 0.5 && stabilizer_with(1.0, 1.0) == 1.0);
     }
 
     #[test]

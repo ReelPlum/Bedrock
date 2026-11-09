@@ -74,7 +74,12 @@
             "color": { "$ref": "#/$defs/color" },
             "size": { "type": "number", "exclusiveMinimum": 0 },
             "style": { "enum": ["solid", "dashed", "dotted"], "default": "solid" },
-            "stabilizer": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 }
+            "stabilizer": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+            "taper_start": { "type": "number", "minimum": 0, "maximum": 1 },
+            "taper_end": { "type": "number", "minimum": 0, "maximum": 1 },
+            "taper_fade": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+            "pressure": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+            "speed": { "type": "number", "minimum": 0, "maximum": 1 }
           }
         },
         "device": { "enum": ["pen", "mouse", "touch"] },
