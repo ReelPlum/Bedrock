@@ -78,6 +78,7 @@ pub fn split(
     let mut flush = |run: &mut Vec<InputPoint>, pieces: &mut Vec<Stroke>| {
         if run.len() >= 2 {
             let mut s = Stroke::new(new_id(), stroke.brush, stroke.start_time, stroke.device, std::mem::take(run));
+            s.input_scale = stroke.input_scale;
             // Point at the original ink, not short-lived intermediate pieces.
             s.derived_from = if stroke.derived_from.is_empty() { vec![stroke.id] } else { stroke.derived_from.clone() };
             pieces.push(s);

@@ -63,12 +63,25 @@ pub struct Stroke {
     /// Strokes this one was cut from (e.g. by the eraser). Lets a recogniser
     /// invalidate exactly the text that changed.
     pub derived_from: Vec<StrokeId>,
+    /// World units per input pixel when it was drawn (1 / zoom). Input
+    /// noise, such as whole-pixel positions from the browser, is about one
+    /// input pixel in size, so the smoothing scales with this.
+    pub input_scale: f64,
     bounds: Rect,
 }
 
 impl Stroke {
     pub fn new(id: StrokeId, brush: Brush, start_time: f64, device: InputDevice, points: Vec<InputPoint>) -> Self {
-        let mut s = Stroke { id, brush, start_time, device, points, derived_from: Vec::new(), bounds: Rect::EMPTY };
+        let mut s = Stroke {
+            id,
+            brush,
+            start_time,
+            device,
+            points,
+            derived_from: Vec::new(),
+            input_scale: 1.0,
+            bounds: Rect::EMPTY,
+        };
         s.recompute_bounds();
         s
     }

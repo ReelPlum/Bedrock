@@ -130,8 +130,9 @@ pub fn decimate(points: &[InputPoint], min_spacing: f64) -> Vec<InputPoint> {
 
 /// The full input clean-up: unreliable start pressure, then 1€ filters on
 /// position, pressure and tilt. The first point stays exact, and the line
-/// still reaches the point where the pen lifted.
-pub fn filter_points(points: &[InputPoint]) -> Vec<InputPoint> {
+/// still reaches the point where the pen lifted. `scale` is world units per
+/// input pixel (see `Stroke::input_scale`).
+pub fn filter_points(points: &[InputPoint], scale: f64) -> Vec<InputPoint> {
     let n = points.len();
     if n < 3 {
         return points.to_vec();
@@ -153,9 +154,11 @@ pub fn filter_points(points: &[InputPoint]) -> Vec<InputPoint> {
                     q.pressure = r;
                 }
             }
-            let [x, y] = pos.filter([q.x, q.y], q.t);
-            q.x = x;
-            q.y = y;
+            // Filter in input pixels, so a stroke drawn zoomed in is
+            // smoothed like the same hand movement at 100%.
+            let [x, y] = pos.filter([q.x / scale, q.y / scale], q.t);
+            q.x = x * scale;
+            q.y = y * scale;
             q.pressure = pr.filter(q.pressure as f64, q.t).clamp(0.0, 1.0) as f32;
             q.altitude = alt.filter(q.altitude as f64, q.t) as f32;
             // Azimuth is filtered as a direction (cos, sin), never as an
@@ -174,6 +177,113 @@ pub fn filter_points(points: &[InputPoint]) -> Vec<InputPoint> {
         end.altitude = out[n - 1].altitude;
         end.azimuth = out[n - 1].azimuth;
         out.push(end);
+    }
+    out
+}
+
+/// Sigma of [`smooth_along`] in input pixels: enough to iron out a
+/// whole-pixel staircase, small enough to keep letters' corners crisp.
+pub const PIXEL_SMOOTHING: f64 = 1.5;
+
+/// Arc-length Gaussian smoothing of positions (`sigma` in world units).
+///
+/// Browsers often report whole-pixel positions, so a slow shallow line
+/// arrives as a staircase: 1 px jumps every few pixels. Time filters can't
+/// remove that (the steps arrive at writing speed); averaging over a couple
+/// of pixels of line can. The window shrinks symmetrically near the ends, so
+/// the first and last points stay exactly where the pen was.
+pub fn smooth_along(points: &[InputPoint], sigma: f64) -> Vec<InputPoint> {
+    let n = points.len();
+    if n < 3 || sigma <= 0.0 {
+        return points.to_vec();
+    }
+    let mut arc = Vec::with_capacity(n);
+    let mut acc = 0.0;
+    for i in 0..n {
+        if i > 0 {
+            acc += points[i].pos().distance(points[i - 1].pos());
+        }
+        arc.push(acc);
+    }
+    let total = acc;
+    // Corners (the tip of a v, the top of an n) stay sharp: find points
+    // where the line turns by more than ~55° within a couple of sigma, and
+    // never let the averaging window reach across one.
+    let corners = corner_arcs(points, &arc, 2.0 * sigma);
+    let reach = 3.0 * sigma;
+    let inv = 1.0 / (2.0 * sigma * sigma);
+    let (mut lo, mut hi) = (0usize, 0usize);
+    (0..n)
+        .map(|i| {
+            let to_corner = corners.iter().map(|c| (c - arc[i]).abs()).fold(f64::INFINITY, f64::min);
+            let r = reach.min(arc[i]).min(total - arc[i]).min(to_corner);
+            let mut q = points[i];
+            if r <= 1e-9 {
+                return q;
+            }
+            while arc[i] - arc[lo] > r {
+                lo += 1;
+            }
+            while lo > 0 && arc[i] - arc[lo - 1] <= r {
+                lo -= 1;
+            }
+            hi = hi.max(i);
+            while hi + 1 < n && arc[hi + 1] - arc[i] <= r {
+                hi += 1;
+            }
+            while hi > i && arc[hi] - arc[i] > r {
+                hi -= 1;
+            }
+            let (mut sx, mut sy, mut sw) = (0.0, 0.0, 0.0);
+            for (j, p) in points.iter().enumerate().take(hi + 1).skip(lo) {
+                let d = arc[j] - arc[i];
+                let w = (-d * d * inv).exp();
+                sx += p.x * w;
+                sy += p.y * w;
+                sw += w;
+            }
+            q.x = sx / sw;
+            q.y = sy / sw;
+            q
+        })
+        .collect()
+}
+
+/// Arc positions of sharp turns: local maxima of the turn angle between the
+/// chord `span` behind and the chord `span` ahead, where it exceeds ~55°.
+fn corner_arcs(points: &[InputPoint], arc: &[f64], span: f64) -> Vec<f64> {
+    let n = points.len();
+    let at = |target: f64| -> crate::geom::Vec2 {
+        // Position at arc length `target` (clamped), by linear search from a
+        // binary-searched start.
+        let t = target.clamp(0.0, arc[n - 1]);
+        let k = arc.partition_point(|&a| a < t).min(n - 1);
+        if k == 0 {
+            return points[0].pos();
+        }
+        let (a0, a1) = (arc[k - 1], arc[k]);
+        let f = if a1 > a0 { (t - a0) / (a1 - a0) } else { 0.0 };
+        points[k - 1].pos().lerp(points[k].pos(), f)
+    };
+    let turn: Vec<f64> = (0..n)
+        .map(|i| {
+            if arc[i] < span || arc[n - 1] - arc[i] < span {
+                return 0.0;
+            }
+            let p = points[i].pos();
+            let (a, b) = (p - at(arc[i] - span), at(arc[i] + span) - p);
+            if a.length() < 1e-9 || b.length() < 1e-9 {
+                return 0.0;
+            }
+            (a.dot(b) / (a.length() * b.length())).clamp(-1.0, 1.0).acos()
+        })
+        .collect();
+    const SHARP: f64 = 0.96; // radians, about 55°
+    let mut out = Vec::new();
+    for i in 0..n {
+        if turn[i] > SHARP && (i == 0 || turn[i] >= turn[i - 1]) && (i + 1 == n || turn[i] > turn[i + 1]) {
+            out.push(arc[i]);
+        }
     }
     out
 }

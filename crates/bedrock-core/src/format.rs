@@ -59,6 +59,9 @@ struct StrokeJson {
     start: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     derived_from: Vec<StrokeId>,
+    /// World units per input pixel when drawn (1 / zoom); omitted when 1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    input_scale: f64,
     /// Flat list, `channels.len()` numbers per sample.
     points: Vec<f64>,
 }
@@ -67,6 +70,14 @@ struct StrokeJson {
 /// (1600%) that is under 0.02 screen pixels, so saving never moves ink.
 /// (It was 1/100, which was 0.64 px at the old 6400% limit.)
 pub const POSITION_DECIMALS: i32 = 3;
+
+fn one() -> f64 {
+    1.0
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
 
 fn round(v: f64, decimals: i32) -> f64 {
     let m = 10f64.powi(decimals);
@@ -115,6 +126,7 @@ fn json_with(doc: &Document, recognition: bool) -> String {
                 device: s.device,
                 start: round(s.start_time, 1),
                 derived_from: s.derived_from.clone(),
+                input_scale: round(s.input_scale, 6),
                 points,
             })
             .expect("stroke serialises")
@@ -250,6 +262,7 @@ pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
         }
         let mut s = Stroke::new(sj.id, brush, if sj.start.is_finite() { sj.start } else { 0.0 }, sj.device, points);
         s.derived_from = sj.derived_from;
+        s.input_scale = if sj.input_scale.is_finite() && sj.input_scale > 0.0 { sj.input_scale } else { 1.0 };
         strokes.push(s);
     }
     doc.set_strokes(strokes);

@@ -162,8 +162,8 @@ pub fn samples(stroke: &Stroke) -> Vec<Sample> {
 }
 
 /// Like [`samples`] but for a stroke still being drawn, with an explicit
-/// point list (predicted points may be appended). No end taper, since the
-/// pen hasn't lifted yet.
+/// point list: the stroke's points, optionally followed by predicted ones.
+/// No end taper, since the pen hasn't lifted yet.
 pub fn samples_for(stroke: &Stroke, points: &[InputPoint]) -> Vec<Sample> {
     samples_with_step(stroke, points, 1.0, false)
 }
@@ -182,12 +182,24 @@ fn merge_spacing(size: f64) -> f64 {
 fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finished: bool) -> Vec<Sample> {
     let brush = &stroke.brush;
     let size = brush.size.max(0.1) as f64;
-    // Input clean-up, in order: 1€ filters (noise out, little lag), the
-    // stabiliser's pulled string if on, then merge points too close to carry
-    // a direction.
-    let filtered = pen::filter_points(points);
-    let stabilized = if brush.stabilizer > 0.0 { stabilize(&filtered, brush.stabilizer) } else { filtered };
-    let cleaned = pen::decimate(&stabilized, merge_spacing(size));
+    // World units per input pixel when drawn: the size of input noise.
+    let px = if stroke.input_scale.is_finite() && stroke.input_scale > 0.0 { stroke.input_scale } else { 1.0 };
+    // Input clean-up, in order: 1€ filters (noise out, little lag), merge
+    // points too close to carry a direction, smooth away the whole-pixel
+    // staircase, then the stabiliser's pulled string if on.
+    // A live stroke may end in predicted points (a guess at where the pen is
+    // going). They are left out of the spatial smoothing and appended after
+    // it, so a wrong guess can't bend the real line it joins.
+    let real = if finished { points.len() } else { stroke.points.len().min(points.len()) };
+    let merge = merge_spacing(size).min(0.5 * px);
+    let filtered = pen::filter_points(&points[..real], px);
+    let merged = pen::decimate(&filtered, merge);
+    let mut smoothed = pen::smooth_along(&merged, pen::PIXEL_SMOOTHING * px);
+    if real < points.len() {
+        let all = pen::filter_points(points, px);
+        smoothed.extend(all.iter().skip(real).copied());
+    }
+    let cleaned = if brush.stabilizer > 0.0 { stabilize(&smoothed, brush.stabilizer) } else { smoothed };
     // Dense resampling: capsules are cheap on the GPU and long straight runs
     // are merged again afterwards, so curves can be finely sampled.
     let step = (size * 0.15).clamp(0.15, 0.75) * scale.max(1.0);
@@ -622,7 +634,7 @@ mod tests {
     #[test]
     fn input_cleanup_keeps_endpoints() {
         let pts: Vec<_> = (0..20).map(|i| InputPoint::new(i as f64, (i % 2) as f64, 0.5).at(i as f64 * 4.0)).collect();
-        let f = pen::filter_points(&pts);
+        let f = pen::filter_points(&pts, 1.0);
         assert_eq!(f[0].pos(), pts[0].pos());
         assert_eq!(f.last().unwrap().pos(), pts.last().unwrap().pos());
         let wobble = f[5..15].iter().map(|p| (p.y - 0.5).abs()).fold(0.0, f64::max);
@@ -999,7 +1011,7 @@ mod tests {
         let pts: Vec<_> = (0..60)
             .map(|i| InputPoint::new(i as f64 * 2.0, 0.0, if i < 2 { 0.02 } else { 0.8 }).at(i as f64 * 4.0))
             .collect();
-        let f = pen::filter_points(&pts);
+        let f = pen::filter_points(&pts, 1.0);
         assert!(f[0].pressure > 0.7 && f[1].pressure > 0.7, "{} {}", f[0].pressure, f[1].pressure);
     }
 
@@ -1012,5 +1024,116 @@ mod tests {
         let full =
             Brush::new(BrushKind::Pen, Rgba::BLACK, 6.0).footprint(&InputPoint::new(0.0, 0.0, 0.8), 0.0).width as f64;
         assert!((smp[smp.len() / 2].width - full).abs() < 0.05, "{} vs {full}", smp[smp.len() / 2].width);
+    }
+
+    /// Positions as Safari reports them: whole CSS pixels.
+    fn quantized(pts: Vec<InputPoint>) -> Vec<InputPoint> {
+        pts.into_iter()
+            .map(|mut p| {
+                p.x = p.x.round();
+                p.y = p.y.round();
+                p
+            })
+            .collect()
+    }
+
+    #[test]
+    fn whole_pixel_input_is_not_wobbly_at_100_percent() {
+        // Bug: writing at 100% looked wobbly and only improved when zoomed
+        // in. The browser gives whole-pixel positions, so a slow, shallow
+        // line arrives as a staircase that the filters passed through.
+        let line: Vec<_> =
+            (0..400).map(|i| InputPoint::new(i as f64 * 0.3, i as f64 * 0.03, 0.5).at(i as f64 * 4.17)).collect();
+        let s = pen_stroke(30, BrushKind::Pen, 3.0, quantized(line));
+        let smp = samples(&s);
+        let inner = &smp[smp.len() / 10..smp.len() * 9 / 10];
+        let worst = inner.iter().map(|p| (p.pos.y - p.pos.x * 0.1).abs()).fold(0.0, f64::max);
+        assert!(worst < 0.25, "line wobbles {worst} px off course (raw staircase is up to 0.5)");
+        // A slow small circle, as in handwriting.
+        let circle: Vec<_> = (0..480)
+            .map(|i| {
+                let a = i as f64 / 480.0 * 2.0 * PI;
+                InputPoint::new(100.0 + 12.0 * a.cos(), 100.0 + 12.0 * a.sin(), 0.5).at(i as f64 * 4.17)
+            })
+            .collect();
+        let s = pen_stroke(31, BrushKind::Pen, 3.0, quantized(circle));
+        let smp = samples(&s);
+        let inner = &smp[smp.len() / 10..smp.len() * 9 / 10];
+        let worst = inner.iter().map(|p| ((p.pos - Vec2::new(100.0, 100.0)).length() - 12.0).abs()).fold(0.0, f64::max);
+        assert!(worst < 0.35, "circle wobbles {worst} px");
+    }
+
+    #[test]
+    fn smoothing_follows_the_zoom_the_stroke_was_drawn_at() {
+        // The same hand movement drawn at 400% is 4x smaller in the world,
+        // and its pixel staircase is too: it must be smoothed just as well,
+        // without rounding off the (smaller) letters more.
+        let line: Vec<_> =
+            (0..400).map(|i| InputPoint::new(i as f64 * 0.3, i as f64 * 0.03, 0.5).at(i as f64 * 4.17)).collect();
+        let q: Vec<_> = quantized(line).into_iter().map(|p| InputPoint { x: p.x / 4.0, y: p.y / 4.0, ..p }).collect();
+        let mut s = pen_stroke(32, BrushKind::Pen, 0.75, q);
+        s.input_scale = 0.25;
+        let smp = samples(&s);
+        let inner = &smp[smp.len() / 10..smp.len() * 9 / 10];
+        let worst = inner.iter().map(|p| (p.pos.y - p.pos.x * 0.1).abs()).fold(0.0, f64::max);
+        assert!(worst < 0.25 / 4.0, "line wobbles {worst} units at 400%");
+    }
+
+    #[test]
+    fn smoothing_keeps_sharp_corners_of_letters() {
+        // A "v" 20 px tall: the tip must stay pointed (within about a pixel).
+        let mut pts = Vec::new();
+        for i in 0..=40 {
+            pts.push(InputPoint::new(i as f64 * 0.25, i as f64 * 0.5, 0.5).at(i as f64 * 4.0));
+        }
+        for i in 1..=40 {
+            pts.push(InputPoint::new(10.0 + i as f64 * 0.25, 20.0 - i as f64 * 0.5, 0.5).at(160.0 + i as f64 * 4.0));
+        }
+        let smp = samples(&pen_stroke(33, BrushKind::Pen, 2.0, pts));
+        let tip = smp.iter().map(|p| p.pos.y).fold(0.0, f64::max);
+        assert!(tip > 19.0, "the tip of the v moved up to {tip}");
+    }
+
+    #[test]
+    fn pencil_noise_does_not_make_the_width_wobble() {
+        // Apple Pencil (unlike a mouse) sends noisy pressure at 240 Hz, with
+        // samples bunched in time as Safari coalesces them, and whole-pixel
+        // positions. Writing speed and pressure are steady here, so the width
+        // must be too.
+        let mut seed = 11u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f64 / (1u32 << 24) as f64 - 0.5
+        };
+        let pts: Vec<_> = (0..480)
+            .map(|i| {
+                let t = (i / 4) as f64 * 16.67 + (i % 4) as f64 * 0.5; // bunches of 4 per frame
+                let x = i as f64 * 0.35;
+                InputPoint::new(x, 50.0 + (x * 0.05).sin() * 6.0, (0.5 + rnd() * 0.12) as f32).at(t)
+            })
+            .collect();
+        let s = pen_stroke(34, BrushKind::Pen, 3.0, quantized(pts));
+        let smp = samples(&s);
+        let inner = &smp[smp.len() / 10..smp.len() * 9 / 10];
+        let (lo, hi) = inner.iter().fold((f64::MAX, 0.0f64), |(l, h), x| (l.min(x.width), h.max(x.width)));
+        assert!(hi / lo < 1.08, "width wobbles between {lo:.3} and {hi:.3}");
+    }
+
+    #[test]
+    fn a_wrong_prediction_does_not_bend_the_real_line() {
+        // While drawing, predicted points are appended to the live stroke.
+        // A bad guess (here: a sharp hook) must not move the line already
+        // drawn, or the line wiggles under the pen.
+        let real: Vec<_> = (0..120).map(|i| InputPoint::new(i as f64 * 0.5, 0.0, 0.5).at(i as f64 * 4.17)).collect();
+        let s = pen_stroke(35, BrushKind::Pen, 3.0, real.clone());
+        let plain = samples_for(&s, &real);
+        let mut guessed = real.clone();
+        for k in 1..=4 {
+            guessed.push(InputPoint::new(59.5, k as f64 * 3.0, 0.5).at(500.0 + k as f64 * 4.0));
+        }
+        let bent = samples_for(&s, &guessed);
+        let worst = bent.iter().filter(|p| p.pos.x < 58.0).map(|p| p.pos.y.abs()).fold(0.0, f64::max);
+        assert!(worst < 0.05, "a predicted hook moved the drawn line by {worst}");
+        assert!(plain.len() > 10);
     }
 }

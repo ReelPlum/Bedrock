@@ -242,9 +242,19 @@ impl Canvas {
         self.engine.invalidate();
     }
 
-    /// Simplified strokes for the minimap (see `overview::polylines`).
-    pub fn minimap_strokes(&self, tolerance: f64) -> Vec<f64> {
+    /// Simplified strokes for the minimap as 16-bit integers (see
+    /// `overview::polylines`), in the frame from `minimap_frame`.
+    pub fn minimap_strokes(&self, tolerance: f64) -> Vec<u16> {
         bedrock_core::overview::polylines(&self.engine.doc, tolerance)
+    }
+
+    /// `[x0, y0, span]`: minimap coordinate q maps to `x0 + q / 65535 * span`.
+    /// Empty when there is no ink.
+    pub fn minimap_frame(&self) -> Vec<f64> {
+        match bedrock_core::overview::Frame::of(&self.engine.doc) {
+            Some(f) => vec![f.origin.x, f.origin.y, f.span],
+            None => Vec::new(),
+        }
     }
 
     /// Swap in another document. The scene is rebuilt from scratch: it only

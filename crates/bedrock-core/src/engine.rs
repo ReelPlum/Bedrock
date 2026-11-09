@@ -223,6 +223,7 @@ impl Engine {
             Tool::Draw => {
                 let id_ = self.doc.next_id();
                 let mut stroke = Stroke::new(id_, self.brush, s.time, Self::device(kind), Vec::new());
+                stroke.input_scale = 1.0 / self.camera.zoom;
                 stroke.push(self.to_input(&s, s.time));
                 self.active = Some(Active::Drawing { pointer: id, stroke, last_screen: s.pos() });
             }
