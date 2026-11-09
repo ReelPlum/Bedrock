@@ -628,6 +628,9 @@ test('an opened note shows its ink straight away, without touching the canvas', 
   // Two notes with the same number of strokes: one on the left, one on the right.
   const ids = await page.evaluate(async () => {
     bedrock.minimap.visible = false; // only look at the canvas
+    // No recogniser download here: its "not available" toast is dark and
+    // would be counted as ink.
+    bedrock.handwriting.enabled = false;
     const ids = [];
     for (const x of [100, 600]) {
       await bedrock.newNote();
