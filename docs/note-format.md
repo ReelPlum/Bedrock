@@ -19,6 +19,7 @@ afternoon without Bedrock's code. The machine readable schema for
 |---|---|
 | `note.json` | All ink with raw pen samples. The source of truth. |
 | `recognized.json` | Text recognised from handwriting, linked to stroke ids. Kept separate so recognition can never damage ink. |
+| `links.md` | The note's links as Markdown (`[[Note]]`, `[text](https://…)`), for tools such as Obsidian's graph. Generated from `links` in `note.json`. |
 | `preview.svg` | The note rendered as vector paths. Opens in any browser, forever. |
 | `README.txt` | A short human explanation of the above. |
 
@@ -121,6 +122,28 @@ format. `preview.svg` shows exactly how Bedrock drew the note when it was saved.
 Each item names the strokes it was recognised from, in writing order. When
 any of those strokes is erased, Bedrock drops the item so text never points at
 missing ink; a recogniser then re-reads the remaining strokes.
+
+`engine: "user"` marks text the writer typed in themselves: the ground truth
+for those strokes, with confidence 1. What the recogniser had read is kept in
+`alternatives`, so notes double as a dataset of real handwriting with checked
+labels.
+
+## Links (`links` in `note.json`)
+
+```json
+"links": [
+  { "strokes": ["9f2c4e1a7b3d5f60"], "target": "https://example.com", "type": "url", "text": "Newton" },
+  { "strokes": ["0a11b2c3d4e5f607"], "target": "Ideas", "type": "note", "text": "ideas" }
+]
+```
+
+A link makes a group of strokes (usually one handwritten word) point
+somewhere. `type` says how to read `target`: `url` is a web address, `note` is
+another note by name (an Obsidian note, `[[Ideas]]`). Readers keep link types
+they don't know. `text` is the linked words as recognised text, filled in when
+saving, so a graph can label the link without the ink. Links are saved only
+while all their strokes exist. `links.md` in the archive lists the same links
+as Markdown.
 
 ## Designed for real-time handwriting recognition
 

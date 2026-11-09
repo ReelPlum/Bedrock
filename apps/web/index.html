@@ -138,6 +138,27 @@
     <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
   </div>
 
+  <div class="word-menu" id="word-menu" hidden role="dialog" aria-label="Word">
+    <div class="wm-head"><span class="wm-word" id="wm-word"></span><button class="wm-close" id="wm-close" aria-label="Close">×</button></div>
+    <div class="wm-main" id="wm-main">
+      <div class="wm-link-now" id="wm-link-now" hidden></div>
+      <button type="button" id="wm-open" hidden>Open link</button>
+      <button type="button" id="wm-link">Make a link…</button>
+      <button type="button" id="wm-unlink" hidden>Remove link</button>
+      <button type="button" id="wm-correct">Correct the text…</button>
+    </div>
+    <form class="wm-form" id="wm-link-form" hidden novalidate>
+      <select id="wm-link-type" aria-label="Link to"></select>
+      <input id="wm-link-target" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Link target">
+      <div class="wm-error" id="wm-link-error" hidden></div>
+      <div class="wm-actions"><button type="button" class="wm-cancel">Cancel</button><button type="submit" class="wm-save">Save link</button></div>
+    </form>
+    <form class="wm-form" id="wm-correct-form" hidden novalidate>
+      <input id="wm-correct-text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="What this says">
+      <div class="wm-actions"><button type="button" class="wm-cancel">Cancel</button><button type="submit" class="wm-save">Save</button></div>
+    </form>
+  </div>
+
   <aside class="recognizer-view" id="recognizer-view" hidden aria-label="What the recogniser sees">
     <div class="rv-head"><strong>Recogniser input</strong><span class="rv-count"></span><button class="rv-close" id="rv-close" aria-label="Close">×</button></div>
     <ol class="rv-list"></ol>

@@ -3,6 +3,7 @@ import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
+import { WordMenu } from './word-menu.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -107,6 +108,7 @@ async function main() {
   let minimap = null;
   let handwriting = null;
   let recognizerView = null;
+  let wordMenu = null;
   let lastRevision = -1;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
@@ -126,6 +128,7 @@ async function main() {
     },
     onCommit: () => scheduleSave(),
     onHover: (p) => showHover(p),
+    onLongPress: (p) => wordMenu?.openAt(p.x, p.y) || false,
   });
 
   function resize() {
@@ -157,6 +160,8 @@ async function main() {
   handwriting.mode = settings.recognizeMode;
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
+  const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
+  wordMenu = new WordMenu($('word-menu'), canvas, stage, { onChange: wordChanged });
   recognizerView = new RecognizerView($('recognizer-view'), handwriting, {
     onChange: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); },
   });
@@ -853,7 +858,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

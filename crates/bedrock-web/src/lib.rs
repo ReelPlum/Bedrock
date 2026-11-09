@@ -287,6 +287,7 @@ impl Canvas {
                     "text": w.text,
                     "engine": w.engine,
                     "alternatives": w.alternatives,
+                    "link": w.link.as_ref().map(|l| serde_json::json!({ "target": l.target, "type": l.kind })),
                 })
             })
             .collect();
@@ -339,6 +340,33 @@ impl Canvas {
             self.engine.invalidate();
         }
         ok
+    }
+
+    /// Make a word a link (`kind`: "url", later "note"); "" removes it.
+    pub fn set_word_link(&mut self, word_id: &str, target: &str, kind: &str) -> bool {
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
+        let ok = self.hw.set_link(&mut self.engine.doc, id, target, kind);
+        if ok {
+            self.engine.invalidate();
+        }
+        ok
+    }
+
+    /// Bounds of linked ink, flat `[x0, y0, x1, y1, ...]`, for underlining.
+    pub fn link_bounds(&self) -> Vec<f64> {
+        let doc = &self.engine.doc;
+        let mut out = Vec::new();
+        for l in doc.live_links() {
+            let mut r: Option<bedrock_core::geom::Rect> = None;
+            for s in doc.strokes().iter().filter(|s| l.strokes.contains(&s.id)) {
+                let b = s.bounds();
+                r = Some(r.map_or(b, |r| r.union(&b)));
+            }
+            if let Some(r) = r {
+                out.extend_from_slice(&[r.min.x, r.min.y, r.max.x, r.max.y]);
+            }
+        }
+        out
     }
 
     /// Bounds of misspelled words, flat `[x0, y0, x1, y1, ...]`.

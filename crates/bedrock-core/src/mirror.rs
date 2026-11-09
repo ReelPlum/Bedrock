@@ -21,7 +21,13 @@ pub fn meta_only(d: &Document) -> Document {
     m.background = d.background;
     m.paper = d.paper.clone();
     m.recognition = d.recognition.clone();
+    m.links = d.links.clone();
     m.extra = d.extra.clone();
+    // Links are only written while their strokes exist, and this copy has
+    // none: carry them all as a raw field (read back into `links`).
+    if !d.links.is_empty() {
+        m.extra.insert("links".into(), serde_json::to_value(&d.links).expect("links serialise"));
+    }
     m
 }
 
@@ -175,6 +181,19 @@ mod tests {
         sync(&mut src, &mut m);
         assert_eq!(format::to_json(m.doc()), format::to_json(&src));
         assert_eq!(content_hash(m.doc()), content_hash(&src));
+
+        // Links ride along with the metadata (bug: the background save
+        // dropped them, because the metadata copy has no strokes).
+        let first = src.strokes()[0].id;
+        src.links.push(crate::document::Link {
+            strokes: vec![first],
+            target: "https://example.com".into(),
+            kind: "url".into(),
+            text: None,
+        });
+        sync(&mut src, &mut m);
+        assert_eq!(m.doc().links, src.links);
+        assert_eq!(format::to_json(m.doc()), format::to_json(&src));
     }
 
     #[test]

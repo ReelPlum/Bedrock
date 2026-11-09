@@ -8,16 +8,18 @@
 //    MIT), which answers in LaTeX. It is a TrOCR-style encoder-decoder, but
 //    its repo keeps plain ONNX files at the top level (encoder_model.onnx,
 //    decoder_model.onnx, no onnx/ folder, no merged or quantised decoder),
-//    which Transformers.js can't load. So it runs directly on ONNX Runtime
-//    Web here: resize to 384x384, normalise, encode once, then greedy
-//    decoding (the decoder has no key/value cache, so each step re-reads the
-//    tokens so far; formulas are short and the decoder is small).
+//    which Transformers.js's encoder-decoder loader can't use. So its two
+//    files are loaded as plain models and run here: resize to 384x384,
+//    normalise, encode once, then greedy decoding (the decoder has no
+//    key/value cache, so each step re-reads the tokens so far; formulas are
+//    short and the decoder is small).
 //
 // One ONNX Runtime for all models: iPad Safari can't start a second
 // WebAssembly runtime next to Transformers.js's own ("no available backend
-// found ... RangeError: Out of memory"). So ONNX Runtime is loaded first, at
-// the exact version Transformers.js is built against, and handed to it
-// through the global it looks for; the formula model then uses the same one.
+// found ... RangeError: Out of memory"). So the formula model is loaded
+// through Transformers.js too, as two plain single-file models (its encoder
+// and decoder, with the files' real names), and run on Transformers.js's
+// sessions directly with greedy decoding.
 //
 // Everything runs on the device. Libraries are loaded on first use and each
 // model is downloaded once, then cached by the browser.
@@ -27,9 +29,6 @@
 //               { status: 'loading' | 'ready', kind, progress? }
 
 const TRANSFORMERS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
-// The ONNX Runtime version Transformers.js 4.3.1 bundles (its package.json).
-export const ORT_VERSION = '1.31.0-dev.20260914-8d85527a0';
-const ORT_DIR = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 import { MODELS } from './models.js';
 
 // From the model's preprocessor_config.json and generation_config.json.
@@ -41,20 +40,16 @@ export const MFR = {
   eos: 2,
   maxTokens: 160,
 };
-const MODEL_CACHE = 'bedrock-models-v1';
 
 let lib = null;
-let ort = null;
 const loaders = {};
 
-/** ONNX Runtime, then Transformers.js on top of that same runtime. */
-async function libraries() {
+/** Transformers.js, with its own ONNX Runtime (the only one in the page). */
+export async function libraries() {
   if (!lib) {
-    ort ||= await import(`${ORT_DIR}ort.min.mjs`);
-    ort.env.logLevel = 'error'; // not its CPU-detection warnings
-    ort.env.wasm.numThreads = 1; // no cross-origin isolation, and less memory
-    globalThis[Symbol.for('onnxruntime')] = ort;
     lib = await import(TRANSFORMERS);
+    const wasm = lib.env?.backends?.onnx?.wasm;
+    if (wasm) wasm.numThreads = 1; // no cross-origin isolation, and less memory
   }
   return lib;
 }
@@ -74,9 +69,7 @@ function textPipeline(quality) {
     await libraries();
     const model = MODELS.text[quality];
     self.postMessage({ status: 'loading', kind: 'text', model });
-    const device = 'gpu' in navigator ? 'webgpu' : 'wasm';
     const p = await lib.pipeline('image-to-text', model, {
-      device,
       dtype: 'q8',
       session_options: { enableCpuMemArena: false, enableMemPattern: false },
       progress_callback: (e) => {
@@ -97,56 +90,35 @@ async function readText(image, quality) {
 
 // ----- maths: Pix2Text MFR on ONNX Runtime -------------------------------------
 
-/** Download a file once and keep it in the Cache API, reporting progress. */
-async function fetchCached(url, onProgress) {
-  const cache = await caches.open(MODEL_CACHE).catch(() => null);
-  const hit = cache && (await cache.match(url));
-  if (hit) return new Uint8Array(await hit.arrayBuffer());
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const total = Number(res.headers.get('content-length')) || 0;
-  const reader = res.body.getReader();
-  const parts = [];
-  let got = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    got += value.length;
-    if (total) onProgress(got / total);
-  }
-  const bytes = new Uint8Array(got);
-  let o = 0;
-  for (const p of parts) { bytes.set(p, o); o += p.length; }
-  await cache?.put(url, new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } })).catch(() => {});
-  return bytes;
-}
+// No arena or memory patterns: lower peak memory, which iPad Safari's
+// WebAssembly limit needs more than the last bit of speed.
+const LEAN = { enableCpuMemArena: false, enableMemPattern: false };
 
 function mathModel() {
   return once('math', async () => {
     const model = MODELS.math;
     self.postMessage({ status: 'loading', kind: 'math', model });
     await libraries();
-    const base = `https://huggingface.co/${model}/resolve/main/`;
-    const shares = { 'encoder_model.onnx': 0.75, 'decoder_model.onnx': 0.25 };
+    const shares = { encoder_model: 0.75, decoder_model: 0.25 };
     const done = {};
-    const progress = (name) => (f) => {
-      done[name] = f;
-      const p = Object.entries(shares).reduce((s, [n, w]) => s + w * (done[n] || 0), 0);
-      self.postMessage({ status: 'loading', kind: 'math', model, progress: Math.round(p * 100) });
-    };
-    const [enc, dec, tokenizer] = await Promise.all([
-      fetchCached(`${base}encoder_model.onnx`, progress('encoder_model.onnx')),
-      fetchCached(`${base}decoder_model.onnx`, progress('decoder_model.onnx')),
-      lib.AutoTokenizer.from_pretrained(model),
-    ]);
-    // No arena or memory patterns: lower peak memory, which iPad Safari's
-    // WebAssembly limit needs more than the last bit of speed.
-    const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all', enableCpuMemArena: false, enableMemPattern: false };
-    const encoder = await ort.InferenceSession.create(enc, opts);
-    const decoder = await ort.InferenceSession.create(dec, opts);
+    // Each file as a plain one-file model: config says "no special
+    // structure", the file name is the real one, at the repo's top level.
+    const part = (name) => lib.AutoModel.from_pretrained(model, {
+      config: { model_type: 'bert' },
+      model_file_name: name,
+      subfolder: '',
+      dtype: 'fp32',
+      session_options: LEAN,
+      progress_callback: (e) => {
+        if (e.status !== 'progress' || !String(e.file || '').includes(name)) return;
+        done[name] = (e.progress || 0) / 100;
+        const p = Object.entries(shares).reduce((s, [n, w]) => s + w * (done[n] || 0), 0);
+        self.postMessage({ status: 'loading', kind: 'math', model, progress: Math.round(p * 100) });
+      },
+    });
+    const [enc, dec, tokenizer] = await Promise.all([part('encoder_model'), part('decoder_model'), lib.AutoTokenizer.from_pretrained(model)]);
     self.postMessage({ status: 'ready', kind: 'math', model });
-    return { encoder, decoder, tokenizer };
+    return { enc, dec, encoder: enc.sessions.model, decoder: dec.sessions.model, tokenizer };
   });
 }
 
@@ -185,13 +157,16 @@ export async function mfrGreedy(next, maxTokens = MFR.maxTokens) {
 async function readMath(image) {
   const { encoder, decoder, tokenizer } = await mathModel();
   const n = MFR.size;
-  const pixels = new ort.Tensor('float32', await mfrPixels(image), [1, 3, n, n]);
+  // Transformers.js tensors wrap ONNX Runtime ones (`ort_tensor`), which its
+  // sessions take directly.
+  const ortTensor = (type, data, dims) => new lib.Tensor(type, data, dims).ort_tensor;
+  const pixels = ortTensor('float32', await mfrPixels(image), [1, 3, n, n]);
   const encOut = await encoder.run({ [encoder.inputNames[0]]: pixels });
   const hidden = encOut[encoder.outputNames[0]];
   const idsName = decoder.inputNames.find((k) => k.includes('input_ids'));
   const hiddenName = decoder.inputNames.find((k) => k.includes('encoder_hidden_states'));
   const tokens = await mfrGreedy(async (tokens) => {
-    const ids = new ort.Tensor('int64', BigInt64Array.from(tokens, BigInt), [1, tokens.length]);
+    const ids = ortTensor('int64', BigInt64Array.from(tokens, BigInt), [1, tokens.length]);
     const out = await decoder.run({ [idsName]: ids, [hiddenName]: hidden });
     const logits = out.logits || out[decoder.outputNames[0]];
     const vocab = logits.dims[2];
@@ -206,8 +181,7 @@ async function release(name) {
   if (!p) return;
   delete loaders[name];
   const m = await p.catch(() => null);
-  await m?.dispose?.();
-  for (const s of [m?.encoder, m?.decoder]) await s?.release?.();
+  for (const x of [m, m?.enc, m?.dec]) await x?.dispose?.();
 }
 
 self.onmessage = async (e) => {

@@ -10,6 +10,11 @@
 
 const HALF_PI = Math.PI / 2;
 
+// Holding the pen (or a finger, or the mouse) still this long on handwriting
+// opens the word's menu instead of drawing.
+export const LONG_PRESS_MS = 550;
+const LONG_PRESS_SLOP_PX = 8;
+
 // Predicted samples are only a latency trick: never draw more than this far
 // ahead of the newest real sample, and never while the pen is lifting.
 export const MAX_PREDICTION_MS = 12;
@@ -58,7 +63,7 @@ function kindOf(e) {
 }
 
 export class InputController {
-  constructor(stage, canvas, { onFrame, onCommit, onHover } = {}) {
+  constructor(stage, canvas, { onFrame, onCommit, onHover, onLongPress } = {}) {
     this.stage = stage;
     this.canvas = canvas;
     this.onFrame = onFrame || (() => {});
@@ -66,6 +71,10 @@ export class InputController {
     // Pencil hover (iPad with Apple Pencil Pro / 2): called with the tip's
     // stage position while it hovers above the glass, null when it leaves.
     this.onHover = onHover || (() => {});
+    // Called with { x, y, pointerType } when a pointer is held still; return
+    // true if it opened something, and the touch is then not drawn.
+    this.onLongPress = onLongPress || null;
+    this.presses = new Map(); // pointerId -> { x, y, timer }
     this.rect = stage.getBoundingClientRect();
     this.frameRequested = false;
     this.lastInputTime = 0;
@@ -104,6 +113,7 @@ export class InputController {
   /** End the active pointer. The up event's own position is not added for
    *  pens: it is reported after lift-off and would draw a tail. */
   _finish(e, cancelled) {
+    this._endPress(e.pointerId);
     const kind = this.active.get(e.pointerId);
     if (!kind) return;
     this.active.delete(e.pointerId);
@@ -116,6 +126,24 @@ export class InputController {
       this._send('pointer_up', e.pointerId, kind, s);
       this.onCommit();
     }
+    this.requestFrame();
+  }
+
+  _endPress(id) {
+    const p = this.presses.get(id);
+    if (p) { clearTimeout(p.timer); this.presses.delete(id); }
+  }
+
+  _longPress(id) {
+    const p = this.presses.get(id);
+    this.presses.delete(id);
+    const kind = this.active.get(id);
+    if (!p || !kind || this.active.size > 1) return;
+    if (!this.onLongPress({ x: p.x, y: p.y, pointerType: p.pointerType })) return;
+    // Opened a menu: this touch is not ink (or a pan) after all.
+    this.active.delete(id);
+    this.lastPressure.delete(id);
+    this.canvas.pointer_cancel(id, kind);
     this.requestFrame();
   }
 
@@ -169,6 +197,10 @@ export class InputController {
       // A few pens report 0 on the down event itself; it is a real contact.
       if (s.pressure === 0) s.pressure = 0.5;
       this._send('pointer_down', e.pointerId, kind, s);
+      if (this.onLongPress && kind !== 'eraser') {
+        if (this.active.size > 1) for (const id of [...this.presses.keys()]) this._endPress(id);
+        else this.presses.set(e.pointerId, { x: s.x, y: s.y, pointerType: e.pointerType, timer: setTimeout(() => this._longPress(e.pointerId), LONG_PRESS_MS) });
+      }
       this.requestFrame();
     }, opts);
 
@@ -179,6 +211,10 @@ export class InputController {
         this.mousePan.y = e.clientY;
         this.requestFrame();
         return;
+      }
+      const press = this.presses.get(e.pointerId);
+      if (press && Math.hypot(e.clientX - this.rect.left - press.x, e.clientY - this.rect.top - press.y) > LONG_PRESS_SLOP_PX) {
+        this._endPress(e.pointerId);
       }
       const kind = this.active.get(e.pointerId);
       if (!kind) {

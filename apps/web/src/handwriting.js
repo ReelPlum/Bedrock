@@ -199,6 +199,29 @@ export class Handwriting {
     });
   }
 
+  /** Linked words get a solid underline in the link colour, like a link. */
+  _drawLinks(g, dpr) {
+    const b = this.canvas.link_bounds();
+    if (!b.length) return;
+    const m = this.marks;
+    const [ox, oy, zoom] = this.canvas.camera();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.strokeStyle = getComputedStyle(m).getPropertyValue('--link').trim() || '#2f6bff';
+    g.lineWidth = 2;
+    g.lineCap = 'round';
+    for (let i = 0; i < b.length; i += 4) {
+      const xa = (b[i] - ox) * zoom;
+      const xb = (b[i + 2] - ox) * zoom;
+      const y = (b[i + 3] - oy) * zoom + 3;
+      if (xb < 0 || xa > m.clientWidth || y < -10 || y > m.clientHeight + 10) continue;
+      g.beginPath();
+      g.moveTo(xa, y);
+      g.lineTo(xb, y);
+      g.stroke();
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
   /** Draw a word's strokes black on white, scaled to a standard letter
    *  height, as the recognisers expect. Returns a PNG Blob. */
   async render(word) {
@@ -234,7 +257,8 @@ export class Handwriting {
     return new Promise((res) => c.toBlob(res, 'image/png'));
   }
 
-  /** Draw the red wavy underlines for the current view. Call every frame. */
+  /** Draw the link underlines and the red wavy spelling underlines for the
+   *  current view. Call every frame. Returns how many spelling marks. */
   draw() {
     const m = this.marks;
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -244,6 +268,7 @@ export class Handwriting {
     const g = m.getContext('2d');
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, m.width, m.height);
+    this._drawLinks(g, dpr);
     if (!this.spelling || !this.dictionaryReady) return 0;
     const bad = this.canvas.misspelled();
     if (!bad.length) return 0;

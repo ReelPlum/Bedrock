@@ -24,6 +24,20 @@
       "description": "Only in standalone .json/.svg; inside .bedrock this is recognized.json",
       "type": "array",
       "items": { "$ref": "#/$defs/recognized" }
+    },
+    "links": {
+      "description": "Handwriting that links somewhere (saved only while all its strokes exist)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["strokes", "target"],
+        "properties": {
+          "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 },
+          "target": { "type": "string" },
+          "type": { "type": "string", "description": "url | note | later kinds; unknown kinds are kept", "default": "url" },
+          "text": { "type": "string", "description": "The linked words as recognised text" }
+        }
+      }
     }
   },
   "additionalProperties": true,

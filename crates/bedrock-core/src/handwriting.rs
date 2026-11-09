@@ -13,7 +13,7 @@
 //!   also the start of a dataset of real handwriting with its text.
 //! * [`Handwriting::misspelled`] lists the words to underline.
 
-use crate::document::{Document, RecognizedText};
+use crate::document::{Document, Link, RecognizedText};
 use crate::geom::Rect;
 use crate::spell::Dictionary;
 use crate::stroke::StrokeId;
@@ -49,6 +49,8 @@ pub struct WordInfo {
     pub engine: Option<String>,
     /// Earlier readings, e.g. what the recogniser read before a correction.
     pub alternatives: Vec<String>,
+    /// Where the word links to, if it is a link.
+    pub link: Option<Link>,
 }
 
 #[derive(Debug, Default)]
@@ -125,6 +127,7 @@ impl Handwriting {
                     text: Self::text_for(doc, w).map(|r| r.text.clone()),
                     engine: Self::text_for(doc, w).and_then(|r| r.engine.clone()),
                     alternatives: Self::text_for(doc, w).map(|r| r.alternatives.clone()).unwrap_or_default(),
+                    link: doc.links.iter().find(|l| l.strokes == w.strokes).cloned(),
                 }
             })
             .collect()
@@ -180,6 +183,26 @@ impl Handwriting {
         }
         if let Some(r) = doc.recognition.iter_mut().find(|r| r.strokes == strokes) {
             r.alternatives = alternatives;
+        }
+        true
+    }
+
+    /// Make word `id` a link to `target` (of `kind`, e.g. "url" or "note"),
+    /// replacing any link on its strokes; an empty target removes the link.
+    /// Returns false if the word no longer exists.
+    pub fn set_link(&mut self, doc: &mut Document, id: u64, target: &str, kind: &str) -> bool {
+        self.refresh(doc);
+        let Some(w) = self.layout.words.iter().find(|w| w.id == id) else { return false };
+        let mine: HashSet<StrokeId> = w.strokes.iter().copied().collect();
+        doc.links.retain(|l| !l.strokes.iter().any(|s| mine.contains(s)));
+        let target = target.trim();
+        if !target.is_empty() {
+            doc.links.push(Link {
+                strokes: w.strokes.clone(),
+                target: target.to_string(),
+                kind: kind.to_string(),
+                text: None,
+            });
         }
         true
     }
@@ -293,6 +316,41 @@ mod tests {
         assert!(hw.correct(&mut doc, w[0].id, "Bedrock!", Kind::Text));
         assert!(hw.words(&doc)[0].alternatives.contains(&"Bedrok".to_string()));
         assert!(!hw.correct(&mut doc, 12345, "x", Kind::Text), "unknown word");
+    }
+
+    #[test]
+    fn words_become_links_that_are_saved_with_their_text() {
+        let mut doc = Document::new(4);
+        let x = line(&mut doc, 0.0, 100.0, 3);
+        line(&mut doc, x, 100.0, 4);
+        let mut hw = Handwriting::new();
+        let w = hw.words(&doc);
+        assert!(hw.set_text(&mut doc, w[1].id, "Bedrock", Kind::Text, "test", None));
+        assert!(hw.set_link(&mut doc, w[1].id, " https://example.com ", "url"));
+        let info = hw.words(&doc);
+        assert!(info[0].link.is_none());
+        let link = info[1].link.as_ref().expect("linked");
+        assert_eq!((link.target.as_str(), link.kind.as_str()), ("https://example.com", "url"));
+        // Saved in note.json with the word's text, and as Markdown.
+        let json = crate::format::to_json(&doc);
+        let back = crate::format::from_json(&json, 1).unwrap().doc;
+        assert_eq!(back.links.len(), 1);
+        assert_eq!(back.links[0].text.as_deref(), Some("Bedrock"));
+        assert_eq!(back.links[0].strokes, w[1].strokes);
+        assert_eq!(crate::format::links_markdown(&doc), "# Links in this note\n\n- [Bedrock](<https://example.com>)\n");
+        // A note link, in the form Obsidian's graph reads.
+        assert!(hw.set_link(&mut doc, w[1].id, "Ideas", "note"));
+        assert_eq!(doc.links.len(), 1, "replaces the old link");
+        assert!(crate::format::links_markdown(&doc).contains("- [[Ideas|Bedrock]]"));
+        // Erasing the ink: not saved, but undo brings it back.
+        let gone = w[1].strokes[0];
+        doc.replace(&[gone], vec![]);
+        assert!(!crate::format::to_json(&doc).contains("\"links\""));
+        doc.undo();
+        assert!(crate::format::to_json(&doc).contains("\"links\""));
+        // An empty target removes the link.
+        assert!(hw.set_link(&mut doc, w[1].id, "", "url"));
+        assert!(doc.links.is_empty());
     }
 
     #[test]

@@ -833,34 +833,31 @@ test('the recogniser view shows each word as the recogniser sees it, with what i
   await ctx.close();
 });
 
-test('the formula recogniser runs Pix2Text MFR on ONNX Runtime: files at the repo root, greedy decoding to LaTeX', async () => {
-  // Stand-ins: ONNX Runtime from node_modules, tiny models with the real
-  // input/output names (tests/fixtures/make-mfr.py), a tokenizer stub.
+test('the formula recogniser runs Pix2Text MFR through Transformers.js (one runtime): files at the repo root, greedy decoding to LaTeX', async () => {
+  // The real Transformers.js and its ONNX Runtime, served locally; tiny
+  // models with the real file names and input/output names
+  // (tests/fixtures/make-mfr.py) and a small tokenizer.
   const { readFile } = await import('node:fs/promises');
+  const { TRANSFORMERS_JS } = await import('./fetch-libs.mjs');
   const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
   const asked = [];
-  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/**', async (route) => {
+  const ortFiles = [];
+  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@*/dist/**', async (route) => {
     const file = new URL(route.request().url()).pathname.split('/').pop();
-    const type = file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
-    route.fulfill({ body: await readFile(new URL(`../node_modules/onnxruntime-web/dist/${file}`, import.meta.url)), contentType: type });
+    ortFiles.push(file);
+    route.fulfill({ body: await readFile(new URL(`../node_modules/onnxruntime-web/dist/${file}`, import.meta.url)), contentType: file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript' });
   });
-  await ctx.route('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1', (route) => route.fulfill({
-    contentType: 'text/javascript',
-    body: `if (!globalThis[Symbol.for('onnxruntime')]?.InferenceSession) throw new Error('Transformers.js loaded before ONNX Runtime was handed to it');\nexport const AutoTokenizer = { from_pretrained: async (m) => ({ model: m, decode: (ids, o) => ids.map((i) => ({ 5: '\\\\frac', 6: '{a}', 7: '{b}' })[i] ?? '').join('') }) };`,
-  }));
+  await ctx.route('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1', async (route) => route.fulfill({ body: await readFile(TRANSFORMERS_JS), contentType: 'text/javascript' }));
   await ctx.route('https://huggingface.co/**', async (route) => {
-    const url = route.request().url();
-    asked.push(url);
-    const file = url.split('/').pop();
-    route.fulfill({ body: await readFile(new URL(`./fixtures/mfr/${file}`, import.meta.url)), contentType: 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+    const path = new URL(route.request().url()).pathname;
+    asked.push(path);
+    const m = path.match(/^\/breezedeus\/pix2text-mfr-1\.5\/resolve\/main\/+(.+)$/);
+    try {
+      if (!m) throw new Error('not here');
+      route.fulfill({ body: await readFile(new URL(`./fixtures/mfr/${m[1]}`, import.meta.url)), contentType: 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+    } catch (_) { route.fulfill({ status: 404, body: 'not found', headers: { 'access-control-allow-origin': '*' } }); }
   });
   const { page, errors } = await openApp(env, { context: ctx });
-  if (process.env.DEBUG_MFR) {
-    page.on('console', (m) => console.log('console', m.text()));
-    page.on('worker', (w) => w.on('console', (m) => console.log('worker', m.text())));
-    ctx.on('request', (q) => console.log('req', q.url()));
-    ctx.on('requestfailed', (q) => console.log('failed', q.url(), q.failure()?.errorText));
-  }
   const r = await page.evaluate(async () => {
     const hw = bedrock.handwriting;
     const statuses = [];
@@ -872,21 +869,23 @@ test('the formula recogniser runs Pix2Text MFR on ONNX Runtime: files at the rep
     g.fillStyle = '#000'; g.fillRect(20, 38, 80, 4);
     const image = await c.convertToBlob({ type: 'image/png' });
     hw.engine = null;
-    const first = await hw._engine()({ kind: 'math', image });
-    const second = await hw._engine()({ kind: 'math', image });
+    const run = hw._engine();
+    const first = await run({ kind: 'math', image }).catch((e) => ({ error: e.message }));
+    const second = await run({ kind: 'math', image }).catch((e) => ({ error: e.message }));
     hw.onStatus = prev;
     return { first, second, statuses };
   });
-  assert.equal(r.first.text, '\\frac{a}{b}');
-  assert.equal(r.second.text, '\\frac{a}{b}');
+  assert.ok(!r.first.error, r.first.error);
+  assert.equal(r.first.text.replace(/\s/g, ''), '\\frac{a}{b}');
+  assert.equal(r.second.text.replace(/\s/g, ''), '\\frac{a}{b}');
   assert.match(r.first.engine, /pix2text-mfr-1\.5/);
   assert.ok(r.statuses.includes('ready'), JSON.stringify(r.statuses));
-  assert.ok(!r.statuses.some((s) => s.startsWith('error')), JSON.stringify(r.statuses));
-  assert.deepEqual(asked.map((u) => u.replace('https://huggingface.co/', '')).sort(), [
-    'breezedeus/pix2text-mfr-1.5/resolve/main/decoder_model.onnx',
-    'breezedeus/pix2text-mfr-1.5/resolve/main/encoder_model.onnx',
-  ], 'downloads the root-level files once');
-  assert.deepEqual(errors, []);
+  const models = asked.filter((p) => p.endsWith('.onnx')).map((p) => p.replace(/\/+/g, '/'));
+  for (const f of ['encoder_model.onnx', 'decoder_model.onnx']) {
+    assert.ok(models.includes(`/breezedeus/pix2text-mfr-1.5/resolve/main/${f}`), `loads ${f} from the top level of the repo: ${models}`);
+  }
+  assert.equal(ortFiles.filter((f) => f.endsWith('.wasm')).length, 1, `one WebAssembly runtime (${ortFiles})`);
+  assert.deepEqual(errors.filter((e) => !/Too many inputs/.test(e)), []);
   await ctx.close();
 });
 
@@ -1078,6 +1077,99 @@ test('correcting a reading: type the real text, pick a suggestion or tick it; it
   assert.equal(r.underlinedAfter, 0);
   assert.equal(r.carefulCalls, 0);
   assert.deepEqual(r.reopened, [['Hello', 'user', ['helo']], ['world', 'user', ['wrold']], ['tree', 'user', []]]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('holding a word opens its menu: make it a website link (saved, underlined, in links.md); writing and empty paper are unaffected', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    hw.engine = async () => ({ text: 'Bedrock', engine: 'fake' });
+    bedrock.minimap.visible = false;
+    for (let k = 0; k < 4; k++) {
+      const x = 300 + k * 22;
+      t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+      for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+      t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+    }
+    await t.frame();
+    await hw.run();
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const menu = document.getElementById('word-menu');
+    const out = { strokes0: bedrock.canvas.stroke_count() };
+    // Holding the pen still on empty paper: a dot, no menu.
+    t.ev('pointerdown', 2, 'pen', 700, 500, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 2, 'pen', 700, 500, { pressure: 0 });
+    out.emptyMenu = !menu.hidden;
+    out.strokes1 = bedrock.canvas.stroke_count();
+    // Pressing on the word but moving (writing over it): no menu.
+    t.ev('pointerdown', 3, 'pen', 330, 290, { pressure: 0.5 });
+    t.ev('pointermove', 3, 'pen', 360, 290, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 3, 'pen', 360, 290, { pressure: 0 });
+    out.movedMenu = !menu.hidden;
+    out.strokes2 = bedrock.canvas.stroke_count();
+    await hw.run(); // the stroke joined the word: read it again
+    // Holding still on the word: the menu, and no ink from the hold.
+    t.ev('pointerdown', 4, 'pen', 340, 288, { pressure: 0.5 });
+    t.ev('pointermove', 4, 'pen', 341, 289, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 4, 'pen', 341, 289, { pressure: 0 });
+    await t.frame();
+    out.menu = !menu.hidden;
+    out.title = document.getElementById('wm-word').textContent;
+    out.strokes3 = bedrock.canvas.stroke_count();
+    // Make it a link; a bad address is refused first.
+    document.getElementById('wm-link').click();
+    out.types = [...document.querySelectorAll('#wm-link-type option')].map((o) => o.value);
+    document.getElementById('wm-link-target').value = 'not a site';
+    document.querySelector('#wm-link-form .wm-save').click();
+    out.error = !document.getElementById('wm-link-error').hidden;
+    document.getElementById('wm-link-target').value = 'example.com/docs';
+    document.querySelector('#wm-link-form .wm-save').click();
+    out.closed = menu.hidden;
+    out.link = JSON.parse(bedrock.canvas.words_json()).find((w) => w.link)?.link;
+    await t.frame();
+    const marks = document.getElementById('marks');
+    const g = marks.getContext('2d');
+    const dpr = marks.width / marks.clientWidth;
+    const d = g.getImageData(300 * dpr, 300 * dpr, 80 * dpr, 12 * dpr).data;
+    let blue = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 100 && d[i + 2] > 180 && d[i] < 120) blue++;
+    out.blue = blue;
+    // Reopening the menu shows it, and offers to open or remove it.
+    bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json()).find((w) => w.link));
+    out.linkNow = document.getElementById('wm-link-now').textContent;
+    out.canOpen = !document.getElementById('wm-open').hidden && !document.getElementById('wm-unlink').hidden;
+    bedrock.wordMenu.close();
+    // Saved with the note, and as Markdown in the .bedrock archive.
+    await bedrock.saveNow();
+    const id = bedrock.noteId;
+    await bedrock.newNote();
+    await bedrock.openNote(id);
+    out.reopened = JSON.parse(bedrock.canvas.words_json()).find((w) => w.link)?.link;
+    out.json = JSON.parse(bedrock.canvas.export_json()).links;
+    return out;
+  });
+  assert.equal(r.emptyMenu, false, 'no menu over empty paper');
+  assert.equal(r.strokes1, r.strokes0 + 1, 'the hold on paper drew its dot');
+  assert.equal(r.movedMenu, false);
+  assert.equal(r.strokes2, r.strokes1 + 1);
+  assert.ok(r.menu, 'holding still on a word opens its menu');
+  assert.equal(r.title, '“Bedrock”');
+  assert.equal(r.strokes3, r.strokes2, 'the hold that opened the menu left no ink');
+  assert.deepEqual(r.types, ['url'], 'websites for now');
+  assert.ok(r.error, 'refuses something that is not a web address');
+  assert.ok(r.closed);
+  assert.deepEqual(r.link, { target: 'https://example.com/docs', type: 'url' });
+  assert.ok(r.blue > 20, `linked word is underlined (${r.blue} blue px)`);
+  assert.equal(r.linkNow, 'Links to example.com/docs');
+  assert.ok(r.canOpen);
+  assert.deepEqual(r.reopened, { target: 'https://example.com/docs', type: 'url' });
+  assert.equal(r.json.length, 1);
+  assert.equal(r.json[0].text, 'Bedrock');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

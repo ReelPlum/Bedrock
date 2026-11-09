@@ -47,6 +47,32 @@ enum Op {
     Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)> },
 }
 
+/// A link on handwriting: a group of strokes (usually one word) that points
+/// somewhere. `kind` says how to read `target`:
+///
+/// * `"url"`: a web address, e.g. `https://example.com`.
+/// * `"note"`: another note by name (an Obsidian note, `[[Name]]`), for later.
+///
+/// New kinds can be added without changing the file format: unknown kinds
+/// are kept and written back. Links stay in the document while their ink is
+/// erased (so undo brings them back) but are only saved while all their
+/// strokes exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Link {
+    pub strokes: Vec<StrokeId>,
+    pub target: String,
+    #[serde(rename = "type", default = "url_kind")]
+    pub kind: String,
+    /// The linked words as text (from recognition), for tools that show
+    /// links without the ink, such as a note graph. Filled in when saving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+fn url_kind() -> String {
+    "url".to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Document {
     pub title: String,
@@ -58,6 +84,7 @@ pub struct Document {
     pub paper: String,
     strokes: Vec<Stroke>,
     pub recognition: Vec<RecognizedText>,
+    pub links: Vec<Link>,
     /// Unknown top level fields from newer versions, written back unchanged.
     pub extra: serde_json::Map<String, serde_json::Value>,
     undo: Vec<Vec<Op>>,
@@ -95,6 +122,7 @@ impl Document {
             paper: "dots".to_string(),
             strokes: Vec::new(),
             recognition: Vec::new(),
+            links: Vec::new(),
             extra: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -247,6 +275,22 @@ impl Document {
             self.recognition.retain(|r| !r.strokes.iter().any(|id| gone.contains(id)));
         }
         self.revision += 1;
+    }
+
+    /// Links whose strokes all exist, with their text from recognition.
+    pub fn live_links(&self) -> Vec<Link> {
+        let ids: HashSet<StrokeId> = self.strokes.iter().map(|s| s.id).collect();
+        self.links
+            .iter()
+            .filter(|l| !l.strokes.is_empty() && l.strokes.iter().all(|s| ids.contains(s)))
+            .map(|l| {
+                let mut l = l.clone();
+                if let Some(r) = self.recognition.iter().find(|r| r.strokes == l.strokes) {
+                    l.text = Some(r.text.clone());
+                }
+                l
+            })
+            .collect()
     }
 
     pub fn undo(&mut self) -> bool {

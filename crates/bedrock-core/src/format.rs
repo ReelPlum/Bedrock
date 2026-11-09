@@ -136,13 +136,17 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     if recognition {
         root.insert("recognition".into(), serde_json::to_value(&doc.recognition).expect("recognition serialises"));
     }
+    let links = doc.live_links();
+    if !links.is_empty() {
+        root.insert("links".into(), serde_json::to_value(&links).expect("links serialise"));
+    }
     for (k, v) in &doc.extra {
         root.entry(k.clone()).or_insert_with(|| v.clone());
     }
     serde_json::to_string(&Value::Object(root)).expect("json")
 }
 
-const KNOWN_KEYS: [&str; 11] = [
+const KNOWN_KEYS: [&str; 12] = [
     "format",
     "version",
     "title",
@@ -154,6 +158,7 @@ const KNOWN_KEYS: [&str; 11] = [
     "channels",
     "strokes",
     "recognition",
+    "links",
 ];
 
 /// A loaded note plus anything that had to be repaired or skipped.
@@ -271,6 +276,12 @@ pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
         match serde_json::from_value::<Vec<RecognizedText>>(r.clone()) {
             Ok(r) => doc.recognition = r,
             Err(e) => warnings.push(format!("recognised text skipped: {e}")),
+        }
+    }
+    if let Some(l) = obj.get("links") {
+        match serde_json::from_value::<Vec<crate::document::Link>>(l.clone()) {
+            Ok(l) => doc.links = l,
+            Err(e) => warnings.push(format!("links skipped: {e}")),
         }
     }
     for (k, v) in obj {
@@ -403,11 +414,13 @@ pub const NOTE_JSON: &str = "note.json";
 pub const RECOGNIZED_JSON: &str = "recognized.json";
 pub const PREVIEW_SVG: &str = "preview.svg";
 pub const README_TXT: &str = "README.txt";
+pub const LINKS_MD: &str = "links.md";
 
 const README: &str = "This is a Bedrock note: an ordinary ZIP archive.\n\n\
 preview.svg      the note as a picture; opens in any web browser\n\
 note.json        every pen stroke with its raw samples (x, y, pressure, tilt, time)\n\
-recognized.json  text recognised from the handwriting, linked to stroke ids\n\n\
+recognized.json  text recognised from the handwriting, linked to stroke ids\n\
+links.md         the note's links as Markdown ([[Note]] and [text](https://...))\n\n\
 The format is documented at https://github.com/ReelPlum/Bedrock/blob/main/docs/note-format.md\n";
 
 /// Recognition output lives in its own file so it can never corrupt ink.
@@ -420,6 +433,26 @@ pub fn recognition_json(doc: &Document) -> String {
     .to_string()
 }
 
+/// The note's links as Markdown, one per line: `[[Name]]` for notes (the
+/// form Obsidian's graph understands) and `[text](url)` for web addresses.
+/// The authoritative copy is `links` in note.json, tied to the strokes.
+pub fn links_markdown(doc: &Document) -> String {
+    let mut out = format!("# Links in {}\n\n", if doc.title.is_empty() { "this note" } else { &doc.title });
+    let esc = |t: &str| t.replace('[', "\\[").replace(']', "\\]");
+    for l in doc.live_links() {
+        let text = l.text.as_deref().filter(|t| !t.is_empty());
+        let line = match l.kind.as_str() {
+            "note" => match text {
+                Some(t) if t != l.target => format!("[[{}|{}]]", l.target, esc(t)),
+                _ => format!("[[{}]]", l.target),
+            },
+            _ => format!("[{}](<{}>)", esc(text.unwrap_or(&l.target)), l.target),
+        };
+        out.push_str(&format!("- {line}\n"));
+    }
+    out
+}
+
 /// Note JSON without the recognition block (which goes to `recognized.json`).
 fn note_json_for_container(doc: &Document) -> String {
     json_with(doc, false)
@@ -430,14 +463,17 @@ pub fn to_preview_svg(doc: &Document) -> String {
     svg_with(doc, false)
 }
 
-/// Write a `.bedrock` file (ZIP: note.json, recognized.json, preview.svg, README.txt).
+/// Write a `.bedrock` file (ZIP: note.json, recognized.json, links.md,
+/// preview.svg, README.txt).
 pub fn to_bedrock(doc: &Document) -> Vec<u8> {
     let note = note_json_for_container(doc);
     let rec = recognition_json(doc);
     let preview = to_preview_svg(doc);
+    let links = links_markdown(doc);
     crate::zip::write(&[
         (NOTE_JSON, note.as_bytes()),
         (RECOGNIZED_JSON, rec.as_bytes()),
+        (LINKS_MD, links.as_bytes()),
         (PREVIEW_SVG, preview.as_bytes()),
         (README_TXT, README.as_bytes()),
     ])
@@ -649,10 +685,10 @@ mod tests {
         let (files, problems) = crate::zip::read(&bytes).unwrap();
         assert!(problems.is_empty());
         let names: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec![NOTE_JSON, RECOGNIZED_JSON, PREVIEW_SVG, README_TXT]);
+        assert_eq!(names, vec![NOTE_JSON, RECOGNIZED_JSON, LINKS_MD, PREVIEW_SVG, README_TXT]);
         let note = String::from_utf8(files[0].1.clone()).unwrap();
         assert!(!note.contains("\"recognition\""), "recognition lives in its own file");
-        let preview = String::from_utf8(files[2].1.clone()).unwrap();
+        let preview = String::from_utf8(files[3].1.clone()).unwrap();
         assert!(!preview.contains("<metadata"));
         assert_eq!(preview.matches("<path ").count(), d.len());
         let l = load_bytes(&bytes, 3).unwrap();
