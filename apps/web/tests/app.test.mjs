@@ -813,7 +813,7 @@ test('the recogniser view shows each word as the recogniser sees it, with what i
     const out = {
       hiddenAtStart,
       shown: !panel.hidden,
-      texts: rows.map((li) => li.querySelector('.rv-text').textContent),
+      texts: rows.map((li) => li.querySelector('.rv-text').value || li.querySelector('.rv-text').placeholder),
       pending: rows.map((li) => li.classList.contains('pending')),
       imgs,
       count: panel.querySelector('.rv-count').textContent,
@@ -1009,6 +1009,76 @@ test('all recognition models share one worker (one WebAssembly runtime); out of 
   assert.equal(r.math, 'math/undefined', 'a fresh worker takes the next request');
   assert.equal(r.made, 2);
   assert.deepEqual(r.second, ['math/undefined', 'release text-careful']);
+  await ctx.close();
+});
+
+test('correcting a reading: type the real text, pick a suggestion or tick it; it is kept with what was read and saved', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    for (let i = 0; i < 100 && !hw.dictionaryReady; i++) await new Promise((res) => setTimeout(res, 50));
+    let n = 0;
+    const reads = ['helo', 'wrold', 'tree'];
+    hw.engine = async () => ({ text: reads[n++], engine: 'Xenova/trocr-small-handwritten (fake)' });
+    bedrock.minimap.visible = false;
+    for (const x0 of [150, 350, 550]) {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+      }
+      await t.frame();
+    }
+    await hw.run();
+    document.getElementById('show-recognizer').click();
+    await bedrock.recognizerView.refresh();
+    const rows = () => [...document.querySelectorAll('#recognizer-view .rv-list li')];
+    const out = { underlinedBefore: bedrock.canvas.misspelled().length / 4 };
+    out.misspelledRows = rows().map((li) => li.classList.contains('misspelled'));
+    // 1: type the real text (Enter commits).
+    const input = rows()[0].querySelector('.rv-text');
+    input.focus();
+    input.value = 'Hello';
+    input.dispatchEvent(new Event('change'));
+    input.blur();
+    await bedrock.recognizerView.refresh();
+    // 2: pick the spelling suggestion.
+    out.chips = [...rows()[1].querySelectorAll('.rv-chips button')].map((b) => b.textContent);
+    rows()[1].querySelector('.rv-chips button').click();
+    // 3: the reading was right: tick it.
+    rows()[2].querySelector('.rv-ok').click();
+    await bedrock.recognizerView.refresh();
+    const words = JSON.parse(bedrock.canvas.words_json());
+    out.texts = words.map((w) => w.text);
+    out.engines = words.map((w) => w.engine);
+    out.alts = words.map((w) => w.alternatives);
+    out.labels = rows().map((li) => li.querySelector('.rv-kind').textContent);
+    out.was = rows()[0].querySelector('.rv-was')?.textContent;
+    out.underlinedAfter = bedrock.canvas.misspelled().length / 4;
+    // The careful pass leaves the writer's text alone.
+    const before = n;
+    await hw.runCareful();
+    out.carefulCalls = n - before;
+    await bedrock.saveNow();
+    const id = bedrock.noteId;
+    await bedrock.newNote();
+    await bedrock.openNote(id);
+    out.reopened = JSON.parse(bedrock.canvas.words_json()).map((w) => [w.text, w.engine, w.alternatives]);
+    return out;
+  });
+  assert.equal(r.underlinedBefore, 2);
+  assert.deepEqual(r.misspelledRows, [true, true, false]);
+  assert.equal(r.chips[0], 'world');
+  assert.deepEqual(r.texts, ['Hello', 'world', 'tree']);
+  assert.deepEqual(r.engines, ['user', 'user', 'user']);
+  assert.deepEqual(r.alts, [['helo'], ['wrold'], []], 'what the recogniser read is kept beside the truth');
+  assert.deepEqual(r.labels, ['Yours', 'Yours', 'Yours']);
+  assert.equal(r.was, 'Read as: helo');
+  assert.equal(r.underlinedAfter, 0);
+  assert.equal(r.carefulCalls, 0);
+  assert.deepEqual(r.reopened, [['Hello', 'user', ['helo']], ['world', 'user', ['wrold']], ['tree', 'user', []]]);
+  assert.deepEqual(errors, []);
   await ctx.close();
 });
 

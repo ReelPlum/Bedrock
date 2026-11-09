@@ -23,6 +23,11 @@ use std::collections::HashSet;
 /// Language tag used for formulas (the text is LaTeX).
 pub const LATEX: &str = "latex";
 
+/// Engine name for text the writer typed in themselves: the ground truth
+/// for these strokes (never re-read, never spell-checked), with what the
+/// recogniser had read kept in `alternatives`.
+pub const USER: &str = "user";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Text,
@@ -42,6 +47,8 @@ pub struct WordInfo {
     /// The recogniser that produced `text` (so a slower, better one can
     /// re-read words a fast one did).
     pub engine: Option<String>,
+    /// Earlier readings, e.g. what the recogniser read before a correction.
+    pub alternatives: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -117,6 +124,7 @@ impl Handwriting {
                     kind: if looks_like_math(doc, w, lh) { Kind::Math } else { Kind::Text },
                     text: Self::text_for(doc, w).map(|r| r.text.clone()),
                     engine: Self::text_for(doc, w).and_then(|r| r.engine.clone()),
+                    alternatives: Self::text_for(doc, w).map(|r| r.alternatives.clone()).unwrap_or_default(),
                 }
             })
             .collect()
@@ -149,6 +157,33 @@ impl Handwriting {
         true
     }
 
+    /// The writer says what word `id` actually says. Stored as the word's
+    /// text with engine [`USER`]; what the recogniser had read is kept in
+    /// `alternatives` (model guess + truth: a training example). Returns
+    /// false if the word no longer exists.
+    pub fn correct(&mut self, doc: &mut Document, id: u64, text: &str, kind: Kind) -> bool {
+        self.refresh(doc);
+        let Some(w) = self.layout.words.iter().find(|w| w.id == id) else { return false };
+        let text = text.trim().to_string();
+        let mut alternatives = Vec::new();
+        if let Some(prev) = Self::text_for(doc, w) {
+            let read = std::iter::once(&prev.text).chain(&prev.alternatives);
+            for a in read {
+                if !a.is_empty() && *a != text && !alternatives.contains(a) {
+                    alternatives.push(a.clone());
+                }
+            }
+        }
+        let strokes = w.strokes.clone();
+        if !self.set_text(doc, id, &text, kind, USER, Some(1.0)) {
+            return false;
+        }
+        if let Some(r) = doc.recognition.iter_mut().find(|r| r.strokes == strokes) {
+            r.alternatives = alternatives;
+        }
+        true
+    }
+
     /// Bounds of words whose recognised text is misspelled (formulas are
     /// never checked). Empty without a dictionary.
     pub fn misspelled(&mut self, doc: &Document) -> Vec<Rect> {
@@ -159,7 +194,9 @@ impl Handwriting {
             .iter()
             .filter(|w| {
                 Self::text_for(doc, w).is_some_and(|r| {
-                    r.language.as_deref() != Some(LATEX) && r.text.split_whitespace().any(|t| !dict.check(t))
+                    r.language.as_deref() != Some(LATEX)
+                        && r.engine.as_deref() != Some(USER)
+                        && r.text.split_whitespace().any(|t| !dict.check(t))
                 })
             })
             .map(|w| w.bounds)
@@ -229,6 +266,33 @@ mod tests {
         let w2 = hw.words(&doc);
         assert!(w2[1].text.is_none());
         assert!(!hw.set_text(&mut doc, w[1].id, "late", Kind::Text, "test", None));
+    }
+
+    #[test]
+    fn corrections_are_kept_with_what_was_read_and_not_spell_checked() {
+        let mut doc = Document::new(3);
+        line(&mut doc, 0.0, 100.0, 4);
+        let mut hw = Handwriting::new();
+        hw.set_dictionary(Dictionary::from_list("the\n"));
+        let w = hw.words(&doc);
+        assert!(hw.set_text(&mut doc, w[0].id, "Bedrok", Kind::Text, "trocr", None));
+        assert_eq!(hw.misspelled(&doc).len(), 1);
+        // The writer says it reads "Bedrock" (not in the word list).
+        assert!(hw.correct(&mut doc, w[0].id, " Bedrock ", Kind::Text));
+        let info = &hw.words(&doc)[0];
+        assert_eq!(info.text.as_deref(), Some("Bedrock"));
+        assert_eq!(info.engine.as_deref(), Some(USER));
+        assert_eq!(info.alternatives, vec!["Bedrok".to_string()]);
+        assert!(hw.misspelled(&doc).is_empty(), "their own word is not underlined");
+        assert_eq!(doc.recognition.len(), 1);
+        assert_eq!(doc.recognition[0].confidence, Some(1.0));
+        // Correcting again keeps the model's reading, without duplicates.
+        assert!(hw.correct(&mut doc, w[0].id, "Bedrock!", Kind::Text));
+        assert_eq!(hw.words(&doc)[0].alternatives, vec!["Bedrock".to_string(), "Bedrok".to_string()]);
+        // Confirming the reading as it is: no alternative needed.
+        assert!(hw.correct(&mut doc, w[0].id, "Bedrock!", Kind::Text));
+        assert!(hw.words(&doc)[0].alternatives.contains(&"Bedrok".to_string()));
+        assert!(!hw.correct(&mut doc, 12345, "x", Kind::Text), "unknown word");
     }
 
     #[test]

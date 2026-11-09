@@ -286,6 +286,7 @@ impl Canvas {
                     "kind": if w.kind == Kind::Math { "math" } else { "text" },
                     "text": w.text,
                     "engine": w.engine,
+                    "alternatives": w.alternatives,
                 })
             })
             .collect();
@@ -320,6 +321,20 @@ impl Canvas {
         let kind = if kind == "math" { Kind::Math } else { Kind::Text };
         let conf = (confidence.is_finite() && confidence >= 0.0).then_some(confidence as f32);
         let ok = self.hw.set_text(&mut self.engine.doc, id, text, kind, engine, conf);
+        if ok {
+            self.engine.invalidate();
+        }
+        ok
+    }
+
+    /// The writer's own text for a word: the ground truth for its strokes
+    /// (what the recogniser read is kept alongside). False if the word
+    /// changed meanwhile.
+    pub fn correct_word(&mut self, word_id: &str, text: &str, kind: &str) -> bool {
+        use bedrock_core::handwriting::Kind;
+        let Ok(id) = u64::from_str_radix(word_id, 16) else { return false };
+        let kind = if kind == "math" { Kind::Math } else { Kind::Text };
+        let ok = self.hw.correct(&mut self.engine.doc, id, text, kind);
         if ok {
             self.engine.invalidate();
         }

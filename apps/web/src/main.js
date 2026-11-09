@@ -157,7 +157,9 @@ async function main() {
   handwriting.mode = settings.recognizeMode;
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
-  recognizerView = new RecognizerView($('recognizer-view'), handwriting);
+  recognizerView = new RecognizerView($('recognizer-view'), handwriting, {
+    onChange: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); },
+  });
   const redraw = () => { canvas.redraw(); input.requestFrame(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) redraw(); });
   window.addEventListener('pageshow', redraw);

@@ -95,9 +95,9 @@ export class Handwriting {
   }
 
   /** True if the careful model already read this word (formulas have one
-   *  model, so any answer counts). */
+   *  model, so any answer counts), or the writer said what it says. */
   isCareful(w) {
-    return w.text != null && (w.kind === 'math' || (w.engine || '').startsWith(MODELS.text.careful));
+    return w.text != null && (w.kind === 'math' || w.engine === 'user' || (w.engine || '').startsWith(MODELS.text.careful));
   }
 
   /** Careful: re-read words with the larger model, one at a time, stopping
