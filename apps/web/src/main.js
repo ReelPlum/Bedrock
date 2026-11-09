@@ -44,6 +44,7 @@ function loadSettings() {
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
     showMinimap: s.showMinimap !== false,
+    hoverPreview: s.hoverPreview !== false,
     recognize: s.recognize !== false,
     spelling: s.spelling !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
@@ -121,6 +122,7 @@ async function main() {
       }
     },
     onCommit: () => scheduleSave(),
+    onHover: (p) => showHover(p),
   });
 
   function resize() {
@@ -350,6 +352,35 @@ async function main() {
       li.style.padding = '10px';
       list.append(li);
     }
+  }
+
+  // ----- Pencil hover preview ---------------------------------------------------
+  // With an Apple Pencil that hovers (Pencil Pro, Pencil 2 on M2 iPads and
+  // later), show where the tool will land and how big it is: the brush's
+  // full width in its colour, or the eraser's circle.
+  const hoverEl = $('hover-cursor');
+  let hoverTimer = null;
+  function showHover(p) {
+    clearTimeout(hoverTimer);
+    if (!p || !settings.hoverPreview) { hoverEl.hidden = true; return; }
+    const zoom = canvas.camera()[2];
+    const erasing = p.eraser || currentTool() === 'eraser';
+    let d;
+    if (erasing) {
+      d = settings.eraserSize;
+      hoverEl.style.background = 'transparent';
+    } else {
+      const b = currentBrush();
+      d = b.size * (settings.brush === 'highlighter' ? 4 : 1) * zoom;
+      hoverEl.style.background = b.color;
+    }
+    d = Math.max(d, 4);
+    hoverEl.classList.toggle('eraser', erasing);
+    hoverEl.style.width = hoverEl.style.height = `${d}px`;
+    hoverEl.style.transform = `translate(${p.x - d / 2}px, ${p.y - d / 2}px)`;
+    hoverEl.hidden = false;
+    // Backup for browsers that don't say when the Pencil leaves hover range.
+    hoverTimer = setTimeout(() => { hoverEl.hidden = true; }, 500);
   }
 
   // ----- toolbar -------------------------------------------------------------
@@ -741,6 +772,12 @@ async function main() {
     handwriting.spelling = settings.spelling;
     saveSettings();
     input.requestFrame();
+  });
+  $('hover-preview').checked = settings.hoverPreview;
+  $('hover-preview').addEventListener('change', (e) => {
+    settings.hoverPreview = e.target.checked;
+    if (!settings.hoverPreview) showHover(null);
+    saveSettings();
   });
   $('show-minimap').checked = settings.showMinimap;
   minimap.visible = settings.showMinimap;

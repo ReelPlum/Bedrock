@@ -58,11 +58,14 @@ function kindOf(e) {
 }
 
 export class InputController {
-  constructor(stage, canvas, { onFrame, onCommit } = {}) {
+  constructor(stage, canvas, { onFrame, onCommit, onHover } = {}) {
     this.stage = stage;
     this.canvas = canvas;
     this.onFrame = onFrame || (() => {});
     this.onCommit = onCommit || (() => {});
+    // Pencil hover (iPad with Apple Pencil Pro / 2): called with the tip's
+    // stage position while it hovers above the glass, null when it leaves.
+    this.onHover = onHover || (() => {});
     this.rect = stage.getBoundingClientRect();
     this.frameRequested = false;
     this.lastInputTime = 0;
@@ -150,6 +153,7 @@ export class InputController {
     st.addEventListener('pointerdown', (e) => {
       if (!this.enabled) return;
       e.preventDefault();
+      this.onHover(null);
       this.updateRect();
       if (e.pointerType === 'mouse' && e.button !== 0) {
         this.mousePan = { id: e.pointerId, x: e.clientX, y: e.clientY };
@@ -177,7 +181,13 @@ export class InputController {
         return;
       }
       const kind = this.active.get(e.pointerId);
-      if (!kind) return;
+      if (!kind) {
+        // A pen moving with no button down and not drawing is hovering.
+        if (e.pointerType === 'pen' && e.buttons === 0 && this.enabled) {
+          this.onHover({ x: e.clientX - this.rect.left, y: e.clientY - this.rect.top, eraser: kindOf(e) === 'eraser' });
+        }
+        return;
+      }
       e.preventDefault();
       const isPen = kind === 'pen' || kind === 'eraser';
       // The pen left the glass but the browser has not sent pointerup yet
@@ -210,6 +220,7 @@ export class InputController {
       this._finish(e, e.type === 'pointercancel');
     };
     st.addEventListener('pointerup', end, opts);
+    st.addEventListener('pointerleave', (e) => { if (e.pointerType === 'pen') this.onHover(null); });
     st.addEventListener('pointercancel', end, opts);
     st.addEventListener('lostpointercapture', (e) => {
       // Capture is released right after pointerup; treat it as a normal end.

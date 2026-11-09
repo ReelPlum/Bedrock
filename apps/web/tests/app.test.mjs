@@ -216,6 +216,53 @@ test('lifting the pencil ends the line: hover moves after lift add no ink', asyn
   await ctx.close();
 });
 
+test('a hovering pencil shows where the tool lands and how big it is, and draws nothing', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('hover-cursor');
+    const stage = document.getElementById('stage').getBoundingClientRect();
+    const box = () => {
+      const b = el.getBoundingClientRect();
+      return { shown: !el.hidden, cx: b.left + b.width / 2 - stage.left, cy: b.top + b.height / 2 - stage.top, d: b.width, bg: getComputedStyle(el).backgroundColor };
+    };
+    const start = box();
+    bedrock.canvas.set_camera(0, 0, 1);
+    // Pencil Pro above the glass: moves with no buttons and no pointerdown.
+    t.ev('pointermove', 7, 'pen', 300, 250, { pressure: 0, buttons: 0 });
+    const at1 = box();
+    bedrock.canvas.set_camera(0, 0, 2);
+    t.ev('pointermove', 7, 'pen', 320, 260, { pressure: 0, buttons: 0 });
+    const at2 = box();
+    document.querySelector('[data-tool="eraser"]').click();
+    t.ev('pointermove', 7, 'pen', 330, 270, { pressure: 0, buttons: 0 });
+    const eraser = { ...box(), cls: el.classList.contains('eraser') };
+    // Touching down hides it; so does going quiet (out of hover range).
+    t.ev('pointerdown', 7, 'pen', 330, 270, { pressure: 0.5 });
+    const down = box();
+    t.ev('pointerup', 7, 'pen', 330, 270, { pressure: 0 });
+    t.ev('pointermove', 7, 'pen', 340, 270, { pressure: 0, buttons: 0 });
+    await new Promise((res) => setTimeout(res, 700));
+    const quiet = box();
+    // A mouse moving around shows nothing.
+    t.ev('pointermove', 8, 'mouse', 300, 300, { buttons: 0 });
+    const mouse = box();
+    return { start, at1, at2, eraser, down, quiet, mouse, strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.equal(r.start.shown, false);
+  assert.ok(r.at1.shown, 'shown while hovering');
+  assert.ok(Math.abs(r.at1.cx - 300) < 1 && Math.abs(r.at1.cy - 250) < 1, `centred on the tip: ${r.at1.cx},${r.at1.cy}`);
+  assert.ok(r.at1.d >= 2, `brush-sized: ${r.at1.d}`);
+  assert.ok(Math.abs(r.at2.d / r.at1.d - 2) < 0.05 || r.at1.d === 4, `scales with zoom: ${r.at1.d} -> ${r.at2.d}`);
+  assert.notEqual(r.at1.bg, 'rgba(0, 0, 0, 0)', 'filled with the brush colour');
+  assert.ok(r.eraser.shown && r.eraser.cls, 'eraser shows its ring');
+  assert.equal(r.eraser.bg, 'rgba(0, 0, 0, 0)');
+  assert.equal(r.down.shown, false, 'hidden while touching');
+  assert.equal(r.quiet.shown, false, 'hidden once the pencil leaves');
+  assert.equal(r.mouse.shown, false, 'mouse shows no hover');
+  assert.equal(r.strokes, 0, 'hovering draws nothing (the touch was with the eraser)');
+  await ctx.close();
+});
+
 test('stroke edges are antialiased, not stair-stepped', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

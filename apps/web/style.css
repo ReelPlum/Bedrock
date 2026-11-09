@@ -185,3 +185,12 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
 .minimap-fit { display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 8px; font-size: 12px; color: var(--ink); }
 .minimap-fit:hover, .minimap-fit:active { background: rgba(0, 0, 0, 0.05); }
 .minimap-fit svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Where the tool will land while the Pencil hovers. Light and dark rings
+   keep it visible on any ink or paper. */
+.hover-cursor {
+  position: absolute; left: 0; top: 0; border-radius: 50%; pointer-events: none; opacity: 0.55;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.95), 0 0 0 2px rgba(0, 0, 0, 0.35);
+  will-change: transform;
+}
+.hover-cursor.eraser { opacity: 1; box-shadow: inset 0 0 0 1.5px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9); }
