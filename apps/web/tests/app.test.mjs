@@ -38,14 +38,14 @@ test('grid paper stays fixed to the page when zooming', async () => {
     const at1 = gap(lines());
     c.zoom_at(0, 0, 1.5);
     const at15 = gap(lines());
-    c.zoom_at(0, 0, 2);
-    const at3 = gap(lines());
-    return { at1, at15, at3 };
+    c.zoom_at(0, 0, 1.5);
+    const at225 = gap(lines());
+    return { at1, at15, at225 };
   });
   // Bug: the spacing was re-picked at every zoom, so the grid crept and jumped.
   assert.ok(Math.abs(r.at1 - 32) < 0.6, `32 px apart at 100% (${r.at1})`);
   assert.ok(Math.abs(r.at15 - 48) < 0.8, `48 px apart at 150% (${r.at15})`);
-  assert.ok(Math.abs(r.at3 - 96) < 1.5, `96 px apart at 300% (${r.at3})`);
+  assert.ok(Math.abs(r.at225 - 72) < 1.2, `72 px apart at 225% (${r.at225})`);
   await ctx.close();
 });
 
@@ -839,14 +839,14 @@ test('the formula recogniser runs Pix2Text MFR on ONNX Runtime: files at the rep
   const { readFile } = await import('node:fs/promises');
   const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
   const asked = [];
-  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/**', async (route) => {
+  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/**', async (route) => {
     const file = new URL(route.request().url()).pathname.split('/').pop();
     const type = file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
     route.fulfill({ body: await readFile(new URL(`../node_modules/onnxruntime-web/dist/${file}`, import.meta.url)), contentType: type });
   });
   await ctx.route('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1', (route) => route.fulfill({
     contentType: 'text/javascript',
-    body: `export const AutoTokenizer = { from_pretrained: async (m) => ({ model: m, decode: (ids, o) => ids.map((i) => ({ 5: '\\\\frac', 6: '{a}', 7: '{b}' })[i] ?? '').join('') }) };`,
+    body: `if (!globalThis[Symbol.for('onnxruntime')]?.InferenceSession) throw new Error('Transformers.js loaded before ONNX Runtime was handed to it');\nexport const AutoTokenizer = { from_pretrained: async (m) => ({ model: m, decode: (ids, o) => ids.map((i) => ({ 5: '\\\\frac', 6: '{a}', 7: '{b}' })[i] ?? '').join('') }) };`,
   }));
   await ctx.route('https://huggingface.co/**', async (route) => {
     const url = route.request().url();
@@ -965,7 +965,7 @@ test('careful reading: the larger model re-reads words after a pause, stops when
   await ctx.close();
 });
 
-test('each recognition model runs in its own worker, and one that runs out of memory is restarted', async () => {
+test('all recognition models share one worker (one WebAssembly runtime); out of memory restarts it', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
     const hw = bedrock.handwriting;
@@ -974,10 +974,12 @@ test('each recognition model runs in its own worker, and one that runs out of me
     // A stand-in worker: the first math request runs out of memory.
     let mathCalls = 0;
     window.Worker = class {
-      constructor() { this.terminated = false; made.push(this); }
+      constructor() { this.terminated = false; this.got = []; made.push(this); }
       postMessage(m) {
+        this.got.push(m.release ? `release ${m.release}` : `${m.kind}/${m.quality}`);
+        if (m.release) return;
         const reply = m.kind === 'math' && ++mathCalls === 1
-          ? { id: m.id, error: 'breezedeus/pix2text-mfr-1.5: WebAssembly.Memory(): could not allocate memory' }
+          ? { id: m.id, error: 'breezedeus/pix2text-mfr-1.5: no available backend found. ERR: [wasm] RangeError: Out of memory' }
           : { id: m.id, text: `${m.kind}/${m.quality}`, engine: 'fake' };
         setTimeout(() => this.onmessage({ data: reply }), 0);
       }
@@ -989,26 +991,24 @@ test('each recognition model runs in its own worker, and one that runs out of me
     const out = {};
     out.fast = (await run({ kind: 'text', image, quality: 'fast' })).text;
     out.careful = (await run({ kind: 'text', image, quality: 'careful' })).text;
+    out.workersBefore = made.length;
     out.oom = await run({ kind: 'math', image }).then(() => 'ok', (e) => e.message);
-    out.afterOom = [...hw.workers.keys()].sort();
-    out.terminated = made.filter((w) => w.terminated).length;
+    out.terminated = made[0].terminated;
     out.math = (await run({ kind: 'math', image })).text;
-    out.slots = [...hw.workers.keys()].sort();
+    hw.releaseModel('text-careful');
     out.made = made.length;
-    hw.dropWorker('text-careful');
-    out.dropped = [...hw.workers.keys()].sort();
+    out.second = made[1]?.got;
     window.Worker = Real;
     return out;
   });
   assert.equal(r.fast, 'text/fast');
   assert.equal(r.careful, 'text/careful');
-  assert.match(r.oom, /pix2text-mfr-1\.5: .*memory/, 'the error names the model');
-  assert.deepEqual(r.afterOom, ['text-careful', 'text-fast'], 'the worker that ran out of memory is gone');
-  assert.equal(r.terminated, 1);
+  assert.equal(r.workersBefore, 1, 'one worker for every model');
+  assert.match(r.oom, /pix2text-mfr-1\.5: .*memory/i, 'the error names the model');
+  assert.ok(r.terminated, 'the worker that ran out of memory is stopped');
   assert.equal(r.math, 'math/undefined', 'a fresh worker takes the next request');
-  assert.deepEqual(r.slots, ['math', 'text-careful', 'text-fast']);
-  assert.equal(r.made, 4);
-  assert.deepEqual(r.dropped, ['math', 'text-fast']);
+  assert.equal(r.made, 2);
+  assert.deepEqual(r.second, ['math/undefined', 'release text-careful']);
   await ctx.close();
 });
 

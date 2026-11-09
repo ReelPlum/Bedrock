@@ -10,7 +10,7 @@
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
-    "onnxruntime-web": "1.23.2",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "playwright": "^1.48.0"
   }
 }

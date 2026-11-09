@@ -13,6 +13,12 @@
 //    decoding (the decoder has no key/value cache, so each step re-reads the
 //    tokens so far; formulas are short and the decoder is small).
 //
+// One ONNX Runtime for all models: iPad Safari can't start a second
+// WebAssembly runtime next to Transformers.js's own ("no available backend
+// found ... RangeError: Out of memory"). So ONNX Runtime is loaded first, at
+// the exact version Transformers.js is built against, and handed to it
+// through the global it looks for; the formula model then uses the same one.
+//
 // Everything runs on the device. Libraries are loaded on first use and each
 // model is downloaded once, then cached by the browser.
 //
@@ -21,7 +27,9 @@
 //               { status: 'loading' | 'ready', kind, progress? }
 
 const TRANSFORMERS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
-const ORT_DIR = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/';
+// The ONNX Runtime version Transformers.js 4.3.1 bundles (its package.json).
+export const ORT_VERSION = '1.31.0-dev.20260914-8d85527a0';
+const ORT_DIR = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 import { MODELS } from './models.js';
 
 // From the model's preprocessor_config.json and generation_config.json.
@@ -36,7 +44,20 @@ export const MFR = {
 const MODEL_CACHE = 'bedrock-models-v1';
 
 let lib = null;
+let ort = null;
 const loaders = {};
+
+/** ONNX Runtime, then Transformers.js on top of that same runtime. */
+async function libraries() {
+  if (!lib) {
+    ort ||= await import(`${ORT_DIR}ort.min.mjs`);
+    ort.env.logLevel = 'error'; // not its CPU-detection warnings
+    ort.env.wasm.numThreads = 1; // no cross-origin isolation, and less memory
+    globalThis[Symbol.for('onnxruntime')] = ort;
+    lib = await import(TRANSFORMERS);
+  }
+  return lib;
+}
 
 function once(kind, load) {
   if (!loaders[kind]) {
@@ -50,8 +71,7 @@ function once(kind, load) {
 
 function textPipeline(quality) {
   return once(`text-${quality}`, async () => {
-    lib ||= await import(TRANSFORMERS);
-    if (lib.env?.backends?.onnx?.wasm) lib.env.backends.onnx.wasm.numThreads = 1;
+    await libraries();
     const model = MODELS.text[quality];
     self.postMessage({ status: 'loading', kind: 'text', model });
     const device = 'gpu' in navigator ? 'webgpu' : 'wasm';
@@ -106,11 +126,7 @@ function mathModel() {
   return once('math', async () => {
     const model = MODELS.math;
     self.postMessage({ status: 'loading', kind: 'math', model });
-    const [ort, tf] = await Promise.all([import(`${ORT_DIR}ort.min.mjs`), lib ? lib : import(TRANSFORMERS)]);
-    lib ||= tf;
-    ort.env.wasm.wasmPaths = ORT_DIR;
-    ort.env.logLevel = 'error'; // not its CPU-detection warnings
-    ort.env.wasm.numThreads = 1; // no cross-origin isolation, and less memory
+    await libraries();
     const base = `https://huggingface.co/${model}/resolve/main/`;
     const shares = { 'encoder_model.onnx': 0.75, 'decoder_model.onnx': 0.25 };
     const done = {};
@@ -130,7 +146,7 @@ function mathModel() {
     const encoder = await ort.InferenceSession.create(enc, opts);
     const decoder = await ort.InferenceSession.create(dec, opts);
     self.postMessage({ status: 'ready', kind: 'math', model });
-    return { ort, encoder, decoder, tokenizer };
+    return { encoder, decoder, tokenizer };
   });
 }
 
@@ -167,7 +183,7 @@ export async function mfrGreedy(next, maxTokens = MFR.maxTokens) {
 }
 
 async function readMath(image) {
-  const { ort, encoder, decoder, tokenizer } = await mathModel();
+  const { encoder, decoder, tokenizer } = await mathModel();
   const n = MFR.size;
   const pixels = new ort.Tensor('float32', await mfrPixels(image), [1, 3, n, n]);
   const encOut = await encoder.run({ [encoder.inputNames[0]]: pixels });
@@ -184,7 +200,18 @@ async function readMath(image) {
   return tokenizer.decode(tokens.slice(1), { skip_special_tokens: true }).trim();
 }
 
+/** Free a model's memory until it is needed again. */
+async function release(name) {
+  const p = loaders[name];
+  if (!p) return;
+  delete loaders[name];
+  const m = await p.catch(() => null);
+  await m?.dispose?.();
+  for (const s of [m?.encoder, m?.decoder]) await s?.release?.();
+}
+
 self.onmessage = async (e) => {
+  if (e.data.release) return release(e.data.release);
   const { id, kind, image } = e.data;
   const quality = e.data.quality === 'careful' ? 'careful' : 'fast';
   try {

@@ -67,7 +67,7 @@ struct StrokeJson {
 }
 
 /// Positions are stored to 1/1000 of a world unit: at the deepest zoom
-/// (1600%) that is under 0.02 screen pixels, so saving never moves ink.
+/// (250%) that is under 0.002 screen pixels, so saving never moves ink.
 /// (It was 1/100, which was 0.64 px at the old 6400% limit.)
 pub const POSITION_DECIMALS: i32 = 3;
 

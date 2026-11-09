@@ -3,11 +3,10 @@
 
 use crate::geom::{Rect, Vec2};
 
-/// Zoom limits: 10% to 1600%. Further out, every brush is a hairline and
-/// one screen pixel spans so much of the page that writing loses its
-/// precision; further in, a pixel is finer than the pen can place a point.
-pub const MIN_ZOOM: f64 = 0.1;
-pub const MAX_ZOOM: f64 = 16.0;
+/// Zoom limits: 25% to 250%. Further out, writing is too small to be legible
+/// or precise; further in there is little to gain for handwriting.
+pub const MIN_ZOOM: f64 = 0.25;
+pub const MAX_ZOOM: f64 = 2.5;
 
 /// The page reaches this far from the origin in every direction (world
 /// units, about CSS px at 100%): ten million, hundreds of screens even
@@ -115,8 +114,8 @@ mod tests {
         let mut c = Camera::default();
         let anchor = Vec2::new(300.0, 200.0);
         let w = c.screen_to_world(anchor);
-        c.zoom_at(anchor, 3.0);
-        assert!((c.zoom - 3.0).abs() < 1e-12);
+        c.zoom_at(anchor, 2.0);
+        assert!((c.zoom - 2.0).abs() < 1e-12);
         assert!(c.world_to_screen(w).distance(anchor) < 1e-9);
         c.zoom_at(anchor, 1e9);
         assert_eq!(c.zoom, MAX_ZOOM);

@@ -30,7 +30,7 @@ export class Handwriting {
     this.enabled = true;
     this.spelling = true;
     this.engine = null; // null: the built-in worker, created on first use
-    this.workers = new Map(); // 'text-fast' | 'text-careful' | 'math' -> Worker
+    this.workers = new Map(); // 'all' -> the recogniser Worker
     this.pending = new Map(); // request id -> { resolve, reject }
     this.inFlight = new Set(); // word ids being recognised
     this.failed = new Map(); // 'fast:id' / 'careful:id' -> attempts
@@ -113,7 +113,7 @@ export class Handwriting {
     }
     // Pass finished: give the larger model's memory back until next time,
     // unless it is the only model in use.
-    if (todo.length && this.mode === 'both') this.dropWorker('text-careful');
+    if (todo.length && this.mode === 'both') this.releaseModel('text-careful');
   }
 
   async _recognise(word, quality = 'fast') {
@@ -142,13 +142,14 @@ export class Handwriting {
     this.onWordStatus(id, text);
   }
 
-  /** Each model runs in its own worker: its own WebAssembly memory, which
-   *  iPad Safari keeps small, and it can be dropped to free that memory. */
+  /** Which model a request uses (the worker loads each one on first use). */
   _slot(kind, quality) {
     return kind === 'math' ? 'math' : quality === 'careful' ? 'text-careful' : 'text-fast';
   }
 
-  _worker(slot) {
+  /** One worker for all models: iPad Safari can't run a second WebAssembly
+   *  runtime, so they share one. */
+  _worker(slot = 'all') {
     let w = this.workers.get(slot);
     if (w) return w;
     w = new Worker(new URL('./recognizer-worker.js', import.meta.url), { type: 'module' });
@@ -160,21 +161,26 @@ export class Handwriting {
       this.pending.delete(m.id);
       if (m.error) {
         // Out of memory leaves the worker's heap unusable: start afresh.
-        if (/memory/i.test(m.error)) this.dropWorker(slot);
+        if (/memory/i.test(m.error)) this.dropWorker('all');
         p.reject(new Error(m.error));
       } else p.resolve(m);
     };
     w.onerror = (e) => {
       this.onStatus({ error: e.message || 'recogniser failed to start' });
-      this.dropWorker(slot);
+      this.dropWorker('all');
     };
     this.workers.set(slot, w);
     return w;
   }
 
-  /** Stop a model's worker and free its memory (it reloads from the
-   *  browser's cache when next needed). */
-  dropWorker(slot) {
+  /** Free one model's memory in the worker; it reloads from the browser's
+   *  cache when next needed. */
+  releaseModel(slot) {
+    this.workers.get('all')?.postMessage({ release: slot });
+  }
+
+  /** Stop the worker and free all its memory. */
+  dropWorker(slot = 'all') {
     const w = this.workers.get(slot);
     if (!w) return;
     w.terminate();
@@ -187,10 +193,9 @@ export class Handwriting {
   _engine() {
     if (this.engine) return this.engine;
     return ({ kind, image, quality }) => new Promise((resolve, reject) => {
-      const slot = this._slot(kind, quality);
       const id = ++this.seq;
-      this.pending.set(id, { resolve, reject, slot });
-      this._worker(slot).postMessage({ id, kind, image, quality });
+      this.pending.set(id, { resolve, reject, slot: 'all' });
+      this._worker().postMessage({ id, kind, image, quality });
     });
   }
 
