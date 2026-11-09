@@ -32,6 +32,7 @@ pub fn meta_only(d: &Document) -> Document {
     if !d.kinds.is_empty() {
         m.extra.insert("kinds".into(), serde_json::to_value(&d.kinds).expect("kinds serialise"));
     }
+    m.set_images(d.images().to_vec());
     m.groups = d.groups.clone();
     if !d.groups.is_empty() {
         m.extra.insert("groups".into(), serde_json::to_value(&d.groups).expect("groups serialise"));
@@ -39,7 +40,7 @@ pub fn meta_only(d: &Document) -> Document {
     m
 }
 
-/// Fingerprint of the strokes: ids, order and sample counts.
+/// Fingerprint of the strokes (ids, order and sample counts) and pictures.
 pub fn content_hash(d: &Document) -> String {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     let mut mix = |v: u64| {
@@ -51,6 +52,15 @@ pub fn content_hash(d: &Document) -> String {
     for s in d.strokes() {
         mix(s.id.0);
         mix(s.points.len() as u64);
+    }
+    // Pictures, and whether their files are here (a copy without a
+    // picture's file must not be saved).
+    for i in d.images() {
+        mix(i.id.0);
+        match &i.text {
+            Some(t) => mix(t.len() as u64),
+            None => mix(d.assets.get(&i.file).map_or(0, |b| b.len() as u64 + 1)),
+        }
     }
     format!("{h:016x}:{}", d.len())
 }
@@ -109,8 +119,14 @@ impl Mirror {
         };
         doc.set_strokes(strokes);
         doc.take_changes();
+        doc.assets = std::mem::take(&mut self.doc.assets);
         self.doc = doc;
         Ok(())
+    }
+
+    /// Store a picture file (sent once, when the picture is inserted).
+    pub fn add_asset(&mut self, file: &str, bytes: Vec<u8>) {
+        self.doc.assets.insert(file.to_string(), bytes);
     }
 }
 
@@ -244,5 +260,24 @@ mod tests {
         assert!(m.apply(None, &[], "not json", &[]).is_err());
         assert!(m.apply(None, &[], "[]", &[3]).is_err());
         assert!(m.reset(b"garbage").is_err());
+    }
+
+    /// The saver's copy follows pictures: placed and moved through the meta
+    /// JSON, files sent once; a copy missing a file doesn't match.
+    #[test]
+    fn pictures_follow_through_meta_and_assets() {
+        let mut src = Document::new(3);
+        let mut m = Mirror::default();
+        let r = crate::geom::Rect::new(crate::geom::Vec2::ZERO, crate::geom::Vec2::new(10.0, 10.0));
+        let id = src.add_image("images/p.png", Some(vec![7, 7]), r);
+        sync(&mut src, &mut m);
+        assert_ne!(content_hash(m.doc()), content_hash(&src), "file not sent yet");
+        m.add_asset("images/p.png", vec![7, 7]);
+        sync(&mut src, &mut m);
+        assert_eq!(content_hash(m.doc()), content_hash(&src));
+        src.translate(&[id], crate::geom::Vec2::new(5.0, 0.0));
+        sync(&mut src, &mut m);
+        assert_eq!(m.doc().image(id).unwrap().x, 5.0);
+        assert_eq!(format::to_bedrock(m.doc()), format::to_bedrock(&src));
     }
 }

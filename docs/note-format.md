@@ -21,10 +21,11 @@ afternoon without Bedrock's code. The machine readable schema for
 | `recognized.json` | Text recognised from handwriting, linked to stroke ids. Kept separate so recognition can never damage ink. |
 | `links.md` | The note's links as Markdown (`[[Note]]`, `[text](https://…)`), for tools such as Obsidian's graph. Generated from `links` in `note.json`. |
 | `preview.svg` | The note rendered as vector paths. Opens in any browser, forever. |
+| `images/<hash>.<ext>` | Pictures placed on the page, as ordinary PNG, JPEG, WebP or GIF files (stored, not compressed again). Named by their content's SHA-256, so one picture used twice is stored once. |
 | `README.txt` | A short human explanation of the above. |
 
 Readers must ignore entries they do not know, so later versions can add
-files (for example `assets/` for images and PDFs).
+files (for example PDFs).
 
 ## `note.json`
 
@@ -167,6 +168,23 @@ A `kinds` entry says some strokes are `text`, `math` (LaTeX) or `drawing`
 guess: a word follows it when any of its strokes is listed, so writing more
 onto a formula keeps it maths. Moving strokes gives them new ids; both lists,
 `links` and `recognition` follow the new ids.
+
+## Pictures and text boxes (`images`, `texts` in `note.json`)
+
+```json
+"images": [{ "id": "4b1e0c9d2a7f3e58", "file": "images/9a3f…c1.png", "x": 120, "y": 80, "w": 400, "h": 300 }],
+"texts": [{ "id": "7d2a9c4e1b0f6a35", "text": "Shopping list\nmilk", "x": 120, "y": 420, "w": 118, "h": 47 }]
+```
+
+A picture is a file in the bundle placed at `x`, `y` (top-left) with size
+`w` × `h` in world units; it is stretched to that box. A text box holds
+typed or pasted text: its lines (`\n` separated) fill the box's height
+evenly, each line `h / lines` tall with the font size 1/1.3 of that, in the
+system's sans-serif font, so resizing the box scales the text. Both lie
+under all ink, in list order (pictures, then text boxes). Ids share the
+stroke id space and, unlike moved strokes, keep their id when moved or
+resized. A note whose picture file is missing still opens, with a warning,
+and shows a placeholder card.
 
 ## Designed for real-time handwriting recognition
 

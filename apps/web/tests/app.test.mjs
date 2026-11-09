@@ -1775,3 +1775,131 @@ test('steady hand smooths a shaky line, old ink included', async () => {
   assert.equal(r.saved, 100);
   await ctx.close();
 });
+
+/** A solid-colour PNG made in the page. */
+const makePicture = `async (w, h, color) => {
+  const c = new OffscreenCanvas(w, h);
+  const g = c.getContext('2d');
+  g.fillStyle = color;
+  g.fillRect(0, 0, w, h);
+  const b = await c.convertToBlob({ type: 'image/png' });
+  return new File([b], 'square.png', { type: 'image/png' });
+}`;
+
+test('pictures: inserted in the middle under the ink, saved as a plain file in the note, and back after a reload', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page, errors } = await openApp(env, { context });
+  const r = await page.evaluate(async (make) => {
+    const picture = await eval(make)(200, 100, '#e53935');
+    await bedrock.insertPictures([picture]);
+    for (let i = 0; i < 40 && bedrock.canvas.missing_images().length; i++) await t.frame();
+    const tool = document.querySelector('[data-tool="lasso"]').getAttribute('aria-checked');
+    const sel = JSON.parse(bedrock.canvas.selection_json());
+    const [w, h] = [innerWidth, innerHeight];
+    const centre = Array.from(bedrock.canvas.pixel_at(w / 2, h / 2));
+    // Ink drawn over the picture stays on top.
+    document.querySelector('[data-brush="pen"]').click();
+    await t.line(w / 2 - 60, h / 2, w / 2 + 60, h / 2, { pressure: 1 });
+    const inked = Array.from(bedrock.canvas.pixel_at(w / 2, h / 2));
+    const note = JSON.parse(bedrock.canvas.export_json());
+    await bedrock.saveNow();
+    const saved = await bedrock.store.get(bedrock.noteId);
+    return { tool, sel, centre, inked, images: note.images, files: bedrock.canvas.image_files(), size: saved.data.length };
+  }, makePicture);
+  assert.equal(r.tool, 'true', 'the lasso is picked so it can be moved right away');
+  assert.equal(r.sel.images.length, 1);
+  assert.ok(r.sel.handle, 'a lone picture has a resize handle');
+  assert.ok(r.centre[0] > 200 && r.centre[1] < 90 && r.centre[2] < 90, `red picture in the middle: ${r.centre}`);
+  assert.ok(r.inked[0] < 80, `pen ink over the picture: ${r.inked}`);
+  assert.equal(r.images.length, 1);
+  assert.match(r.images[0].file, /^images\/[0-9a-f]{32}\.png$/);
+  assert.deepEqual([r.images[0].w, r.images[0].h], [200, 100]);
+  assert.deepEqual(r.files, [r.images[0].file]);
+  await page.waitForTimeout(100);
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock && window.bedrock.ready);
+  const back = await page.evaluate(async () => {
+    // (the pointer helpers are gone after a reload)
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    for (let i = 0; i < 60 && bedrock.canvas.missing_images().length; i++) await frame();
+    await frame();
+    const img = JSON.parse(bedrock.canvas.images_json())[0];
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    const px = Array.from(bedrock.canvas.pixel_at((img.x + 20 - ox) * zoom, (img.y + 20 - oy) * zoom));
+    return { n: JSON.parse(bedrock.canvas.images_json()).length, px };
+  });
+  assert.equal(back.n, 1);
+  assert.ok(back.px[0] > 200 && back.px[1] < 90, `the picture shows after reopening: ${back.px}`);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('pictures: drag the corner to resize, drag to move, delete; undo brings each back', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async (make) => {
+    await bedrock.insertPictures([await eval(make)(200, 100, '#2f6bff')]);
+    const c = bedrock.canvas;
+    const img = () => JSON.parse(c.images_json())[0];
+    const [ox, oy, zoom] = c.camera();
+    const scr = (x, y) => [(x - ox) * zoom, (y - oy) * zoom];
+    const a = img();
+    const [hx, hy] = scr(a.x + a.w, a.y + a.h);
+    await t.line(hx, hy, hx + 100, hy + 10); // handle → 300 wide
+    const resized = img();
+    const [mx, my] = scr(resized.x + 50, resized.y + 50);
+    await t.line(mx, my, mx - 40, my + 30); // move
+    const moved = img();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
+    const afterDelete = JSON.parse(c.images_json()).length;
+    c.undo();
+    const undone1 = img();
+    c.undo();
+    const undone2 = img();
+    c.undo();
+    return { a, resized, moved, afterDelete, undone1, undone2, gone: JSON.parse(c.images_json()).length };
+  }, makePicture);
+  assert.ok(Math.abs(r.resized.w - 300) < 1 && Math.abs(r.resized.h - 150) < 1, `kept its shape: ${JSON.stringify(r.resized)}`);
+  assert.equal(r.resized.x, r.a.x);
+  assert.ok(Math.abs(r.moved.x - (r.resized.x - 40)) < 1 && Math.abs(r.moved.y - (r.resized.y + 30)) < 1);
+  assert.equal(r.afterDelete, 0);
+  assert.deepEqual(r.undone1, r.moved);
+  assert.deepEqual(r.undone2, r.resized);
+  assert.equal(r.gone, 1, 'the third undo takes back the resize, the picture stays');
+  await ctx.close();
+});
+
+test('paste works as the system does: a picture pastes a picture, text pastes a text box; text fields keep their paste', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async (make) => {
+    const paste = (fill, target = document.body) => {
+      const dt = new DataTransfer();
+      fill(dt);
+      const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      target.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    const pic = await eval(make)(60, 40, '#2e7d32');
+    const a = paste((dt) => dt.items.add(pic));
+    for (let i = 0; i < 20 && !JSON.parse(bedrock.canvas.images_json()).length; i++) await t.frame();
+    const b = paste((dt) => dt.setData('text/plain', 'Shopping list\r\nmilk\teggs\n\n'));
+    // In the title field the system's own paste is left alone.
+    const c = paste((dt) => dt.setData('text/plain', 'title'), document.getElementById('title'));
+    for (let i = 0; i < 20 && bedrock.canvas.missing_images().length; i++) await t.frame();
+    const note = JSON.parse(bedrock.canvas.export_json());
+    const box = note.texts?.[0];
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    // Some dark text pixels inside the box.
+    let dark = 0;
+    for (let x = box.x; x < box.x + box.w; x += 2) {
+      const [r] = bedrock.canvas.pixel_at((x - ox) * zoom, (box.y + box.h * 0.35 - oy) * zoom);
+      if (r < 120) dark++;
+    }
+    return { a, b, c, images: note.images?.length, text: box?.text, dark, selected: JSON.parse(bedrock.canvas.selection_json()).images.length };
+  }, makePicture);
+  assert.deepEqual({ a: r.a, b: r.b, c: r.c }, { a: true, b: true, c: false });
+  assert.equal(r.images, 1);
+  assert.equal(r.text, 'Shopping list\nmilk    eggs');
+  assert.ok(r.dark > 3, `the text is drawn (${r.dark} dark samples)`);
+  assert.equal(r.selected, 1, 'the pasted text box is selected');
+  await ctx.close();
+});

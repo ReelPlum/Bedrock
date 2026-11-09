@@ -25,5 +25,6 @@ features = [
   "WebGlShader",
   "WebGlUniformLocation",
   "WebGlVertexArrayObject",
+  "WebGlTexture",
   "console",
 ]

@@ -5,6 +5,7 @@ import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
 import { SelectionView } from './selection-view.js';
+import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 
@@ -140,10 +141,12 @@ async function main() {
   let recognizerView = null;
   let wordMenu = null;
   let selectionView = null;
+  let pictures = null;
   let lastRevision = -1;
   let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
+      pictures?.update();
       minimap?.update();
       if (handwriting) {
         const rev = canvas.revision();
@@ -234,6 +237,7 @@ async function main() {
     c.addEventListener('webglcontextlost', (e) => e.preventDefault());
     c.addEventListener('webglcontextrestored', () => {
       canvas.restore_gpu();
+      pictures?.reset();
       input.requestFrame();
     });
   }
@@ -270,12 +274,21 @@ async function main() {
       waiting.set(msg.seq, resolve);
       worker.postMessage(msg, transfer);
     });
+    // Picture files the worker has (they are big: each is sent once).
+    const sent = new Set();
+    const newAssets = () => canvas.image_files().filter((f) => !sent.has(f)).map((file) => {
+      sent.add(file);
+      return { file, bytes: canvas.image_bytes(file) };
+    });
     /** Send the whole note (after opening one, or if the copies disagree). */
     const reset = (withExport) => {
       canvas.take_changes();
       const hash = canvas.content_hash();
       const bytes = new TextEncoder().encode(canvas.export_json());
-      return call({ reset: bytes, export: withExport }, [bytes.buffer]).then((r) => ({ ...r, expected: hash }));
+      sent.clear();
+      const assets = newAssets();
+      return call({ reset: bytes, assets, export: withExport }, [bytes.buffer, ...assets.map((a) => a.bytes.buffer)])
+        .then((r) => ({ ...r, expected: hash }));
     };
     return {
       get available() { return !!worker; },
@@ -290,7 +303,8 @@ async function main() {
           if (i >= 0) { added.push(canvas.stroke_json(id)); index.push(i); }
         }
         const expected = canvas.content_hash();
-        let r = await call({ ops: { meta: canvas.meta_json(), touched, added: `[${added.join(',')}]`, index }, export: true });
+        const assets = newAssets();
+        let r = await call({ ops: { meta: canvas.meta_json(), touched, added: `[${added.join(',')}]`, index }, assets, export: true }, assets.map((a) => a.bytes.buffer));
         if (!r.error && r.hash === expected) { saveStats.background++; return r.data; }
         saveStats.resyncs++;
         r = await reset(true);
@@ -1009,6 +1023,100 @@ async function main() {
     input.requestFrame();
   });
 
+  // ----- pictures and text boxes ---------------------------------------------------
+  // Insert from the menu (Photos, camera or Files on iPad), by pasting (as
+  // the system does it: a picture pastes a picture, text pastes text), or by
+  // dropping files. What was inserted is selected with the lasso, ready to
+  // move or resize.
+  pictures = new PictureLoader(canvas, () => input.requestFrame());
+  function afterInsert() {
+    selectTool('lasso', { noToggle: true });
+    scheduleSave();
+    input.requestFrame();
+  }
+  async function insertPictures(blobs) {
+    let n = 0;
+    for (const blob of blobs) {
+      try {
+        const p = await preparePicture(blob);
+        if (settings.tool !== 'lasso') selectTool('lasso', { noToggle: true });
+        canvas.insert_image(p.file, p.bytes, p.width, p.height);
+        n++;
+      } catch (e) {
+        console.warn('picture not inserted', e);
+        toast(`Could not insert ${blob.name || 'the picture'}: it is not a picture this browser can open.`, 4000);
+      }
+    }
+    if (n) afterInsert();
+    return n;
+  }
+  function insertText(raw) {
+    const text = tidyText(raw);
+    if (!text.trim()) return false;
+    if (settings.tool !== 'lasso') selectTool('lasso', { noToggle: true });
+    const m = measureText(text, TEXT_SIZE_CSS);
+    canvas.insert_text(text, m.width, m.height);
+    afterInsert();
+    return true;
+  }
+  const pictureInput = document.createElement('input');
+  pictureInput.type = 'file';
+  pictureInput.accept = 'image/*';
+  pictureInput.multiple = true;
+  pictureInput.hidden = true;
+  document.body.append(pictureInput);
+  pictureInput.addEventListener('change', () => {
+    insertPictures([...pictureInput.files]);
+    pictureInput.value = '';
+  });
+  actions['insert-image'] = () => pictureInput.click();
+  // The menu's Paste (touch screens have no paste shortcut on a canvas).
+  actions.paste = async () => {
+    try {
+      const items = await navigator.clipboard.read();
+      const pics = [];
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'));
+        if (type) pics.push(await item.getType(type));
+      }
+      if (pics.length) { await insertPictures(pics); return; }
+      for (const item of items) {
+        if (item.types.includes('text/plain') && insertText(await (await item.getType('text/plain')).text())) return;
+      }
+      toast('Nothing to paste', 1500);
+    } catch (_) {
+      try {
+        if (!insertText(await navigator.clipboard.readText())) toast('Nothing to paste', 1500);
+      } catch (e) {
+        toast('Pasting needs permission to read the clipboard', 2500);
+      }
+    }
+  };
+  document.addEventListener('paste', (e) => {
+    const t = e.target;
+    // Text fields keep the system's own paste.
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable) return;
+    const data = e.clipboardData;
+    if (!data) return;
+    const pics = [...data.files].filter((f) => f.type.startsWith('image/'));
+    if (pics.length) {
+      e.preventDefault();
+      insertPictures(pics);
+      return;
+    }
+    const text = data.getData('text/plain');
+    if (text && insertText(text)) e.preventDefault();
+  });
+  stage.addEventListener('dragover', (e) => {
+    if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file' || i.type === 'text/plain')) e.preventDefault();
+  });
+  stage.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); insertPictures(files); return; }
+    const text = e.dataTransfer?.getData('text/plain');
+    if (text) { e.preventDefault(); insertText(text); }
+  });
+
   // ----- keyboard ----------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -1056,7 +1164,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

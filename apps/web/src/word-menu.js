@@ -146,9 +146,12 @@ export class WordMenu {
     this.selection = selection;
     const $ = this.$;
     const n = selection?.strokes.length || 0;
+    const pics = selection?.images?.length || 0;
     const maths = word.kind === 'math';
     const drawing = word.kind === 'drawing';
-    $('wm-word').textContent = word.id == null ? `${n} stroke${n === 1 ? '' : 's'} selected`
+    const plural = (k, one) => `${k} ${one}${k === 1 ? '' : 's'}`;
+    const what = [n && plural(n, 'stroke'), pics && plural(pics, 'picture')].filter(Boolean).join(' and ');
+    $('wm-word').textContent = word.id == null ? (pics === 1 && !n ? 'Picture' : `${what} selected`)
       : drawing ? 'Not a word' : maths ? (selection ? 'Selected formula' : 'Formula') : selection ? 'Selected word' : 'Handwritten word';
     const reading = $('wm-reading');
     reading.replaceChildren();
@@ -168,6 +171,14 @@ export class WordMenu {
     $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
+    // Pictures only: nothing to read or link, just delete (move and resize
+    // them with the lasso).
+    if (selection && !n) {
+      for (const b of ['wm-kind', 'wm-drawing', 'wm-correct', 'wm-group', 'wm-ungroup', 'wm-link']) $(b).hidden = true;
+    } else {
+      $('wm-link').hidden = false;
+      $('wm-kind').hidden = false;
+    }
     const l = word.link;
     const type = l && linkType(l.type);
     $('wm-link-now').hidden = !l;

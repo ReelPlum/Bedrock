@@ -8,9 +8,43 @@ use bedrock_core::scene::{ChunkInfo, ChunkMesh, SEGMENT_COLOR_BYTES, SEGMENT_FLO
 use std::collections::HashMap;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
-    HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlBuffer, WebGlProgram, WebGlUniformLocation,
+    HtmlCanvasElement, WebGl2RenderingContext as GL, WebGlBuffer, WebGlProgram, WebGlTexture, WebGlUniformLocation,
     WebGlVertexArrayObject,
 };
+
+// Pictures: one textured quad each, under the ink. `u_rect` is the quad in
+// clip space; a picture whose file isn't decoded yet shows as a pale card.
+const IMAGE_VS: &str = r#"#version 300 es
+uniform vec4 u_rect;
+out vec2 v_uv;
+void main() {
+  vec2 c = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+  v_uv = c;
+  gl_Position = vec4(mix(u_rect.xy, u_rect.zw, c), 0.0, 1.0);
+}"#;
+
+const IMAGE_FS: &str = r#"#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+uniform int u_placeholder;
+in vec2 v_uv;
+out vec4 o;
+void main() {
+  if (u_placeholder == 1) {
+    vec2 e = min(v_uv, 1.0 - v_uv);
+    float edge = step(min(e.x, e.y), 0.004);
+    o = vec4(mix(vec3(0.91, 0.91, 0.93), vec3(0.75, 0.75, 0.8), edge), 1.0);
+    return;
+  }
+  o = texture(u_tex, v_uv); // premultiplied
+}"#;
+
+/// A picture to draw: where (world) and which decoded file.
+pub struct ImageDraw {
+    pub rect: bedrock_core::geom::Rect,
+    /// Texture key: the file, or `text:` and the text.
+    pub file: String,
+}
 
 // Strokes are unions of tapered capsules (see `tessellate::Segment`). Each
 // capsule is one instance: the vertex shader spans a quad around it and the
@@ -181,11 +215,21 @@ struct InkProgram {
 /// Paper shader, its uniforms by name, and an empty VAO for the fullscreen triangle.
 type PaperProgram = (WebGlProgram, HashMap<&'static str, Option<WebGlUniformLocation>>, WebGlVertexArrayObject);
 
+/// Picture shader and its uniforms.
+struct ImageProgram {
+    program: WebGlProgram,
+    u_rect: Option<WebGlUniformLocation>,
+    u_placeholder: Option<WebGlUniformLocation>,
+    vao: WebGlVertexArrayObject,
+}
+
 /// One WebGL2 canvas (the base scene, or the live-stroke overlay).
 pub struct Layer {
     pub canvas: HtmlCanvasElement,
     gl: GL,
     ink: InkProgram,
+    image: Option<ImageProgram>,
+    textures: HashMap<String, WebGlTexture>,
     paper: Option<PaperProgram>,
     chunks: HashMap<u64, GpuMesh>,
     live: Option<GpuMesh>,
@@ -236,10 +280,23 @@ impl Layer {
         } else {
             None
         };
+        let image = if with_paper {
+            let p = link(&gl, IMAGE_VS, IMAGE_FS).map_err(|e| JsValue::from_str(&e))?;
+            Some(ImageProgram {
+                u_rect: gl.get_uniform_location(&p, "u_rect"),
+                u_placeholder: gl.get_uniform_location(&p, "u_placeholder"),
+                vao: gl.create_vertex_array().ok_or("vao")?,
+                program: p,
+            })
+        } else {
+            None
+        };
         Ok(Layer {
             canvas,
             gl,
             ink,
+            image,
+            textures: HashMap::new(),
             paper,
             chunks: HashMap::new(),
             live: None,
@@ -445,18 +502,103 @@ impl Layer {
         gl.bind_vertex_array(None);
     }
 
-    /// Full scene: paper + every visible chunk in order.
+    /// Upload a decoded picture (RGBA, straight alpha), keyed by its file.
+    pub fn set_texture(&mut self, file: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(), JsValue> {
+        if rgba.len() != (width as usize) * (height as usize) * 4 || width == 0 || height == 0 {
+            return Err(JsValue::from_str("picture pixels do not match its size"));
+        }
+        let gl = &self.gl;
+        let tex = gl.create_texture().ok_or("create_texture failed")?;
+        gl.bind_texture(GL::TEXTURE_2D, Some(&tex));
+        gl.pixel_storei(GL::UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
+        gl.pixel_storei(GL::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+            GL::TEXTURE_2D,
+            0,
+            GL::RGBA8 as i32,
+            width as i32,
+            height as i32,
+            0,
+            GL::RGBA,
+            GL::UNSIGNED_BYTE,
+            Some(rgba),
+        )?;
+        gl.pixel_storei(GL::UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        gl.generate_mipmap(GL::TEXTURE_2D);
+        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_MIN_FILTER, GL::LINEAR_MIPMAP_LINEAR as i32);
+        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_MAG_FILTER, GL::LINEAR as i32);
+        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_WRAP_S, GL::CLAMP_TO_EDGE as i32);
+        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_WRAP_T, GL::CLAMP_TO_EDGE as i32);
+        gl.bind_texture(GL::TEXTURE_2D, None);
+        if let Some(old) = self.textures.insert(file.to_string(), tex) {
+            gl.delete_texture(Some(&old));
+        }
+        Ok(())
+    }
+
+    pub fn has_texture(&self, file: &str) -> bool {
+        self.textures.contains_key(file)
+    }
+
+    /// Free textures of files no longer in `keep`.
+    pub fn retain_textures(&mut self, keep: &std::collections::HashSet<&str>) {
+        let gone: Vec<String> = self.textures.keys().filter(|k| !keep.contains(k.as_str())).cloned().collect();
+        for k in gone {
+            if let Some(t) = self.textures.remove(&k) {
+                self.gl.delete_texture(Some(&t));
+            }
+        }
+    }
+
+    fn draw_images(&self, cam: &Camera, images: &[ImageDraw]) {
+        let Some(p) = &self.image else { return };
+        if images.is_empty() {
+            return;
+        }
+        let gl = &self.gl;
+        gl.use_program(Some(&p.program));
+        gl.enable(GL::BLEND);
+        gl.blend_func(GL::ONE, GL::ONE_MINUS_SRC_ALPHA);
+        gl.disable(GL::STENCIL_TEST);
+        gl.disable(GL::DEPTH_TEST);
+        gl.bind_vertex_array(Some(&p.vao));
+        gl.active_texture(GL::TEXTURE0);
+        let view = cam.visible_world();
+        let (w, h) = (cam.viewport.x, cam.viewport.y);
+        for img in images {
+            if !img.rect.intersects(&view) {
+                continue;
+            }
+            let a = cam.world_to_screen(img.rect.min);
+            let b = cam.world_to_screen(img.rect.max);
+            let clip = |s: Vec2| ((s.x / w * 2.0 - 1.0) as f32, (1.0 - s.y / h * 2.0) as f32);
+            let (x0, y0) = clip(a);
+            let (x1, y1) = clip(b);
+            gl.uniform4f(p.u_rect.as_ref(), x0, y0, x1, y1);
+            let tex = self.textures.get(&img.file);
+            gl.uniform1i(p.u_placeholder.as_ref(), tex.is_none() as i32);
+            gl.bind_texture(GL::TEXTURE_2D, tex);
+            gl.draw_arrays(GL::TRIANGLE_STRIP, 0, 4);
+        }
+        gl.bind_texture(GL::TEXTURE_2D, None);
+        gl.bind_vertex_array(None);
+    }
+
+    /// Full scene: paper, pictures, then every visible chunk in order.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_scene<'a>(
         &mut self,
         cam: &Camera,
         dpr: f64,
         bg: Rgba,
         paper_mode: i32,
+        images: &[ImageDraw],
         visible: impl Iterator<Item = &'a ChunkInfo>,
     ) {
         self.set_viewport();
         self.clear([bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0, 1.0]);
         self.draw_paper(cam, dpr, bg, paper_mode);
+        self.draw_images(cam, images);
         self.begin_ink();
         for c in visible {
             self.draw_mesh(Some(c.key), cam, dpr);

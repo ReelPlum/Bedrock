@@ -375,7 +375,7 @@ impl Canvas {
     /// Link the selected strokes (any number of words, which stay separate
     /// words); an empty target removes links on them.
     pub fn set_selection_link(&mut self, target: &str, kind: &str) -> bool {
-        let ids = self.engine.selection();
+        let ids = self.selected_strokes();
         if ids.is_empty() {
             return false;
         }
@@ -386,7 +386,7 @@ impl Canvas {
 
     /// Say the selected strokes are "text", "math" or "drawing", without grouping them.
     pub fn set_selection_kind(&mut self, kind: &str) -> bool {
-        let ids = self.engine.selection();
+        let ids = self.selected_strokes();
         if ids.is_empty() {
             return false;
         }
@@ -397,7 +397,7 @@ impl Canvas {
 
     /// The link on the selection: `{target, type}` if all of it is one link.
     pub fn selection_link_json(&self) -> String {
-        let ids = self.engine.selection();
+        let ids = self.selected_strokes();
         match self.engine.doc.link_of(&ids) {
             Some(l) => serde_json::json!({ "target": l.target, "type": l.kind }).to_string(),
             None => "null".into(),
@@ -450,6 +450,9 @@ impl Canvas {
     /// the same revision as the one before it (bug: opened notes stayed
     /// blank until you drew something).
     fn replace_document(&mut self, doc: Document) {
+        // Pictures of the note before are no longer needed on the GPU.
+        let keys: Vec<String> = doc.images().iter().map(|i| i.texture_key()).collect();
+        self.base.retain_textures(&keys.iter().map(|k| k.as_str()).collect());
         self.engine.set_document(doc);
         self.base.clear_chunks();
         self.scene = Scene::new();
@@ -540,8 +543,11 @@ impl Canvas {
     /// word: id | null, grouped}`. `word` is set when the selection is
     /// exactly one word; `grouped` when the writer made (part of) it one word.
     pub fn selection_json(&mut self) -> String {
-        let ids = self.engine.selection();
+        let all = self.engine.selection();
+        let doc = &self.engine.doc;
+        let (images, ids): (Vec<_>, Vec<_>) = all.iter().copied().partition(|id| doc.image(*id).is_some());
         let b = self.engine.selection_bounds();
+        let handle = self.engine.resizable_image().map(|_| [b.max.x, b.max.y]);
         let set: std::collections::HashSet<_> = ids.iter().copied().collect();
         let word = if ids.is_empty() {
             None
@@ -556,11 +562,84 @@ impl Canvas {
         let grouped = self.engine.doc.groups.iter().any(|g| g.iter().any(|s| set.contains(s)));
         serde_json::json!({
             "strokes": ids.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            "bounds": if ids.is_empty() { serde_json::Value::Null } else { serde_json::json!([b.min.x, b.min.y, b.max.x, b.max.y]) },
+            "images": images.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "bounds": if all.is_empty() { serde_json::Value::Null } else { serde_json::json!([b.min.x, b.min.y, b.max.x, b.max.y]) },
+            "handle": handle,
             "word": word,
             "grouped": grouped,
         })
         .to_string()
+    }
+
+    /// The selected strokes, without pictures (for word and link actions).
+    fn selected_strokes(&self) -> Vec<bedrock_core::stroke::StrokeId> {
+        self.engine.selection().into_iter().filter(|id| self.engine.doc.find(*id).is_some()).collect()
+    }
+
+    // ----- pictures ---------------------------------------------------------
+
+    /// Place a picture (its file's bytes and pixel size) in the middle of
+    /// the view and select it. `file` is its path in the bundle, e.g.
+    /// `images/<hash>.png`. Returns its id.
+    pub fn insert_image(
+        &mut self,
+        file: &str,
+        bytes: Vec<u8>,
+        width_px: f64,
+        height_px: f64,
+    ) -> Result<String, JsValue> {
+        if !file.starts_with(format::IMAGES_DIR) || file.contains("..") || bytes.is_empty() {
+            return Err(JsValue::from_str("not a picture file"));
+        }
+        Ok(self.engine.insert_image(file, Some(bytes), width_px, height_px).to_string())
+    }
+
+    /// Pictures and text boxes on the page that have no pixels yet: picture
+    /// files, and `text:<text>` for text boxes (decode or draw them and pass
+    /// them to `set_image_pixels`).
+    pub fn missing_images(&self) -> Vec<String> {
+        let doc = &self.engine.doc;
+        let mut out: Vec<String> = doc
+            .images()
+            .iter()
+            .filter(|i| i.text.is_some() || doc.assets.contains_key(&i.file))
+            .map(|i| i.texture_key())
+            .filter(|k| !self.base.has_texture(k))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Place a text box (`\n` separated lines) in the middle of the view,
+    /// `width`×`height` css px on screen, and select it. Returns its id.
+    pub fn insert_text(&mut self, text: &str, width_css: f64, height_css: f64) -> Result<String, JsValue> {
+        if text.trim().is_empty() {
+            return Err(JsValue::from_str("no text"));
+        }
+        Ok(self.engine.insert_text(text, width_css, height_css).to_string())
+    }
+
+    /// The picture files the page uses (what a saved note contains).
+    pub fn image_files(&self) -> Vec<String> {
+        self.engine.doc.used_assets().into_iter().map(|(f, _)| f.to_string()).collect()
+    }
+
+    /// A picture file's bytes, as stored in the note.
+    pub fn image_bytes(&self, file: &str) -> Option<Vec<u8>> {
+        self.engine.doc.assets.get(file).cloned()
+    }
+
+    /// Decoded pixels (RGBA) of a picture file, for drawing it.
+    pub fn set_image_pixels(&mut self, file: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(), JsValue> {
+        self.base.set_texture(file, width, height, rgba)?;
+        self.engine.invalidate();
+        Ok(())
+    }
+
+    /// The pictures as `[{id, file, x, y, w, h}]` (world units).
+    pub fn images_json(&self) -> String {
+        serde_json::to_string(self.engine.doc.images()).unwrap_or_else(|_| "[]".into())
     }
 
     /// The selection loop being drawn, flat `[x, y, ...]` in world units.
@@ -594,7 +673,7 @@ impl Canvas {
     /// Make the selection one word. Returns the word's id ("" if nothing is
     /// selected).
     pub fn group_selection(&mut self) -> String {
-        let ids = self.engine.selection();
+        let ids = self.selected_strokes();
         if ids.is_empty() {
             return String::new();
         }
@@ -612,7 +691,7 @@ impl Canvas {
 
     /// Let the automatic word splitting handle the selection again.
     pub fn ungroup_selection(&mut self) -> bool {
-        let ids = self.engine.selection();
+        let ids = self.selected_strokes();
         let ok = self.engine.doc.ungroup(&ids);
         if ok {
             self.engine.invalidate();
@@ -711,11 +790,14 @@ impl Canvas {
         }
         let view = self.engine.camera.visible_world();
         let doc = &self.engine.doc;
+        let images: Vec<gl::ImageDraw> =
+            self.engine.image_placements().into_iter().map(|(_, file, rect)| gl::ImageDraw { rect, file }).collect();
         self.base.render_scene(
             &self.engine.camera,
             self.dpr,
             doc.background,
             paper_mode(&doc.paper),
+            &images,
             self.scene.visible(&view),
         );
     }
@@ -927,6 +1009,11 @@ impl NoteMirror {
 
     pub fn content_hash(&self) -> String {
         mirror::content_hash(self.inner.doc())
+    }
+
+    /// Store a picture file for the copy.
+    pub fn add_asset(&mut self, file: &str, bytes: Vec<u8>) {
+        self.inner.add_asset(file, bytes);
     }
 
     pub fn stroke_count(&self) -> usize {
