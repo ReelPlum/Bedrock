@@ -157,6 +157,8 @@ pub struct Engine {
     dirty: bool,
     /// Only the live stroke layer must be redrawn.
     live_dirty: bool,
+    /// Keeps the settled part of the live stroke's mesh between frames.
+    live: tessellate::LiveTessellator,
 }
 
 impl Engine {
@@ -180,6 +182,7 @@ impl Engine {
             pen_down: false,
             dirty: true,
             live_dirty: true,
+            live: tessellate::LiveTessellator::new(),
         }
     }
 
@@ -800,12 +803,24 @@ impl Engine {
         }
     }
 
-    /// Mesh of the live stroke including predicted samples.
-    pub fn live_mesh(&self) -> Option<Mesh> {
+    /// Mesh of the live stroke including predicted samples. Only the part
+    /// near the pen is rebuilt (see [`tessellate::LiveTessellator`]).
+    pub fn live_mesh(&mut self) -> Option<Mesh> {
+        let Some(Active::Drawing { stroke, .. }) = &self.active else { return None };
+        Some(self.live.mesh(stroke, &self.predicted))
+    }
+
+    /// Raw sample the per-frame rebuild of the live stroke starts at (0
+    /// until part of it has settled).
+    pub fn live_window_start(&self) -> usize {
+        self.live.window_start()
+    }
+
+    /// The live mesh rebuilt from the stroke's first sample: what
+    /// [`Engine::live_mesh`] must look like, at a cost that grows with the
+    /// stroke. For tests and measurements.
+    pub fn live_mesh_full(&self) -> Option<Mesh> {
         let s = self.live_stroke()?;
-        if self.predicted.is_empty() {
-            return Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &s.points)));
-        }
         let mut pts = s.points.clone();
         pts.extend_from_slice(&self.predicted);
         Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &pts)))
