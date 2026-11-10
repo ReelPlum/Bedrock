@@ -128,6 +128,10 @@ pub const TAP_MAX_MOVE: f64 = 12.0;
 /// Longest pause between the two taps of a double tap.
 pub const DOUBLE_TAP_GAP_MS: f64 = 350.0;
 
+/// The scribble preview is refreshed each time the live stroke has grown by
+/// this many samples (20 times a second at 240 Hz).
+pub const PREVIEW_EVERY: usize = 12;
+
 pub struct Engine {
     pub doc: Document,
     pub camera: Camera,
@@ -159,6 +163,11 @@ pub struct Engine {
     live_dirty: bool,
     /// Keeps the settled part of the live stroke's mesh between frames.
     live: tessellate::LiveTessellator,
+    /// What the stroke being drawn would erase if the pen lifted now (see
+    /// [`Engine::scribble_preview`]), and the stroke length it was worked
+    /// out at.
+    preview: Vec<StrokeId>,
+    preview_at: usize,
 }
 
 impl Engine {
@@ -183,6 +192,8 @@ impl Engine {
             dirty: true,
             live_dirty: true,
             live: tessellate::LiveTessellator::new(),
+            preview: Vec::new(),
+            preview_at: 0,
         }
     }
 
@@ -295,6 +306,8 @@ impl Engine {
                 let mut stroke = Stroke::new(id_, self.brush, s.time, Self::device(kind), Vec::new());
                 stroke.input_scale = 1.0 / self.camera.zoom;
                 stroke.push(self.to_input(&s, s.time));
+                self.preview.clear();
+                self.preview_at = 0;
                 self.active = Some(Active::Drawing { pointer: id, stroke, last_screen: s.pos() });
             }
             Tool::Lasso => {
@@ -355,6 +368,16 @@ impl Engine {
                 .sanitized();
                 stroke.push(p);
                 self.live_dirty = true;
+                // Would lifting the pen now erase something? Checked every
+                // few samples, so the ink can fade before it goes.
+                if self.scribble_erase
+                    && stroke.brush.kind != crate::brush::BrushKind::Highlighter
+                    && stroke.points.len() >= self.preview_at + PREVIEW_EVERY
+                {
+                    self.preview_at = stroke.points.len();
+                    self.preview =
+                        if scribble::is_scribble(stroke) { scribble::targets(&self.doc, stroke) } else { Vec::new() };
+                }
             }
             Some(Active::Erasing { pointer, last_world, mode }) if *pointer == id => {
                 let w = self.camera.screen_to_world(s.pos());
@@ -462,6 +485,9 @@ impl Engine {
             other => self.active = other,
         }
         self.predicted.clear();
+        if !self.is_drawing() {
+            self.preview.clear();
+        }
         self.dirty = true;
     }
 
@@ -478,6 +504,7 @@ impl Engine {
             }
             self.active = None;
             self.predicted.clear();
+            self.preview.clear();
             self.dirty = true;
         }
     }
@@ -803,6 +830,13 @@ impl Engine {
         }
     }
 
+    /// The strokes the scribble being drawn would erase if the pen lifted
+    /// now; empty while it is not (yet) a scribble over ink. The app fades
+    /// them, so the erase never comes as a surprise.
+    pub fn scribble_preview(&self) -> &[StrokeId] {
+        &self.preview
+    }
+
     /// Mesh of the live stroke including predicted samples. Only the part
     /// near the pen is rebuilt (see [`tessellate::LiveTessellator`]).
     pub fn live_mesh(&mut self) -> Option<Mesh> {
@@ -865,6 +899,56 @@ mod tests {
         assert_eq!(s.points[20].t, 80.0);
         assert_eq!(s.device, InputDevice::Pen);
         assert!(e.live_stroke().is_none());
+    }
+
+    #[test]
+    fn a_scribble_shows_what_it_will_erase_before_the_pen_lifts() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (140.0, 104.0), 0.0);
+        draw(&mut e, 1, PointerKind::Pen, (400.0, 400.0), (440.0, 400.0), 500.0);
+        let word = e.doc.strokes()[0].id;
+        // Scribble back and forth over the first stroke.
+        e.pointer_down(2, PointerKind::Pen, ScreenSample::new(95.0, 96.0, 0.5, 1000.0));
+        let mut seen_at = None;
+        for i in 1..=120 {
+            let pass = (i - 1) / 10;
+            let f = ((i - 1) % 10) as f64 / 9.0;
+            let x = if pass % 2 == 0 { 95.0 + 50.0 * f } else { 145.0 - 50.0 * f };
+            e.pointer_move(
+                2,
+                PointerKind::Pen,
+                ScreenSample::new(x, 96.0 + i as f64 * 0.1, 0.5, 1000.0 + i as f64 * 4.0),
+            );
+            if seen_at.is_none() && !e.scribble_preview().is_empty() {
+                seen_at = Some(i);
+            }
+            if i < 30 {
+                assert!(e.scribble_preview().is_empty(), "two or three passes are not a scribble yet");
+            }
+        }
+        assert!(seen_at.is_some(), "the preview never appeared");
+        assert_eq!(e.scribble_preview(), &[word], "only the ink under the scribble");
+        assert_eq!(e.doc.len(), 2, "nothing is erased while the pen is down");
+        e.pointer_up(2, PointerKind::Pen, None);
+        assert!(e.scribble_preview().is_empty());
+        assert_eq!(e.doc.len(), 1);
+        assert!(e.doc.strokes().iter().all(|s| s.id != word));
+
+        // Turned off: no preview either.
+        e.undo();
+        e.scribble_erase = false;
+        e.pointer_down(3, PointerKind::Pen, ScreenSample::new(95.0, 96.0, 0.5, 3000.0));
+        for i in 1..=120 {
+            let pass = (i - 1) / 10;
+            let f = ((i - 1) % 10) as f64 / 9.0;
+            let x = if pass % 2 == 0 { 95.0 + 50.0 * f } else { 145.0 - 50.0 * f };
+            e.pointer_move(
+                3,
+                PointerKind::Pen,
+                ScreenSample::new(x, 96.0 + i as f64 * 0.1, 0.5, 3000.0 + i as f64 * 4.0),
+            );
+        }
+        assert!(e.scribble_preview().is_empty());
     }
 
     #[test]

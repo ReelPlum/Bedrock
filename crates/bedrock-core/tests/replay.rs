@@ -43,6 +43,8 @@ fn replay(path: &str) -> (Engine, usize) {
                 }
             }
             "up" => e.pointer_up(id, kind, Some(s)),
+            // Traces recorded in the app ("Record a pen trace") have these.
+            "cancel" => e.pointer_cancel(id, kind),
             other => panic!("unknown event {other}"),
         }
     }

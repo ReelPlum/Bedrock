@@ -87,7 +87,7 @@ fn a_long_live_stroke_looks_like_a_full_rebuild() {
         Brush { stabilizer: 0.6, ..Brush::new(BrushKind::Pen, Rgba::BLACK, 2.5) },
     ];
     for brush in brushes {
-        let mut e = engine(brush.clone());
+        let mut e = engine(brush);
         let mut frozen_some = false;
         for i in 1..=3000 {
             e.pointer_move(1, PointerKind::Pen, sample(i));
@@ -143,7 +143,7 @@ fn the_cost_of_a_live_frame_does_not_grow_with_the_stroke() {
                 total += dt;
             }
         }
-        (total / ((to - from + 1) / 2) as f64, worst)
+        (total / (to - from).div_ceil(2) as f64, worst)
     };
     // The second second of ink, then the thirtieth.
     let (early, _) = time(&mut e, 1, 480);

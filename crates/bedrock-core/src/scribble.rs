@@ -130,17 +130,13 @@ pub fn targets(doc: &Document, scribble: &Stroke) -> Vec<StrokeId> {
     let pts: Vec<Vec2> = scribble.points.iter().map(|p| p.pos()).collect();
     let radius = (scribble.brush.size as f64 * 0.5).max(1.0);
     let area = ink_rect(&pts).inflate(radius * 2.0);
-    let mut hit: Vec<StrokeId> = Vec::new();
-    for w in pts.windows(2) {
-        for id in eraser::strokes_hit(doc.strokes(), w[0], w[1], radius) {
-            if !hit.contains(&id) {
-                hit.push(id);
-            }
-        }
-    }
+    // Only ink near the scribble can be hit: one cheap pass over the page,
+    // then the exact test on those few strokes (this also runs while the
+    // scribble is being drawn, see `Engine::scribble_preview`).
     doc.strokes()
         .iter()
-        .filter(|s| hit.contains(&s.id) && s.id != scribble.id)
+        .filter(|s| s.id != scribble.id && s.bounds().intersects(&area))
+        .filter(|s| pts.windows(2).any(|w| eraser::touches(s, w[0], w[1], radius)))
         .filter(|s| {
             let n = s.points.iter().filter(|p| area.contains(p.pos())).count();
             n as f64 >= s.points.len() as f64 * COVERED_SHARE

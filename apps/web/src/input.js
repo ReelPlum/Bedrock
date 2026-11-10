@@ -79,6 +79,12 @@ export class InputController {
     this.frameRequested = false;
     this.lastInputTime = 0;
     this.latency = { last: 0, avg: 0, samples: 0 };
+    // Frame pacing while something is moving: the time between frames (so
+    // 8.3 ms on a 120 Hz screen, 16.7 ms where the browser holds pages to
+    // 60), the slowest recent frame, and Bedrock's own drawing time.
+    this.frames = { interval: 0, worst: 0, work: 0, recent: [], lastTs: 0 };
+    // Pen trace being recorded (see startTrace), or null.
+    this.trace = null;
     this.active = new Map(); // pointerId -> kind
     this.lastPressure = new Map();
     this.prediction = true;
@@ -95,9 +101,11 @@ export class InputController {
   requestFrame() {
     if (this.frameRequested) return;
     this.frameRequested = true;
-    requestAnimationFrame(() => {
+    requestAnimationFrame((ts) => {
       this.frameRequested = false;
+      const began = performance.now();
       const drew = this.canvas.render();
+      if (drew) this._pace(ts, performance.now() - began);
       if (drew && this.lastInputTime) {
         const l = performance.now() - this.lastInputTime;
         this.latency.last = l;
@@ -110,6 +118,50 @@ export class InputController {
     });
   }
 
+  /** Frame statistics, from frames that follow each other directly. */
+  _pace(ts, work) {
+    const f = this.frames;
+    const gap = ts - f.lastTs;
+    f.lastTs = ts;
+    f.work += (work - f.work) / 20;
+    if (gap <= 0 || gap > 100) return; // the first frame after a rest
+    f.recent.push(gap);
+    if (f.recent.length > 120) f.recent.shift();
+    const sorted = [...f.recent].sort((a, b) => a - b);
+    f.interval = sorted[sorted.length >> 1];
+    f.worst = sorted[sorted.length - 1];
+  }
+
+  /** Start recording what the pen, fingers and mouse do, exactly as it is
+   *  passed to the engine. */
+  startTrace() {
+    const [x, y, zoom] = this.canvas.camera();
+    this.trace = {
+      description: `Recorded in Bedrock, ${new Date().toISOString()}. ${navigator.userAgent}`,
+      viewport: [this.rect.width, this.rect.height],
+      dpr: window.devicePixelRatio || 1,
+      camera: [x, y, zoom],
+      events: [],
+    };
+  }
+
+  /** Stop recording. Returns the trace, in the shape of the engine's replay
+   *  fixtures (crates/bedrock-core/tests/fixtures), or null. */
+  stopTrace() {
+    const t = this.trace;
+    this.trace = null;
+    if (!t) return null;
+    const pen = t.events.filter((e) => e.kind === 'pen' && e.type === 'move');
+    const span = pen.length > 1 ? pen[pen.length - 1].time - pen[0].time : 0;
+    t.pen_samples = pen.length;
+    t.duration_ms = span;
+    return t;
+  }
+
+  _record(type, id, kind, s) {
+    if (this.trace) this.trace.events.push({ type, kind, id, x: s.x, y: s.y, pressure: s.pressure, altitude: s.altitude, azimuth: s.azimuth, time: s.time });
+  }
+
   /** End the active pointer. The up event's own position is not added for
    *  pens: it is reported after lift-off and would draw a tail. */
   _finish(e, cancelled) {
@@ -119,6 +171,7 @@ export class InputController {
     this.active.delete(e.pointerId);
     this.lastPressure.delete(e.pointerId);
     if (cancelled) {
+      this._record('cancel', e.pointerId, kind, sampleFrom(e, this.rect));
       this.canvas.pointer_cancel(e.pointerId, kind);
     } else {
       const s = sampleFrom(e, this.rect);
@@ -143,6 +196,7 @@ export class InputController {
     // Opened a menu: this touch is not ink (or a pan) after all.
     this.active.delete(id);
     this.lastPressure.delete(id);
+    this._record('cancel', id, kind, { x: p.x, y: p.y, pressure: 0, altitude: 0, azimuth: 0, time: performance.timeOrigin + performance.now() });
     this.canvas.pointer_cancel(id, kind);
     this.requestFrame();
   }
@@ -171,6 +225,7 @@ export class InputController {
   }
 
   _send(method, id, kind, s) {
+    this._record(method.slice(8), id, kind, s);
     this.canvas[method](id, kind, s.x, s.y, s.pressure, s.altitude, s.azimuth, s.time);
   }
 

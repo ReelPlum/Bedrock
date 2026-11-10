@@ -42,6 +42,10 @@ fn paper_mode(p: &str) -> i32 {
     }
 }
 
+/// How strongly ink about to be scribbled out is covered by the paper's
+/// colour (it stays readable, clearly on its way out).
+const SCRIBBLE_VEIL: f32 = 0.7;
+
 fn seed(hi: u32, lo: u32) -> u64 {
     ((hi as u64) << 32) | lo as u64
 }
@@ -57,6 +61,9 @@ pub struct Canvas {
     dpr: f64,
     /// Geometry of the selection being dragged, built once per drag.
     floating: Option<(Vec<bedrock_core::stroke::StrokeId>, ChunkMesh)>,
+    /// A veil in the paper's colour over the ink a scribble is about to
+    /// erase, built once per set of strokes.
+    veil: Option<(Vec<bedrock_core::stroke::StrokeId>, ChunkMesh)>,
 }
 
 #[wasm_bindgen]
@@ -78,6 +85,7 @@ impl Canvas {
             css: (1.0, 1.0),
             dpr: 1.0,
             floating: None,
+            veil: None,
         })
     }
 
@@ -708,6 +716,12 @@ impl Canvas {
         self.engine.scribble_erase = on;
     }
 
+    /// How many strokes the scribble being drawn would erase if the pen
+    /// lifted now (they are shown faded).
+    pub fn scribble_preview(&self) -> usize {
+        self.engine.scribble_preview().len()
+    }
+
     /// A finger gesture for the app, once: "toggle-eraser" or "".
     pub fn take_gesture(&mut self) -> String {
         match self.engine.take_gesture() {
@@ -822,9 +836,22 @@ impl Canvas {
             return;
         }
         self.floating = None;
+        // Ink the scribble being drawn would erase is faded: its strokes
+        // again, in the paper's colour, under the scribble itself.
+        let fading = self.engine.scribble_preview().to_vec();
+        if fading.is_empty() {
+            self.veil = None;
+        } else if self.veil.as_ref().is_none_or(|(k, _)| *k != fading) {
+            let mut cm = ChunkMesh::default();
+            let paper = self.engine.doc.background;
+            for s in self.engine.doc.strokes().iter().filter(|s| fading.contains(&s.id)) {
+                cm.append_tinted(&bedrock_core::tessellate::mesh(s), paper, SCRIBBLE_VEIL);
+            }
+            self.veil = Some((fading, cm));
+        }
         let mesh = match (self.engine.live_mesh(), self.engine.live_stroke()) {
             (Some(m), Some(s)) => {
-                let mut cm = ChunkMesh::default();
+                let mut cm = self.veil.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
                 cm.append_mesh(&m, s);
                 Some(cm)
             }

@@ -72,6 +72,22 @@ impl ChunkMesh {
         self.strokes += 1;
     }
 
+    /// Append a stroke's capsules in another colour, `alpha` times as
+    /// opaque (e.g. a veil in the paper's colour over ink about to go).
+    pub fn append_tinted(&mut self, m: &tessellate::Mesh, color: crate::color::Rgba, alpha: f32) {
+        if self.segments.is_empty() {
+            self.origin = m.origin;
+        }
+        let dx = (m.origin.x - self.origin.x) as f32;
+        let dy = (m.origin.y - self.origin.y) as f32;
+        let order = self.strokes as f32;
+        for g in &m.segments {
+            self.segments.extend_from_slice(&[g.a[0] + dx, g.a[1] + dy, g.b[0] + dx, g.b[1] + dy, g.ra, g.rb, order]);
+            self.colors.extend_from_slice(&[color.r, color.g, color.b, unorm(alpha), unorm(alpha), 0, 0, 0]);
+        }
+        self.strokes += 1;
+    }
+
     /// World-space bounds of everything in the chunk.
     pub fn bounds(&self) -> Rect {
         let mut r = Rect::EMPTY;
