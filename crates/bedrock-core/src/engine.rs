@@ -168,6 +168,10 @@ pub struct Engine {
     /// out at.
     preview: Vec<StrokeId>,
     preview_at: usize,
+    /// Strokes held up off the paper (their menu is open): drawn on the
+    /// live layer, grown by `lift_scale` around their middle.
+    lifted: Vec<StrokeId>,
+    lift_scale: f64,
 }
 
 impl Engine {
@@ -194,6 +198,8 @@ impl Engine {
             live: tessellate::LiveTessellator::new(),
             preview: Vec::new(),
             preview_at: 0,
+            lifted: Vec::new(),
+            lift_scale: 1.0,
         }
     }
 
@@ -730,13 +736,46 @@ impl Engine {
     }
 
     /// Strokes the base layer must leave out right now: the selection while
-    /// it is dragged (it is drawn on the live layer instead).
+    /// it is dragged, or the lifted strokes (they are drawn on the live
+    /// layer instead).
     pub fn floating(&self) -> &[StrokeId] {
         if self.drag_offset().is_some() {
             &self.selection
         } else {
-            &[]
+            &self.lifted
         }
+    }
+
+    /// Hold these strokes up off the paper, grown `scale` times around
+    /// their middle (1 = their own size). An empty list puts them back.
+    pub fn set_lift(&mut self, ids: &[StrokeId], scale: f64) {
+        let ids: Vec<StrokeId> = ids.iter().copied().filter(|id| self.doc.strokes().iter().any(|s| s.id == *id)).collect();
+        let scale = if scale.is_finite() { scale.clamp(0.5, 2.0) } else { 1.0 };
+        if ids != self.lifted {
+            self.lifted = ids;
+            self.dirty = true;
+        } else if scale != self.lift_scale {
+            self.live_dirty = true;
+        }
+        self.lift_scale = scale;
+    }
+
+    /// The lifted strokes' scale and the point it grows from (the middle of
+    /// their bounds), while some are lifted and none is being dragged.
+    pub fn lift(&self) -> Option<(f64, Vec2)> {
+        if self.lifted.is_empty() || self.drag_offset().is_some() {
+            return None;
+        }
+        let mut b: Option<Rect> = None;
+        for s in self.doc.strokes().iter().filter(|s| self.lifted.contains(&s.id)) {
+            let r = s.bounds();
+            b = Some(match b {
+                Some(a) => Rect { min: Vec2::new(a.min.x.min(r.min.x), a.min.y.min(r.min.y)), max: Vec2::new(a.max.x.max(r.max.x), a.max.y.max(r.max.y)) },
+                None => r,
+            });
+        }
+        let b = b?;
+        Some((self.lift_scale, Vec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0)))
     }
 
     /// Delete the selected strokes (one undo step).
@@ -1442,4 +1481,25 @@ mod tests {
         let r = e.doc.image(id).unwrap().rect();
         assert!((r.width() - 50.0).abs() < 1e-9, "100 px at 200% is 50 world units: {r:?}");
     }
+
+    #[test]
+    fn lifted_strokes_float_grown_around_their_middle() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (140.0, 120.0), 0.0);
+        let a = e.doc.strokes()[0].id;
+        e.mark_rendered();
+        e.set_lift(&[a], 1.0);
+        assert_eq!(e.floating(), &[a], "left out of the paper layer");
+        assert!(e.needs_scene_render());
+        e.mark_rendered();
+        e.set_lift(&[a], 1.06);
+        assert!(!e.needs_scene_render() && e.needs_live_render(), "growing only redraws the live layer");
+        let (k, c) = e.lift().unwrap();
+        assert_eq!(k, 1.06);
+        let b = e.doc.strokes()[0].bounds();
+        assert_eq!(c, Vec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0));
+        e.set_lift(&[StrokeId(u64::MAX)], 1.0);
+        assert!(e.floating().is_empty() && e.lift().is_none(), "unknown ids lift nothing; the stroke is put back");
+    }
+
 }

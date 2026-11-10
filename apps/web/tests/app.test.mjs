@@ -2009,57 +2009,81 @@ test('“Show latency” reports the frame rate, and a pen trace can be recorded
   await ctx.close();
 });
 
-test('the main menu fits a short screen and scrolls; the word menu lifts off the paper when it opens', async () => {
+test('the main menu fits a short screen and scrolls', async () => {
   const { page, ctx, errors } = await openApp(env, { viewport: { width: 1024, height: 420 } });
   const r = await page.evaluate(async () => {
     const out = {};
     document.getElementById('btn-menu').click();
     await t.frame();
     const menu = document.getElementById('menu');
-    const box = menu.getBoundingClientRect();
     out.menuOpen = !menu.hidden;
-    out.bottom = box.bottom;
+    out.bottom = menu.getBoundingClientRect().bottom;
     out.vh = innerHeight;
     out.overflows = menu.scrollHeight > menu.clientHeight + 20;
     menu.scrollTop = menu.scrollHeight;
     out.scrolled = menu.scrollTop > 0;
     const items = [...menu.querySelectorAll('button, a')].filter((b) => b.offsetParent);
-    const last = items[items.length - 1].getBoundingClientRect();
-    out.lastVisible = last.bottom <= menu.getBoundingClientRect().bottom + 1;
-    menu.hidden = true;
-
-    const wm = document.getElementById('word-menu');
-    bedrock.wordMenu.open({ id: null, bounds: [300, 200, 420, 240], kind: 'text', text: null, link: null });
-    const anim = wm.getAnimations().find((a) => a.animationName === 'wm-lift');
-    out.lifting = wm.classList.contains('lifting') && !!anim;
-    anim.pause();
-    anim.currentTime = 40;
-    out.scaleEarly = parseFloat(getComputedStyle(wm).scale);
-    anim.finish();
-    out.scaleEnd = getComputedStyle(wm).scale;
-    out.shadow = getComputedStyle(wm).boxShadow;
-    // It grows from its top edge when it sits below the word, else from its bottom edge.
-    const [, oy, zoom] = bedrock.canvas.camera();
-    const wordBottom = document.getElementById('stage').getBoundingClientRect().top + (240 - oy) * zoom;
-    const below = wm.getBoundingClientRect().top >= wordBottom;
-    const originY = parseFloat(getComputedStyle(wm).transformOrigin.split(' ')[1]);
-    out.originFacesWord = below ? originY === 0 : Math.abs(originY - wm.offsetHeight) < 1;
-    // Opening again plays it again.
-    bedrock.wordMenu.close();
-    bedrock.wordMenu.open({ id: null, bounds: [300, 200, 420, 240], kind: 'text', text: null, link: null });
-    out.again = wm.getAnimations().some((a) => a.animationName === 'wm-lift' && a.playState === 'running');
+    out.lastVisible = items[items.length - 1].getBoundingClientRect().bottom <= menu.getBoundingClientRect().bottom + 1;
     return out;
   });
   assert.ok(r.menuOpen);
   assert.ok(r.bottom <= r.vh, `menu ends on screen: ${r.bottom} <= ${r.vh}`);
   assert.ok(r.overflows, 'menu content is taller than the short screen, so it scrolls');
   assert.ok(r.scrolled && r.lastVisible, 'the last item can be scrolled into view');
-  assert.ok(r.lifting, 'the lift animation runs');
-  assert.ok(r.scaleEarly < 0.97, `starts smaller: ${r.scaleEarly}`);
-  assert.ok(r.scaleEnd === '1' || r.scaleEnd === 'none', `ends at full size: ${r.scaleEnd}`);
-  assert.match(r.shadow, /18px 40px/, 'a deep drop shadow once lifted');
-  assert.ok(r.originFacesWord, 'grows out of the side facing the word');
-  assert.ok(r.again, 'replays on every open');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('holding a stroke lifts it: it grows around its middle and casts a shadow; its menu just appears', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const c = bedrock.canvas;
+    bedrock.minimap.visible = false;
+    // A horizontal bar from x 300 to 500 at y 300: its middle is x 400.
+    t.ev('pointerdown', 1, 'pen', 300, 300, { pressure: 0.6 });
+    for (let j = 1; j <= 20; j++) t.ev('pointermove', 1, 'pen', 300 + j * 10, 300, { pressure: 0.6 });
+    t.ev('pointerup', 1, 'pen', 500, 300, { pressure: 0 });
+    await t.frame();
+    // Where the ink ends along the bar's row, on the paper layer and on the ink layer.
+    const extent = (read) => {
+      let lo = -1, hi = -1;
+      for (let x = 250; x <= 550; x += 1) {
+        const p = read(x);
+        if (p) { if (lo < 0) lo = x; hi = x; }
+      }
+      return [lo, hi];
+    };
+    const onPaper = (x) => c.pixel_at(x, 300)[0] < 128;
+    const onInk = (x) => { const p = c.overlay_pixel_at(x, 300); return p[3] > 128; };
+    const out = { before: extent(onPaper) };
+    const wm = document.getElementById('word-menu');
+    const sid = JSON.parse(c.words_json()).flatMap((w) => w.strokes)[0];
+    out.hasId = !!sid;
+    bedrock.wordMenu.open({ id: null, bounds: [300, 290, 500, 310], kind: 'text', text: null, link: null, strokes: [sid] });
+    out.menuAnims = wm.getAnimations().length;
+    out.menuShadow = getComputedStyle(wm).boxShadow;
+    await new Promise((res) => setTimeout(res, 300));
+    out.after = extent(onInk);
+    out.offPaper = !onPaper(400);
+    out.filter = getComputedStyle(document.getElementById('overlay')).filter;
+    bedrock.wordMenu.close();
+    await t.frame();
+    out.back = extent(onPaper);
+    out.inkBack = onPaper(400) && !onInk(400);
+    out.filterBack = document.getElementById('overlay').classList.contains('lifted');
+    return out;
+  });
+  assert.ok(r.hasId && r.before[0] > 0, `the stroke is on the paper: ${r.before}`);
+  assert.equal(r.menuAnims, 0, 'the menu itself does not animate');
+  assert.doesNotMatch(r.menuShadow, /18px 40px/, 'the menu keeps its normal shadow');
+  assert.ok(r.offPaper, 'while held, the stroke is drawn on the ink layer, not the paper');
+  const grow = (r.after[1] - r.after[0]) - (r.before[1] - r.before[0]);
+  assert.ok(grow > 6, `it grows: ${r.before} -> ${r.after}`);
+  const mid = (a) => (a[0] + a[1]) / 2;
+  assert.ok(Math.abs(mid(r.after) - mid(r.before)) < 1.5, `around its middle: ${mid(r.before)} vs ${mid(r.after)}`);
+  assert.match(r.filter, /drop-shadow/, 'it casts a drop shadow');
+  assert.ok(r.inkBack && !r.filterBack, 'closing the menu puts it back');
+  assert.ok(Math.abs((r.back[1] - r.back[0]) - (r.before[1] - r.before[0])) < 1, `back at its own size: ${r.back}`);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

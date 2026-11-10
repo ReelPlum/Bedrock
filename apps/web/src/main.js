@@ -226,6 +226,7 @@ async function main() {
   const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     onChange: wordChanged,
+    requestFrame: () => input.requestFrame(),
     // What the recogniser made of a word, for the word's menu.
     describe: (w) => {
       if (w.text != null) {

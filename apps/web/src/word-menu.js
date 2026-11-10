@@ -6,14 +6,19 @@
 
 import { LINK_TYPES, linkType } from './links.js';
 
+/** How much a held stroke grows as it lifts, and how long that takes. */
+const LIFT_SCALE = 1.06;
+const LIFT_MS = 160;
+
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
+    this.requestFrame = requestFrame || (() => {});
     this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
     const $ = (id) => el.querySelector(`#${id}`);
@@ -189,17 +194,37 @@ export class WordMenu {
     this._show('main');
     this.el.hidden = false;
     this._place();
-    this._lift();
+    this._lift(selection?.strokes?.length ? selection.strokes : word.strokes || []);
   }
 
-  /** Play the "lifts off the paper" animation again from the start. */
-  _lift() {
-    this.el.classList.remove('lifting');
-    void this.el.offsetWidth;
-    this.el.classList.add('lifting');
+  /**
+   * The held strokes lift off the paper while their menu is open: they grow
+   * a little around their middle and cast a drop shadow (on the ink layer).
+   */
+  _lift(ids) {
+    cancelAnimationFrame(this._liftFrame);
+    const overlay = document.getElementById('overlay');
+    if (!ids.length) {
+      this.canvas.set_lift([], 1);
+      overlay?.classList.remove('lifted');
+      this.requestFrame();
+      return;
+    }
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const t0 = performance.now();
+    const step = () => {
+      const t = still ? 1 : Math.min(1, (performance.now() - t0) / LIFT_MS);
+      const ease = 1 - (1 - t) ** 3;
+      this.canvas.set_lift(ids, 1 + (LIFT_SCALE - 1) * ease);
+      this.requestFrame();
+      if (t < 1) this._liftFrame = requestAnimationFrame(step);
+    };
+    step();
+    overlay?.classList.add('lifted');
   }
 
   close() {
+    if (!this.el.hidden) this._lift([]);
     this.el.hidden = true;
     this.word = null;
     this.selection = null;
@@ -274,9 +299,5 @@ export class WordMenu {
     const x = Math.max(12, Math.min(left, vw - mw - 12));
     const y = bottom + 10 + mh < vh - 12 ? bottom + 10 : Math.max(12, top - 10 - mh);
     this.el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-    // Grow out of the word: from its left edge, at the side that faces it.
-    const below = y >= bottom;
-    const ox2 = Math.max(16, Math.min(left - x + 16, mw - 16));
-    this.el.style.transformOrigin = `${Math.round(ox2)}px ${below ? 0 : mh}px`;
   }
 }

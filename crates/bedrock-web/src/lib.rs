@@ -656,6 +656,14 @@ impl Canvas {
     }
 
     /// `[dx, dy]` (world) while the selection is being dragged, else `[]`.
+    /// Hold strokes (ids as in `words_json` / `selection_json`) up off the
+    /// paper, grown `scale` times around their middle; `[]` puts them back.
+    pub fn set_lift(&mut self, ids: Vec<String>, scale: f64) {
+        let wanted: Vec<bedrock_core::stroke::StrokeId> =
+            self.engine.doc.strokes().iter().map(|s| s.id).filter(|id| ids.contains(&id.to_string())).collect();
+        self.engine.set_lift(&wanted, scale);
+    }
+
     pub fn drag_offset(&self) -> Vec<f64> {
         self.engine.drag_offset().map(|d| vec![d.x, d.y]).unwrap_or_default()
     }
@@ -817,9 +825,11 @@ impl Canvas {
     }
 
     fn render_live(&mut self) {
-        if let Some(delta) = self.engine.drag_offset() {
+        let lift = self.engine.lift();
+        if self.engine.drag_offset().is_some() || lift.is_some() {
             // The dragged selection: tessellated once, then drawn shifted
-            // by moving the camera the other way.
+            // by moving the camera the other way. Lifted strokes: drawn
+            // grown around their middle by zooming the camera there.
             let ids = self.engine.floating().to_vec();
             if self.floating.as_ref().is_none_or(|(k, _)| *k != ids) {
                 let mut cm = ChunkMesh::default();
@@ -830,7 +840,12 @@ impl Canvas {
                 self.floating = Some((ids, cm));
             }
             let mut cam = self.engine.camera;
-            cam.offset = cam.offset - delta;
+            if let Some(delta) = self.engine.drag_offset() {
+                cam.offset = cam.offset - delta;
+            } else if let Some((k, c)) = lift {
+                cam.offset = c - (c - cam.offset) * (1.0 / k);
+                cam.zoom *= k;
+            }
             let mesh = self.floating.as_ref().map(|(_, m)| m);
             self.overlay.render_live(&cam, self.dpr, mesh);
             return;
@@ -865,6 +880,13 @@ impl Canvas {
     pub fn pixel_at(&mut self, css_x: f64, css_y: f64) -> Vec<u8> {
         self.render_scene();
         self.base.read_pixel((css_x * self.dpr) as i32, (css_y * self.dpr) as i32)
+    }
+
+    /// Test hook: draw the live (ink) layer now and read its pixel at a CSS
+    /// position as `[r, g, b, a]`.
+    pub fn overlay_pixel_at(&mut self, css_x: f64, css_y: f64) -> Vec<u8> {
+        self.render_live();
+        self.overlay.read_pixel((css_x * self.dpr) as i32, (css_y * self.dpr) as i32)
     }
 
     pub fn chunk_count(&self) -> usize {
