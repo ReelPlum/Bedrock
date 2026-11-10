@@ -22,56 +22,76 @@ pub const MIN_DENSITY: f64 = 3.5;
 /// Share of a stroke's samples that must lie under the scribble.
 pub const COVERED_SHARE: f64 = 0.6;
 
-/// Most a scribble may turn in one direction overall (radians): a zigzag's
-/// turns cancel out, a loop drawn round and round adds up 2π per lap.
-pub const MAX_NET_TURNING: f64 = std::f64::consts::TAU * 1.5;
+/// Most a scribble may loop the same way round, in laps: a zigzag's turns
+/// alternate and cancel out, a loop drawn round and round (circling a word,
+/// cursive "eee") adds one lap each time.
+pub const MAX_LAPS: f64 = 1.5;
+/// A turn counts as a full half lap once the pass leaving it runs this far
+/// (as a share of the shortest pass that counts) beside the pass that came
+/// in, and in proportion below that: a reversal back along the same line
+/// has no side at all.
+pub const OPEN_TURN: f64 = 0.25;
 
-/// Sum of signed turning angles along the path.
-fn net_turning(points: &[Vec2]) -> f64 {
-    let mut total = 0.0;
-    let mut prev: Option<Vec2> = None;
-    for w in points.windows(2) {
-        let d = w[1] - w[0];
-        if d.length() < 1e-9 {
-            continue;
-        }
-        if let Some(p) = prev {
-            let a = (p.x * d.y - p.y * d.x).atan2(p.x * d.x + p.y * d.y);
-            // Turning straight back has no side: count it as neither.
-            if a.abs() < std::f64::consts::PI * 0.9 {
-                total += a;
-            }
-        }
-        prev = Some(d);
-    }
-    total
+/// The turns of a path along one axis.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Turns {
+    /// Back-and-forth turns.
+    count: usize,
+    /// Net laps: each turn is half a lap one way or the other, by the side
+    /// the pen left on.
+    laps: f64,
 }
 
-/// Turns along an axis (`along` picks the coordinate) with hysteresis: a
-/// turn counts once the pen has come back by `min_pass`.
-fn turns(points: &[Vec2], along: impl Fn(Vec2) -> f64, min_pass: f64) -> usize {
+/// Turns along an axis (`along` picks the coordinate, `across` the other
+/// one) with hysteresis: a turn counts once the pen has come back by
+/// `min_pass`. Passes are measured from the stroke's own extremes, so it
+/// makes no difference where between them the pen first touched down.
+///
+/// Which way a turn goes round is read from the two passes that meet in it,
+/// half a pass away from the turn itself, never from the angle at its tip:
+/// a tight reversal's tip angle is close to 180 degrees, and whether that is
+/// "left" or "right" there is decided by sampling and noise.
+fn turns(points: &[Vec2], along: impl Fn(Vec2) -> f64, across: impl Fn(Vec2) -> f64, min_pass: f64) -> Turns {
+    let mut out = Turns::default();
     if points.len() < 3 || min_pass <= 0.0 {
-        return 0;
+        return out;
     }
-    let mut n = 0;
     let mut dir = 0.0f64; // +1 / -1 once moving
-    let mut extreme = along(points[0]);
-    for p in &points[1..] {
+    let (mut lo, mut hi) = (along(points[0]), along(points[0]));
+    let mut extreme = lo;
+    let mut extreme_at = 0usize;
+    for (i, p) in points.iter().enumerate().skip(1) {
         let v = along(*p);
         if dir == 0.0 {
-            if (v - extreme).abs() >= min_pass {
-                dir = (v - extreme).signum();
+            // Not moving yet: wait until the pen has covered a pass's worth
+            // of ground, whichever way it wandered first.
+            lo = lo.min(v);
+            hi = hi.max(v);
+            if hi - lo >= min_pass {
+                dir = if v >= hi { 1.0 } else { -1.0 };
                 extreme = v;
+                extreme_at = i;
             }
         } else if (v - extreme) * dir > 0.0 {
             extreme = v;
+            extreme_at = i;
         } else if (extreme - v) * dir >= min_pass {
-            n += 1;
+            out.count += 1;
+            // The pass in, at the same depth the pass out has reached now.
+            let level = extreme - dir * min_pass;
+            let before = points[..extreme_at].iter().rposition(|q| (along(*q) - level) * dir <= 0.0);
+            if let Some(b) = before {
+                // In proportion, not all or nothing: a zigzag's turns are
+                // all about equally open, so they cancel whatever the size.
+                let side = dir * (across(*p) - across(points[b]));
+                out.laps += 0.5 * (side / (OPEN_TURN * min_pass)).clamp(-1.0, 1.0);
+            }
             dir = -dir;
             extreme = v;
+            extreme_at = i;
         }
     }
-    n
+    out
 }
 
 fn ink_rect(points: &[Vec2]) -> Rect {
@@ -96,14 +116,13 @@ pub fn is_scribble(stroke: &Stroke) -> bool {
     if length < size * MIN_DENSITY {
         return false;
     }
-    // Going round and round (circling something for emphasis) also turns
-    // back and forth along each axis, but always turns the same way.
-    if net_turning(&pts).abs() > MAX_NET_TURNING {
-        return false;
-    }
-    let tx = turns(&pts, |p| p.x, r.width() * PASS_SHARE);
-    let ty = turns(&pts, |p| p.y, r.height() * PASS_SHARE);
-    tx.max(ty) >= MIN_TURNS
+    let tx = turns(&pts, |p| p.x, |p| p.y, r.width() * PASS_SHARE);
+    let ty = turns(&pts, |p| p.y, |p| p.x, r.height() * PASS_SHARE);
+    let t = if tx.count >= ty.count { tx } else { ty };
+    // Going round and round (circling something for emphasis, a row of
+    // cursive loops) also turns back and forth along an axis, but always
+    // the same way round.
+    t.count >= MIN_TURNS && t.laps.abs() <= MAX_LAPS
 }
 
 /// The strokes a scribble erases: touched by it and mostly under it.
@@ -200,6 +219,88 @@ mod tests {
             })
             .collect();
         assert!(!is_scribble(&stroke(&mut d, &circle)), "circling is not scribbling");
+    }
+
+    /// A hand-like scribble at 240 Hz: a sine back and forth over
+    /// `2 * half` units, drifting down, with digitiser jitter. `phase` 0
+    /// starts in the middle of its width, a quarter turn starts at an edge.
+    fn wavy(half: f64, rad_per_s: f64, secs: f64, jitter: f64, phase: f64) -> Vec<(f64, f64)> {
+        (0..=(secs * 240.0) as usize)
+            .map(|i| {
+                let t = i as f64 / 240.0;
+                (
+                    300.0 + half * (t * rad_per_s + phase).sin() + (i as f64 * 0.37).sin() * jitter,
+                    300.0 + t * 12.0 + (i as f64 * 0.91).cos() * jitter,
+                )
+            })
+            .collect()
+    }
+
+    /// Bug: tight scribbles were missed at random. The side of each
+    /// reversal was read from the angle at its tip (close to 180 degrees,
+    /// so its sign was noise), and the sum drifted past the "going round in
+    /// circles" limit: 41 of 400 of these were missed starting at an edge,
+    /// 107 of 400 starting in the middle (where the first passes were not
+    /// counted either).
+    #[test]
+    fn tight_scribbles_are_recognised_wherever_they_start() {
+        let mut d = Document::new(1);
+        let mut missed = Vec::new();
+        for phase in [0.0, std::f64::consts::FRAC_PI_2] {
+            for half in [15.0, 20.0, 30.0, 40.0, 60.0] {
+                for speed in [20.0, 25.0, 30.0, 38.0] {
+                    for secs in [1.5, 2.0, 2.5, 3.0, 4.0] {
+                        for jitter in [0.0, 0.1, 0.2, 0.4] {
+                            if !is_scribble(&stroke(&mut d, &wavy(half, speed, secs, jitter, phase))) {
+                                missed.push((phase, half, speed, secs, jitter));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "{} of 800 scribbles missed, e.g. {:?}",
+            missed.len(),
+            &missed[..missed.len().min(5)]
+        );
+    }
+
+    /// Loops all drawn the same way round are writing or emphasis, not a
+    /// scribble, however many there are and however noisy the pen.
+    #[test]
+    fn loops_are_not_scribbles() {
+        let mut d = Document::new(1);
+        for jitter in [0.0, 0.2, 0.4] {
+            // A row of cursive "e" / "l" loops moving right.
+            for (advance, w, h) in [(8.0, 6.0, 12.0), (6.0, 5.0, 24.0), (4.0, 8.0, 16.0)] {
+                let loops: Vec<_> = (0..12 * 40)
+                    .map(|i| {
+                        let a = i as f64 / 40.0 * std::f64::consts::TAU;
+                        (
+                            100.0
+                                + advance * a / std::f64::consts::TAU
+                                + w * a.sin()
+                                + (i as f64 * 0.37).sin() * jitter,
+                            100.0 - h * (1.0 - a.cos()) * 0.5 + (i as f64 * 0.91).cos() * jitter,
+                        )
+                    })
+                    .collect();
+                assert!(!is_scribble(&stroke(&mut d, &loops)), "cursive loops {advance} {w} {h}, jitter {jitter}");
+            }
+            // Circling something several times, as an ellipse.
+            let ring: Vec<_> = (0..200)
+                .map(|i| {
+                    let a = i as f64 / 40.0 * std::f64::consts::TAU;
+                    (
+                        50.0 + 60.0 * a.cos() + (i as f64 * 0.37).sin() * jitter,
+                        50.0 + 20.0 * a.sin() + (i as f64 * 0.91).cos() * jitter,
+                    )
+                })
+                .collect();
+            assert!(!is_scribble(&stroke(&mut d, &ring)), "circling, jitter {jitter}");
+        }
     }
 
     #[test]
