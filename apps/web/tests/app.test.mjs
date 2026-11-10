@@ -2008,3 +2008,58 @@ test('“Show latency” reports the frame rate, and a pen trace can be recorded
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('the main menu fits a short screen and scrolls; the word menu lifts off the paper when it opens', async () => {
+  const { page, ctx, errors } = await openApp(env, { viewport: { width: 1024, height: 420 } });
+  const r = await page.evaluate(async () => {
+    const out = {};
+    document.getElementById('btn-menu').click();
+    await t.frame();
+    const menu = document.getElementById('menu');
+    const box = menu.getBoundingClientRect();
+    out.menuOpen = !menu.hidden;
+    out.bottom = box.bottom;
+    out.vh = innerHeight;
+    out.overflows = menu.scrollHeight > menu.clientHeight + 20;
+    menu.scrollTop = menu.scrollHeight;
+    out.scrolled = menu.scrollTop > 0;
+    const items = [...menu.querySelectorAll('button, a')].filter((b) => b.offsetParent);
+    const last = items[items.length - 1].getBoundingClientRect();
+    out.lastVisible = last.bottom <= menu.getBoundingClientRect().bottom + 1;
+    menu.hidden = true;
+
+    const wm = document.getElementById('word-menu');
+    bedrock.wordMenu.open({ id: null, bounds: [300, 200, 420, 240], kind: 'text', text: null, link: null });
+    const anim = wm.getAnimations().find((a) => a.animationName === 'wm-lift');
+    out.lifting = wm.classList.contains('lifting') && !!anim;
+    anim.pause();
+    anim.currentTime = 40;
+    out.scaleEarly = parseFloat(getComputedStyle(wm).scale);
+    anim.finish();
+    out.scaleEnd = getComputedStyle(wm).scale;
+    out.shadow = getComputedStyle(wm).boxShadow;
+    // It grows from its top edge when it sits below the word, else from its bottom edge.
+    const [, oy, zoom] = bedrock.canvas.camera();
+    const wordBottom = document.getElementById('stage').getBoundingClientRect().top + (240 - oy) * zoom;
+    const below = wm.getBoundingClientRect().top >= wordBottom;
+    const originY = parseFloat(getComputedStyle(wm).transformOrigin.split(' ')[1]);
+    out.originFacesWord = below ? originY === 0 : Math.abs(originY - wm.offsetHeight) < 1;
+    // Opening again plays it again.
+    bedrock.wordMenu.close();
+    bedrock.wordMenu.open({ id: null, bounds: [300, 200, 420, 240], kind: 'text', text: null, link: null });
+    out.again = wm.getAnimations().some((a) => a.animationName === 'wm-lift' && a.playState === 'running');
+    return out;
+  });
+  assert.ok(r.menuOpen);
+  assert.ok(r.bottom <= r.vh, `menu ends on screen: ${r.bottom} <= ${r.vh}`);
+  assert.ok(r.overflows, 'menu content is taller than the short screen, so it scrolls');
+  assert.ok(r.scrolled && r.lastVisible, 'the last item can be scrolled into view');
+  assert.ok(r.lifting, 'the lift animation runs');
+  assert.ok(r.scaleEarly < 0.97, `starts smaller: ${r.scaleEarly}`);
+  assert.ok(r.scaleEnd === '1' || r.scaleEnd === 'none', `ends at full size: ${r.scaleEnd}`);
+  assert.match(r.shadow, /18px 40px/, 'a deep drop shadow once lifted');
+  assert.ok(r.originFacesWord, 'grows out of the side facing the word');
+  assert.ok(r.again, 'replays on every open');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

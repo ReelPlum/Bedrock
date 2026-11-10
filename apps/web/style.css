@@ -109,7 +109,12 @@ svg circle { fill: currentColor; stroke: none; }
 .menu {
   top: calc(max(10px, env(safe-area-inset-top)) + 56px); right: max(10px, calc(50vw - 320px));
   border-radius: var(--radius); padding: 6px; min-width: 260px; display: flex; flex-direction: column;
+  /* Never taller than the screen: the rest scrolls inside the menu. */
+  max-height: calc(100vh - max(10px, env(safe-area-inset-top)) - 56px - max(10px, env(safe-area-inset-bottom)));
+  max-height: calc(100dvh - max(10px, env(safe-area-inset-top)) - 56px - max(10px, env(safe-area-inset-bottom)));
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y;
 }
+.menu > * { flex-shrink: 0; }
 .menu[hidden], .library[hidden], .popover[hidden] { display: none; }
 .popover {
   bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px); left: 50%; transform: translateX(-50%);
@@ -241,8 +246,20 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
 /* Hold a word: its menu (link, correct). */
 .word-menu {
   position: fixed; z-index: 3; left: 0; top: 0; width: min(300px, calc(100vw - 24px)); padding: 8px;
-  background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--shadow);
+  background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--lift-shadow);
   -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); display: flex; flex-direction: column; gap: 6px;
+}
+/* It lifts off the paper as it opens: grows from the word with a deepening shadow. */
+.word-menu { --lift-shadow: 0 18px 40px rgba(0, 0, 0, 0.18), 0 6px 14px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08); }
+.word-menu.lifting { animation: wm-lift 240ms cubic-bezier(0.2, 0.9, 0.3, 1.15) both; }
+@keyframes wm-lift {
+  from { scale: 0.86; opacity: 0; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+  60% { opacity: 1; }
+  to { scale: 1; opacity: 1; box-shadow: var(--lift-shadow); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .word-menu.lifting { animation: wm-fade 120ms ease-out both; }
+  @keyframes wm-fade { from { opacity: 0; } to { opacity: 1; } }
 }
 .wm-head { display: flex; align-items: center; gap: 8px; padding: 2px 2px 4px 8px; }
 .wm-word { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
