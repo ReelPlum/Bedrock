@@ -2,12 +2,12 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath } from 'obsidian';
+import { FileView, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import bundle from 'virtual:web-app';
 import { installWebApp, webAppUrl } from './assets.js';
 import { HostBridge } from './bridge.js';
-import { createSession } from './session.js';
-import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteOfIndex } from './index-note.js';
+import { createSession, linkToStroke, strokesOfState } from './session.js';
+import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
 const EXTENSION = 'bedrock';
@@ -55,6 +55,26 @@ class BedrockView extends FileView {
     this.frame = null;
     this.bridge = null;
     this.session = null;
+    // Ink to show once the canvas has loaded the note (a search hit, a link).
+    this.pending = null;
+    this.appReady = false;
+  }
+
+  /** Obsidian calls this after opening the file, and again when a file
+   *  that is already open is opened once more (another search hit). */
+  setEphemeralState(state) {
+    super.setEphemeralState?.(state);
+    const strokes = strokesOfState(state);
+    if (!strokes.length) return;
+    this.pending = strokes;
+    this.showPending();
+  }
+
+  showPending() {
+    if (!this.appReady || !this.pending || !this.bridge) return;
+    const strokes = this.pending;
+    this.pending = null;
+    this.bridge.send('show', { strokes }).catch(() => null);
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -68,6 +88,7 @@ class BedrockView extends FileView {
   async onLoadFile(file) {
     await this.plugin.webAppReady;
     const plugin = this.plugin;
+    this.appReady = false;
     this.session = createSession({
       vault: this.app.vault,
       file: () => this.file,
@@ -75,6 +96,8 @@ class BedrockView extends FileView {
       kv: plugin.kv,
       pickNote: (query, sourcePath) => plugin.pickNote(query, sourcePath),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
+      copyLink: (stroke) => plugin.copyLink(this.file, stroke),
+      onReady: () => { this.appReady = true; this.showPending(); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
     this.frame = frame;
@@ -89,6 +112,7 @@ class BedrockView extends FileView {
     this.bridge?.close();
     this.frame?.remove();
     this.frame = this.bridge = this.session = null;
+    this.appReady = false;
   }
 
   /** The file changed outside this view (sync, another window). */
@@ -144,16 +168,75 @@ export default class BedrockPlugin extends Plugin {
     this.registerEvent(vault.on('delete', (f) => {
       if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch(() => {});
     }));
-    // A search result or link that lands on an index note opens the handwriting.
+    // A search result or link that lands on an index note opens the
+    // handwriting, at the words that were found.
+    this.redirectIndexNotes();
+    // In case an index note was opened some other way: swap in the
+    // handwriting, at the editor's cursor if it was put somewhere.
     this.registerEvent(this.app.workspace.on('file-open', async (f) => {
-      if (!this.settings.index || !(f instanceof TFile) || !isIndexPath(f.path, this.settings.indexFolder)) return;
-      const notePath = noteOfIndex(await vault.cachedRead(f));
-      const note = notePath && vault.getAbstractFileByPath(notePath);
       const leaf = this.app.workspace.getMostRecentLeaf();
-      if (note instanceof TFile && leaf && leaf.view?.file === f) leaf.openFile(note);
+      if (!leaf || leaf.view?.file !== f) return;
+      const cursor = leaf.view.editor?.getCursor?.();
+      const at = cursor && (cursor.line || cursor.ch) ? { line: cursor.line, ch: cursor.ch } : null;
+      const to = await this.handwritingFor(f, at).catch(() => null);
+      if (to) await leaf.openFile(to.file, { eState: to.eState });
     }));
     // Notes edited by the web app or on another device get indexed too.
     this.app.workspace.onLayoutReady(() => this.reindex(false));
+  }
+
+  /** If `file` is an index note: the handwritten note to open in its
+   *  place, and the ephemeral state that takes the view to the place
+   *  `eState` points at in the index note. Otherwise null. */
+  async handwritingFor(file, eState) {
+    if (!this.settings.index || !(file instanceof TFile) || !isIndexPath(file.path, this.settings.indexFolder)) return null;
+    const vault = this.app.vault;
+    const markdown = await vault.cachedRead(file);
+    const notePath = noteOfIndex(markdown);
+    const note = notePath && vault.getAbstractFileByPath(notePath);
+    if (!(note instanceof TFile)) return null;
+    const strokes = eState
+      ? await vault.readBinary(note).then((bytes) => strokesForIndexPlace(notePath, bytes, markdown, eState)).catch(() => [])
+      : [];
+    return { file: note, eState: strokes.length ? { bedrock: { strokes } } : {} };
+  }
+
+  /** Obsidian's search opens a result with `leaf.openFile(file, { eState:
+   *  { match } })`, and only that call knows which match was clicked. So
+   *  opening an index note is turned, there, into opening the handwriting
+   *  with the matched words. Anything unexpected opens the file as asked. */
+  redirectIndexNotes() {
+    const proto = WorkspaceLeaf?.prototype;
+    if (!proto || typeof proto.openFile !== 'function') return;
+    const plugin = this;
+    const original = proto.openFile;
+    let on = true;
+    const patched = async function (file, openState) {
+      let to = null;
+      if (on) {
+        try { to = await plugin.handwritingFor(file, openState?.eState); } catch (_) { to = null; }
+      }
+      if (!to) return original.call(this, file, openState);
+      const { state: _markdownState, ...rest } = openState || {};
+      return original.call(this, to.file, { ...rest, eState: to.eState });
+    };
+    proto.openFile = patched;
+    this.register(() => {
+      on = false;
+      // Leave it in place (switched off) if someone patched over it since.
+      if (proto.openFile === patched) proto.openFile = original;
+    });
+  }
+
+  /** Put a link to a word of a handwritten note on the clipboard. */
+  async copyLink(file, stroke) {
+    const text = linkToStroke(this.app.metadataCache.fileToLinktext(file, '', true), stroke);
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice('Link to this word copied. Paste it into a note.');
+    } catch (_) {
+      new Notice(`Could not copy. The link is ${text}`, 10000);
+    }
   }
 
   async persist() {
@@ -206,7 +289,7 @@ class BedrockSettings extends PluginSettingTab {
     containerEl.empty();
     new Setting(containerEl)
       .setName('Make handwriting searchable')
-      .setDesc('Keep a Markdown index note for each handwritten note, with the text read from the handwriting and its links, so Obsidian search, backlinks and the graph include them. Opening an index note opens the handwriting.')
+      .setDesc('Keep a Markdown index note for each handwritten note, with the text read from the handwriting and its links, so Obsidian search, backlinks and the graph include them. Opening an index note opens the handwriting, and a search result opens it at the words that were found.')
       .addToggle((t) => t.setValue(p.settings.index).onChange(async (v) => {
         p.settings.index = v;
         await p.persist();

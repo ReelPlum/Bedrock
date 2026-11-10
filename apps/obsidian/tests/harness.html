@@ -8,7 +8,7 @@
 <script type="module">
 import { HostBridge } from '/obsidian/src/bridge.js';
 import { createSession } from '/obsidian/src/session.js';
-import { Indexer } from '/obsidian/src/index-note.js';
+import { Indexer, strokesForIndexPlace } from '/obsidian/src/index-note.js';
 import { readZip, text } from '/obsidian/src/zip.js';
 import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
 
@@ -41,6 +41,7 @@ window.host = {
       kv: { get: (k) => cameras.get(k), set: async (k, v) => { cameras.set(k, v); } },
       pickNote: async (query, source) => { calls.push(['pick', query, source]); return pickAnswer; },
       openLink: (target, source) => calls.push(['open', target, source]),
+      copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
       onReady: () => ready(),
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
@@ -55,6 +56,15 @@ window.host = {
     const note = JSON.parse(text(z.get('note.json')) || '{}');
     const index = vault.files.get(indexer.pathFor(path))?.data ?? null;
     return { strokes: (note.strokes || []).length, links: text(z.get('links.md')), index, size: f.data.byteLength };
+  },
+  /** Click a search result: `text` as found in the note's index note.
+   *  Works out the ink as the plugin does and asks the open view to show
+   *  it. Resolves to the stroke ids and the app's answer. */
+  async searchHit(path, text) {
+    const markdown = vault.files.get(indexer.pathFor(path)).data;
+    const i = markdown.indexOf(text);
+    const strokes = await strokesForIndexPlace(path, vault.files.get(path).data, markdown, { match: { content: markdown, matches: [[i, i + text.length]] } });
+    return { strokes, shown: await bridge.send('show', { strokes }) };
   },
   /** Another device changed the file: tell the view, as the plugin does. */
   async outsideChange(path, fromPath) {

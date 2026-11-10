@@ -24,6 +24,8 @@ class Plugin {
   registerView(type, make) { this.views[type] = make; }
   registerExtensions(exts, type) { for (const e of exts) this.extensions[e] = type; }
   registerEvent() {}
+  register(fn) { (this.cleanups ||= []).push(fn); }
+  unload() { for (const fn of this.cleanups || []) fn(); }
   addCommand(c) { this.commands.push(c); }
   addRibbonIcon(icon, title, fn) { this.ribbons.push({ icon, title, fn }); }
   addSettingTab(t) { this.settingTabs.push(t); }
@@ -48,6 +50,12 @@ class FuzzySuggestModal extends Modal {
 }
 
 class FileView { constructor(leaf) { this.leaf = leaf; } }
+
+/** Records what was opened in it, as `leaf.opened`. */
+class WorkspaceLeaf {
+  constructor() { this.opened = []; this.view = null; }
+  async openFile(file, openState) { this.opened.push({ path: file.path, openState }); }
+}
 class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
 class Setting {}
 class Notice { constructor(msg) { Notice.shown.push(msg); } }
@@ -55,4 +63,4 @@ Notice.shown = [];
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath };
+module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath };

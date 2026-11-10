@@ -5,7 +5,9 @@
 //   * the note is a file the host owns: `HostStore` reads and writes it in
 //     place of IndexedDB (same interface as NoteStore);
 //   * links to the host's notes are turned on, picked with the host's own
-//     file picker and opened by the host.
+//     file picker and opened by the host;
+//   * the host can ask to be shown a place in the note (a search hit, a
+//     link to a word), and can be asked for a link to one.
 //
 // Nothing here runs in the normal web app (`host` is null there). Keeping the
 // differences in this one file lets the web app and every host ship from the
@@ -101,6 +103,9 @@ function connect() {
      *  null if the picker was closed. */
     pick: (query) => rpc.call('pick-note', { query }),
     open: (target) => rpc.call('open-link', { type: 'note', target }),
+    /** Put a link to a place in this note (the word with this stroke) on
+     *  the clipboard, for pasting into one of the host's notes. */
+    copyHere: (stroke) => rpc.call('copy-link', { stroke }),
   });
 
   return {

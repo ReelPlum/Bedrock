@@ -268,3 +268,81 @@ test('opening a note never overwrites the file with an empty note', async () => 
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('a search hit takes the open note to the words that were found and points them out', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Physics.bedrock');
+  // Two words far apart, read as different text.
+  await frame.evaluate(() => {
+    let n = 0;
+    bedrock.handwriting.engine = async () => ({ text: ['gravity', 'momentum'][n++] ?? 'more', engine: 'fake' });
+  });
+  await writeWord(frame, 200, 200);
+  await frame.evaluate(() => { bedrock.canvas.set_camera(6000, 4000, 1); });
+  await writeWord(frame, 500, 400);
+  await frame.evaluate(async () => { bedrock.canvas.set_camera(0, 0, 1); await bedrock.saveNow(); });
+  await until(page, async () => (await host.files('Physics.bedrock')).index?.includes('gravity momentum'));
+
+  const words = await frame.evaluate(() => JSON.parse(bedrock.canvas.words_json()).map((w) => ({ text: w.text, strokes: w.strokes, bounds: w.bounds })));
+  const momentum = words.find((w) => w.text === 'momentum');
+  const hit = await page.evaluate(() => host.searchHit('Physics.bedrock', 'moment'));
+  assert.deepEqual(hit.strokes, momentum.strokes, 'the hit names the ink of the word it is in');
+  assert.equal(hit.shown, true);
+  const after = await frame.evaluate(() => {
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    const stage = document.getElementById('stage');
+    const el = stage.querySelector('.jump-flash');
+    const r = el?.getBoundingClientRect();
+    return { ox, oy, zoom, w: stage.clientWidth, h: stage.clientHeight, flash: r && [r.left, r.top, r.right, r.bottom] };
+  });
+  // The word is in the middle of the view, at the zoom the note had.
+  const [x0, y0, x1, y1] = momentum.bounds;
+  assert.equal(after.zoom, 1);
+  assert.ok(Math.abs(after.ox + after.w / 2 - (x0 + x1) / 2) < 6, `centred across: ${JSON.stringify(after)}`);
+  assert.ok(Math.abs(after.oy + after.h / 2 - (y0 + y1) / 2) < 6, `centred down: ${JSON.stringify(after)}`);
+  // A frame around it, on screen where the word is drawn.
+  assert.ok(after.flash, 'the place is pointed out');
+  assert.ok(after.flash[0] <= x0 - after.ox && after.flash[2] >= x1 - after.ox && after.flash[1] <= y0 - after.oy && after.flash[3] >= y1 - after.oy, JSON.stringify(after));
+  // The frame goes when the page is touched, and does not block the pen.
+  await frame.evaluate(async () => {
+    t.ev('pointerdown', 1, 'pen', 40, 40, { pressure: 0.5 });
+    t.ev('pointermove', 1, 'pen', 60, 44, { pressure: 0.5 });
+    t.ev('pointerup', 1, 'pen', 60, 44, { pressure: 0 });
+    await t.frame();
+  });
+  assert.equal(await frame.evaluate(() => document.querySelectorAll('.jump-flash').length), 0);
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 9, 'the pen still writes');
+
+  // The other word: one stroke of it is enough (a link to a word).
+  const gravity = words.find((w) => w.text === 'gravity');
+  assert.equal(await page.evaluate((s) => host.bridge.send('show', { strokes: [s] }), gravity.strokes[2]), true);
+  const cam = await frame.evaluate(() => Array.from(bedrock.canvas.camera()));
+  assert.ok(Math.abs(cam[0] + after.w / 2 - (gravity.bounds[0] + gravity.bounds[2]) / 2) < 6, `${cam}`);
+  // Ink that was erased since (an old link): the view stays where it is.
+  assert.equal(await page.evaluate(() => host.bridge.send('show', { strokes: ['00000000deadbeef'] })), false);
+  assert.equal(await page.evaluate(() => host.bridge.send('show', { strokes: [] })), false);
+  assert.equal(await page.evaluate(() => host.bridge.send('show', {})), false);
+  assert.deepEqual(await frame.evaluate(() => Array.from(bedrock.canvas.camera())), cam);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the word menu copies a link to the word, for pasting into a vault note', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  const word = await frame.evaluate(() => {
+    const w = JSON.parse(bedrock.canvas.words_json())[0];
+    bedrock.wordMenu.open(w);
+    const b = document.getElementById('wm-copy-here');
+    const shown = !b.hidden;
+    b.click();
+    return { strokes: w.strokes, shown, closed: document.getElementById('word-menu').hidden };
+  });
+  assert.equal(word.shown, true);
+  assert.equal(word.closed, true);
+  await until(page, () => host.calls.some((c) => c[0] === 'copy'));
+  assert.deepEqual(await page.evaluate(() => host.calls.filter((c) => c[0] === 'copy')), [['copy', word.strokes[0], 'Physics.bedrock']]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

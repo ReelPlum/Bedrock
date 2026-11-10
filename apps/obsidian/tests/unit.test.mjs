@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
 import { FakeVault } from './fake-vault.mjs';
 import { readZip, text } from '../src/zip.js';
-import { DEFAULT_INDEX_FOLDER, Indexer, indexMarkdown, indexPath, isIndexPath, noteOfIndex, readNoteText } from '../src/index-note.js';
-import { createSession } from '../src/session.js';
+import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
+import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { installWebApp, webAppUrl } from '../src/assets.js';
 import { packWebApp } from '../build.mjs';
@@ -81,6 +81,74 @@ test('handwriting that looks like Markdown links does not become a link', () => 
   const md = indexMarkdown('a.bedrock', { words: ['[[Secret]]'], links: [] });
   assert.match(md, /\\\[\\\[Secret\\\]\\\]/);
   assert.doesNotMatch(md, /## Links/);
+});
+
+/** A note whose words each have their own strokes: [text, [stroke ids]]. */
+const inkNote = (...items) => zip({
+  'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [], padding: 'x'.repeat(500) }),
+  'recognized.json': JSON.stringify({ format: 'bedrock-recognition', version: 1, items: items.map(([text, strokes], i) => ({ id: `r${i}`, text, strokes })) }),
+  'links.md': '# Links in this note\n\n- [[Ideas]]\n',
+});
+const LAW = [['Newton', ['a1', 'a2']], ['[second]', ['b1']], ['law', ['c1', 'c2']]];
+
+test('every word of the index note knows the strokes it was read from', async () => {
+  const t = await readNoteText(inkNote(...LAW));
+  const { markdown, spans } = indexLayout('Forces.bedrock', t);
+  assert.equal(markdown, indexMarkdown('Forces.bedrock', t));
+  // The spans are the words as they stand in the note, escapes included.
+  assert.deepEqual(spans.map((s) => markdown.slice(s.start, s.end)), ['Newton', '\\[second\\]', 'law']);
+  assert.deepEqual(spans.map((s) => s.strokes), [['a1', 'a2'], ['b1'], ['c1', 'c2']]);
+  const at = (word) => markdown.indexOf(word);
+  // A hit inside a word, a hit across two words, and a caret.
+  assert.deepEqual(strokesAt(spans, at('wton'), at('wton') + 4), ['a1', 'a2']);
+  assert.deepEqual(strokesAt(spans, at('second'), at('law') + 3), ['b1', 'c1', 'c2']);
+  assert.deepEqual(strokesAt(spans, at('law') + 1), ['c1', 'c2']);
+  assert.deepEqual(strokesAt(spans, at('law') + 3, at('law')), ['c1', 'c2'], 'a backwards selection');
+  // Outside the text (the title, the links): nothing to show.
+  assert.deepEqual(strokesAt(spans, 0, 10), []);
+  assert.deepEqual(strokesAt(spans, at('Ideas'), at('Ideas') + 5), []);
+  // Older index notes were built from words alone and still work.
+  assert.deepEqual(indexLayout('a.bedrock', { words: ['x'], links: [] }).spans.map((s) => s.strokes), [[]]);
+});
+
+test('a search hit in the index note names the ink it was read from', async () => {
+  const bytes = inkNote(...LAW);
+  const md = indexMarkdown('Forces.bedrock', await readNoteText(bytes));
+  const place = (eState, markdown = md) => strokesForIndexPlace('Forces.bedrock', bytes, markdown, eState);
+  const i = md.indexOf('law');
+  // What Obsidian's search hands the file it opens.
+  assert.deepEqual(await place({ match: { content: md, matches: [[i, i + 3]] } }), ['c1', 'c2']);
+  assert.deepEqual(await place({ match: { content: md, matches: [[md.indexOf('Newton'), i + 3]] } }), ['a1', 'a2', 'b1', 'c1', 'c2'], 'a phrase');
+  // A line and column (the editor's cursor), and a line alone.
+  const line = md.slice(0, i).split('\n').length - 1;
+  assert.equal(offsetOf(md, line, 0), md.indexOf('Newton'));
+  assert.deepEqual(await place({ line, ch: i - md.indexOf('Newton') }), ['c1', 'c2']);
+  assert.deepEqual(await place({ line }), ['a1', 'a2', 'b1', 'c1', 'c2']);
+  // No place, a place off the text, or nonsense: the note just opens.
+  assert.deepEqual(await place(undefined), []);
+  assert.deepEqual(await place({}), []);
+  assert.deepEqual(await place({ line: 0 }), []);
+  assert.deepEqual(await place({ match: { matches: [['x', null]] } }), []);
+  assert.deepEqual(await place({ line: 9999, ch: 3 }), []);
+  // The index is older than the note (a word was added on another device
+  // and it has not been re-indexed yet): the hit is found by its text.
+  const older = indexMarkdown('Forces.bedrock', await readNoteText(inkNote(LAW[0], LAW[2])));
+  const j = older.indexOf('law');
+  assert.deepEqual(await place({ match: { matches: [[j, j + 3]] } }, older), ['c1', 'c2']);
+  // A damaged note file: no place, no error.
+  assert.deepEqual(await strokesForIndexPlace('Forces.bedrock', new ArrayBuffer(0), md, { line, ch: 2 }), []);
+});
+
+test('a view is told which ink to show by a redirected search hit or a link to a word', () => {
+  assert.deepEqual(strokesOfState({ bedrock: { strokes: ['9f2c4e1a7b3d5f60', 'not an id', 7] } }), ['9f2c4e1a7b3d5f60']);
+  assert.deepEqual(strokesOfState({ subpath: '#^9F2C4E1A7B3D5F60' }), ['9f2c4e1a7b3d5f60']);
+  assert.deepEqual(strokesOfState({ subpath: '#Heading' }), []);
+  assert.deepEqual(strokesOfState({ subpath: '#^' }), []);
+  assert.deepEqual(strokesOfState({}), []);
+  assert.deepEqual(strokesOfState(null), []);
+  assert.equal(linkToStroke('Physics/Forces.bedrock', '9f2c4e1a7b3d5f60'), '[[Physics/Forces.bedrock#^9f2c4e1a7b3d5f60]]');
+  // The link and the state it opens with agree.
+  assert.deepEqual(strokesOfState({ subpath: linkToStroke('x', 'ab12').slice(3, -2) }), ['ab12']);
 });
 
 test('index note paths, with and without an index folder', () => {
@@ -188,6 +256,19 @@ test('one failed save does not stop later saves', async () => {
   vault.modifyBinary = real;
   await s.handlers.write({ data: new Uint8Array(note(['b'])) });
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /\bb\b/);
+});
+
+test('the app can ask for a link to a word; only real stroke ids are accepted', async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Physics/Forces.bedrock', new ArrayBuffer(0));
+  const copied = [];
+  const { s } = session(vault, file, { copyLink: async (stroke, source) => { copied.push([stroke, source]); } });
+  assert.equal(await s.handlers['copy-link']({ stroke: '9f2c4e1a7b3d5f60' }), true);
+  assert.equal(await s.handlers['copy-link']({ stroke: ']] [[Other' }), false);
+  assert.equal(await s.handlers['copy-link']({}), false);
+  assert.deepEqual(copied, [['9f2c4e1a7b3d5f60', 'Physics/Forces.bedrock']]);
+  // A host without a clipboard just says no.
+  assert.equal(await session(vault, file).s.handlers['copy-link']({ stroke: 'ab' }), false);
 });
 
 test('session camera is kept per file; picker and links get the note path', async () => {
