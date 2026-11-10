@@ -1903,3 +1903,108 @@ test('paste works as the system does: a picture pastes a picture, text pastes a 
   assert.equal(r.selected, 1, 'the pasted text box is selected');
   await ctx.close();
 });
+
+// Smoothness: a frame while the pen is writing is only the stroke under it.
+// The underlines, the minimap and the selection used to be redrawn on every
+// frame, also when only the live stroke had changed.
+test('while the pen is down, frames draw the ink and nothing else', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    let draws = 0;
+    const draw = hw.draw.bind(hw);
+    hw.draw = () => { draws++; return draw(); };
+    let maps = 0;
+    const update = bedrock.minimap.update.bind(bedrock.minimap);
+    bedrock.minimap.update = () => { maps++; return update(); };
+    await t.frame();
+    const before = { ...bedrock.frameStats };
+    draws = 0; maps = 0;
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let i = 1; i <= 40; i++) {
+      t.ev('pointermove', 1, 'pen', 200 + i * 6, 300 + Math.sin(i / 4) * 40, { pressure: 0.5 });
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    await t.frame();
+    const during = { draws, maps, inkOnly: bedrock.frameStats.inkOnly - before.inkOnly, full: bedrock.frameStats.full - before.full };
+    t.ev('pointerup', 1, 'pen', 440, 300, { pressure: 0 });
+    await t.frame();
+    return { during, afterDraws: draws, afterMaps: maps, strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.ok(r.during.inkOnly >= 20, `ink-only frames while writing: ${JSON.stringify(r.during)}`);
+  assert.equal(r.during.full, 0, 'no full frame while writing');
+  assert.equal(r.during.draws, 0, 'the underlines are not redrawn mid-stroke');
+  assert.equal(r.during.maps, 0, 'the minimap is not redrawn mid-stroke');
+  assert.ok(r.afterDraws > 0 && r.afterMaps > 0, 'everything is redrawn once the stroke is on the page');
+  assert.equal(r.strokes, 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a scribble fades the ink it will erase before the pen lifts', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.handwriting.enabled = false;
+    const c = bedrock.canvas;
+    for (let k = 0; k < 3; k++) {
+      const x = 300 + k * 22;
+      t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+      for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+      t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+    }
+    await t.frame();
+    const out = { early: -1, late: -1 };
+    t.ev('pointerdown', 2, 'pen', 290, 272, { pressure: 0.6 });
+    for (let i = 1; i <= 90; i++) {
+      const pass = Math.floor(i / 6);
+      const f = (i % 6) / 6;
+      t.ev('pointermove', 2, 'pen', pass % 2 === 0 ? 290 + 80 * f : 370 - 80 * f, 272 + i * 0.4, { pressure: 0.6 });
+      if (i === 8) out.early = c.scribble_preview();
+    }
+    await t.frame();
+    out.late = c.scribble_preview();
+    out.stillThere = c.stroke_count();
+    t.ev('pointerup', 2, 'pen', 290, 308, { pressure: 0 });
+    await t.frame();
+    out.after = c.stroke_count();
+    out.cleared = c.scribble_preview();
+    return out;
+  });
+  assert.equal(r.early, 0, 'one pass is not a scribble');
+  assert.equal(r.late, 3, 'the three strokes of the word are marked');
+  assert.equal(r.stillThere, 3, 'nothing is erased while the pen is down');
+  assert.equal(r.after, 0);
+  assert.equal(r.cleared, 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('“Show latency” reports the frame rate, and a pen trace can be recorded', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    document.getElementById('show-latency').click();
+    const input = bedrock.input;
+    input.startTrace();
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let i = 1; i <= 30; i++) {
+      t.ev('pointermove', 1, 'pen', 200 + i * 6, 300, { pressure: 0.5 });
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    t.ev('pointerup', 1, 'pen', 380, 300, { pressure: 0 });
+    await t.frame();
+    const trace = input.stopTrace();
+    return { hud: document.getElementById('hud').textContent, trace, again: input.stopTrace(), button: document.getElementById('record-trace').textContent };
+  });
+  assert.match(r.hud, /frames \d+\/s \(every [\d.]+ ms, slowest [\d.]+\) {2}drawing [\d.]+ ms/);
+  const types = r.trace.events.map((e) => e.type);
+  assert.equal(types[0], 'down');
+  assert.equal(types.at(-1), 'up');
+  assert.equal(types.filter((x) => x === 'move').length, 30);
+  assert.ok(r.trace.events.every((e) => e.kind === 'pen' && e.id === 1 && [e.x, e.y, e.pressure, e.altitude, e.azimuth, e.time].every(Number.isFinite)));
+  assert.equal(r.trace.pen_samples, 30);
+  assert.deepEqual(r.trace.viewport, [1024, 768]);
+  assert.equal(r.again, null);
+  assert.equal(r.button, 'Record a pen trace');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

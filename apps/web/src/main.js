@@ -143,22 +143,36 @@ async function main() {
   let selectionView = null;
   let pictures = null;
   let lastRevision = -1;
+  let lastView = '';
+  const frameStats = { full: 0, inkOnly: 0 }; // for the tests
   let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
     onFrame: () => {
-      pictures?.update();
-      minimap?.update();
-      if (handwriting) {
-        const rev = canvas.revision();
-        if (rev !== lastRevision) { lastRevision = rev; handwriting.schedule(); recognizerView?.update(); }
-        handwriting.draw();
+      // While the pen is writing, a frame is only the stroke under it: the
+      // page, the camera and everything drawn over them (underlines, the
+      // minimap, the selection) are as they were, so none of it is redrawn.
+      const view = canvas.camera().join();
+      const rev = canvas.revision();
+      const inkOnly = canvas.is_drawing() && rev === lastRevision && view === lastView;
+      frameStats[inkOnly ? 'inkOnly' : 'full']++;
+      if (!inkOnly) {
+        lastView = view;
+        pictures?.update();
+        minimap?.update();
+        if (handwriting) {
+          if (rev !== lastRevision) { handwriting.schedule(); recognizerView?.update(); }
+          handwriting.draw();
+        }
+        lastRevision = rev;
+        selectionView?.draw();
+        if (rev !== savedRevision) scheduleSave();
+        updateUndo();
       }
-      selectionView?.draw();
-      if (canvas.revision() !== savedRevision) scheduleSave();
-      updateUndo();
       if (!hud.hidden) {
         const [, , zoom] = canvas.camera();
+        const f = input.frames;
         hud.textContent = `input→frame ${input.latency.last.toFixed(1)} ms (avg ${input.latency.avg.toFixed(1)})\n`
+          + (f.interval ? `frames ${(1000 / f.interval).toFixed(0)}/s (every ${f.interval.toFixed(1)} ms, slowest ${f.worst.toFixed(1)})  drawing ${f.work.toFixed(2)} ms\n` : '')
           + `strokes ${canvas.stroke_count()}  chunks ${canvas.chunk_count()}  zoom ${(zoom * 100).toFixed(0)}%`;
       }
     },
@@ -1023,6 +1037,24 @@ async function main() {
     input.requestFrame();
   });
 
+  // Record a pen trace: everything the pen, fingers and mouse do, as the
+  // engine receives it, saved as a file the engine's replay test can run.
+  // Real traces are how a bug in the feel of the ink gets a test.
+  const traceButton = $('record-trace');
+  traceButton.addEventListener('click', async () => {
+    if (!input.trace) {
+      input.startTrace();
+      traceButton.textContent = 'Stop and save the pen trace';
+      toast('Recording the pen. Write, then choose “Stop and save the pen trace” in the menu.', 5000);
+      return;
+    }
+    const trace = input.stopTrace();
+    traceButton.textContent = 'Record a pen trace';
+    if (!trace.events.length) return toast('Nothing was recorded.');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    await saveFile(new TextEncoder().encode(JSON.stringify(trace)), `bedrock-trace-${stamp}.json`, 'application/json');
+  });
+
   // ----- pictures and text boxes ---------------------------------------------------
   // Insert from the menu (Photos, camera or Files on iPad), by pasting (as
   // the system does it: a picture pastes a picture, text pastes text), or by
@@ -1164,7 +1196,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

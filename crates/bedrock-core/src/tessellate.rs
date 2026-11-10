@@ -190,6 +190,19 @@ fn merge_spacing(size: f64) -> f64 {
 }
 
 fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finished: bool) -> Vec<Sample> {
+    let real = if finished { points.len() } else { stroke.points.len().min(points.len()) };
+    timed_samples(stroke, points, real, scale, finished).0
+}
+
+/// The samples for `points`, of which the first `real` came from the pen
+/// (the rest are predicted), and the input time each sample belongs to.
+fn timed_samples(
+    stroke: &Stroke,
+    points: &[InputPoint],
+    real: usize,
+    scale: f64,
+    finished: bool,
+) -> (Vec<Sample>, Vec<f64>) {
     let brush = &stroke.brush;
     let size = brush.size.max(0.1) as f64;
     // World units per input pixel when drawn: the size of input noise.
@@ -200,7 +213,6 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finishe
     // A live stroke may end in predicted points (a guess at where the pen is
     // going). They are left out of the spatial smoothing and appended after
     // it, so a wrong guess can't bend the real line it joins.
-    let real = if finished { points.len() } else { stroke.points.len().min(points.len()) };
     let merge = merge_spacing(size).min(0.5 * px);
     let filtered = pen::filter_points(&points[..real], px);
     let merged = pen::decimate(&filtered, merge);
@@ -224,7 +236,7 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finishe
     let alpha = brush.stroke_alpha();
     let n = dedup.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     // Arc length at each point.
     let mut arc = Vec::with_capacity(n);
@@ -285,7 +297,136 @@ fn samples_with_step(stroke: &Stroke, points: &[InputPoint], scale: f64, finishe
         };
         taper(&mut out, &arc, finished, &ends);
     }
-    out
+    let times = dedup.iter().map(|p| p.t).collect();
+    (out, times)
+}
+
+/// Builds the mesh of the stroke being drawn, frame after frame, at a cost
+/// that does not grow with the stroke.
+///
+/// Rebuilding a live stroke from its first sample every frame is fine for a
+/// letter and too slow for long strokes (shading, a scribble, a long
+/// underline): eight seconds of ink took most of a 120 Hz frame. But every
+/// step of the clean-up only looks a short way back and ahead: the filters
+/// forget within a fraction of a second, the smoothing and the width
+/// calming reach a few units along the line. So the line well behind the
+/// pen no longer changes, and is kept ("frozen"). Each frame only
+/// re-tessellates a window: a warm-up stretch before the frozen part's end
+/// (thrown away; it lets the filters settle to what a full rebuild would
+/// give), then everything up to the pen and the predicted points.
+///
+/// The stroke saved at pen-up is still built in one go from all its raw
+/// samples, so files and finished strokes are untouched by any of this.
+#[derive(Debug, Default)]
+pub struct LiveTessellator {
+    stroke: Option<crate::stroke::StrokeId>,
+    /// Raw points seen last time (a stroke only grows).
+    seen: usize,
+    /// Capsules of the frozen part.
+    frozen: Mesh,
+    /// The frozen part's last sample: where the window's samples join on.
+    joint: Option<Sample>,
+    /// Raw index and input time up to which the line is frozen.
+    seam: usize,
+    seam_t: f64,
+    /// Raw index the window starts at (0 until something is frozen).
+    start: usize,
+}
+
+/// Raw samples re-tessellated behind the frozen part's end before their
+/// result is trusted (a second of 240 Hz input).
+pub const LIVE_WARM_UP: usize = 240;
+/// Raw samples next to the pen that are never frozen.
+pub const LIVE_MARGIN: usize = 96;
+/// Freeze once this many raw samples beyond the margin are waiting.
+pub const LIVE_CHUNK: usize = 192;
+
+impl LiveTessellator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Raw index the per-frame window starts at (for tests and the HUD).
+    pub fn window_start(&self) -> usize {
+        self.start
+    }
+
+    /// How much line (world units) must lie in the warm-up and in the
+    /// margin as well: enough for the start taper, the smoothing, the width
+    /// calming and the stabiliser's string to be out of reach.
+    fn settle_distance(stroke: &Stroke) -> f64 {
+        let size = stroke.brush.size.max(0.1) as f64;
+        let px = if stroke.input_scale.is_finite() && stroke.input_scale > 0.0 { stroke.input_scale } else { 1.0 };
+        let string = pen::stabilizer_radius(pen::effective_stabilizer(stroke.brush.stabilizer)) * px;
+        8.0 * size + 16.0 * px + 6.0 * string
+    }
+
+    /// Index of the latest point at least `count` samples and `dist` of
+    /// line before `from`, if there is one.
+    fn back(points: &[InputPoint], from: usize, count: usize, dist: f64) -> Option<usize> {
+        let mut acc = 0.0;
+        let mut i = from;
+        while i > 0 {
+            acc += points[i].pos().distance(points[i - 1].pos());
+            i -= 1;
+            if from - i >= count && acc >= dist {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The live mesh of `stroke` followed by `predicted` points.
+    pub fn mesh(&mut self, stroke: &Stroke, predicted: &[InputPoint]) -> Mesh {
+        let pts = &stroke.points;
+        let n = pts.len();
+        let incremental = stroke.brush.style == LineStyle::Solid && pen::has_timing(pts);
+        if self.stroke != Some(stroke.id) || n < self.seen || !incremental {
+            *self = LiveTessellator { stroke: Some(stroke.id), ..Default::default() };
+        }
+        self.seen = n;
+        if !incremental {
+            // Dashes are laid out by distance from the stroke's start, and
+            // without timestamps nothing can be matched up: build it whole.
+            let mut all = pts.clone();
+            all.extend_from_slice(predicted);
+            return mesh_for(stroke, &timed_samples(stroke, &all, n, 1.0, false).0);
+        }
+        let mut window: Vec<InputPoint> = pts[self.start..].to_vec();
+        window.extend_from_slice(predicted);
+        let (samples, times) = timed_samples(stroke, &window, n - self.start, 1.0, false);
+        // Everything after the frozen part, joined to its last sample.
+        let first = if self.joint.is_some() { times.partition_point(|t| *t <= self.seam_t) } else { 0 };
+        let tail = |upto: usize| -> Vec<Sample> {
+            self.joint.iter().copied().chain(samples[first..upto].iter().copied()).collect()
+        };
+
+        // Freeze what has settled: up to a point well behind the pen.
+        let settle = Self::settle_distance(stroke);
+        if n - self.seam > LIVE_MARGIN + LIVE_CHUNK {
+            let seam =
+                Self::back(pts, n - 1, LIVE_MARGIN, settle).filter(|s| *s > self.seam && pts[*s].t > self.seam_t);
+            let start = seam.and_then(|s| Self::back(pts, s, LIVE_WARM_UP, settle));
+            if let (Some(seam), Some(start)) = (seam, start) {
+                let upto = times.partition_point(|t| *t <= pts[seam].t);
+                if upto > first {
+                    let part = tail(upto);
+                    self.frozen.append(&mesh_from_samples(&part));
+                    let mut mesh = self.frozen.clone();
+                    let rest: Vec<Sample> = samples[upto - 1..].to_vec();
+                    mesh.append(&mesh_from_samples(&rest));
+                    self.joint = Some(samples[upto - 1]);
+                    self.seam = seam;
+                    self.seam_t = pts[seam].t;
+                    self.start = start.max(self.start);
+                    return mesh;
+                }
+            }
+        }
+        let mut mesh = self.frozen.clone();
+        mesh.append(&mesh_from_samples(&tail(samples.len())));
+        mesh
+    }
 }
 
 /// Pen speed over the last few milliseconds before it lifted, in input
