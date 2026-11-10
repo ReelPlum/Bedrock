@@ -749,7 +749,8 @@ impl Engine {
     /// Hold these strokes up off the paper, grown `scale` times around
     /// their middle (1 = their own size). An empty list puts them back.
     pub fn set_lift(&mut self, ids: &[StrokeId], scale: f64) {
-        let ids: Vec<StrokeId> = ids.iter().copied().filter(|id| self.doc.strokes().iter().any(|s| s.id == *id)).collect();
+        let ids: Vec<StrokeId> =
+            ids.iter().copied().filter(|id| self.doc.strokes().iter().any(|s| s.id == *id)).collect();
         let scale = if scale.is_finite() { scale.clamp(0.5, 2.0) } else { 1.0 };
         if ids != self.lifted {
             self.lifted = ids;
@@ -770,7 +771,10 @@ impl Engine {
         for s in self.doc.strokes().iter().filter(|s| self.lifted.contains(&s.id)) {
             let r = s.bounds();
             b = Some(match b {
-                Some(a) => Rect { min: Vec2::new(a.min.x.min(r.min.x), a.min.y.min(r.min.y)), max: Vec2::new(a.max.x.max(r.max.x), a.max.y.max(r.max.y)) },
+                Some(a) => Rect {
+                    min: Vec2::new(a.min.x.min(r.min.x), a.min.y.min(r.min.y)),
+                    max: Vec2::new(a.max.x.max(r.max.x), a.max.y.max(r.max.y)),
+                },
                 None => r,
             });
         }
@@ -1501,5 +1505,4 @@ mod tests {
         e.set_lift(&[StrokeId(u64::MAX)], 1.0);
         assert!(e.floating().is_empty() && e.lift().is_none(), "unknown ids lift nothing; the stroke is put back");
     }
-
 }
