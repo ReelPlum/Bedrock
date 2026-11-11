@@ -1,6 +1,6 @@
 // Offline support: network first (so updates arrive immediately), falling
 // back to the cached copy when the iPad is offline.
-const CACHE = 'bedrock-v16';
+const CACHE = 'bedrock-v17';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg',
   'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/selection-view.js', 'src/images.js', 'train/', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'dict/en.txt.gz',

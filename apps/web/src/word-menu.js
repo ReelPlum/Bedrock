@@ -204,7 +204,9 @@ export class WordMenu {
   _lift(ids) {
     cancelAnimationFrame(this._liftFrame);
     const overlay = document.getElementById('overlay');
+    const paper = document.getElementById('base');
     if (!ids.length) {
+      paper?.classList.remove('behind-lift');
       this.canvas.set_lift([], 1);
       overlay?.classList.remove('lifted');
       this.requestFrame();
@@ -221,6 +223,7 @@ export class WordMenu {
     };
     step();
     overlay?.classList.add('lifted');
+    paper?.classList.add('behind-lift');
   }
 
   close() {

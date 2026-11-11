@@ -23,7 +23,10 @@ html, body {
 /* A held stroke lifts off the paper: it alone is on the ink layer then, so the shadow follows the ink. */
 #overlay { filter: none; transition: filter 160ms ease-out; }
 #overlay.lifted { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.28)); }
-@media (prefers-reduced-motion: reduce) { #overlay { transition: none; } }
+/* The rest of the page goes slightly soft, so it's clear which stroke is held. */
+#base { filter: none; transition: filter 160ms ease-out; }
+#base.behind-lift { filter: blur(2px); }
+@media (prefers-reduced-motion: reduce) { #overlay, #base { transition: none; } }
 :root { --spelling: #e5484d; --selection: #2f6bff; }
 
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
