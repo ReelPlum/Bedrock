@@ -13,12 +13,15 @@ const LIFT_MS = 160;
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe, requestFrame } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
     this.requestFrame = requestFrame || (() => {});
+    // Called when the writer confirms or corrects a reading:
+    // `{ strokes, kind, label, labelSource, reading, engine }`.
+    this.onFeedback = onFeedback || (() => {});
     this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
     const $ = (id) => el.querySelector(`#${id}`);
@@ -41,6 +44,12 @@ export class WordMenu {
       this.close();
     });
     $('wm-correct').addEventListener('click', () => { if (this._ensureWord()) this._show('correct'); });
+    // "This is right": the reading becomes the writer's own checked text.
+    $('wm-right').addEventListener('click', () => {
+      const w = this.word;
+      if (w?.id != null && w.text) this._check(w.text);
+      this.close();
+    });
     // Wrongly taken for maths, or maths taken for text: read it again with
     // the other recogniser.
     $('wm-kind').addEventListener('click', () => this._setKind(this.word?.kind === 'text' ? 'math' : 'text'));
@@ -173,13 +182,15 @@ export class WordMenu {
     $('wm-kind').textContent = drawing ? 'It is writing: read it' : maths ? 'Not maths: read it as text' : 'Read it as maths';
     $('wm-drawing').hidden = drawing;
     $('wm-correct').hidden = drawing;
+    // Only for something the recogniser read and nobody has checked yet.
+    $('wm-right').hidden = drawing || word.id == null || !word.text || word.engine === 'user';
     $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
     // Pictures only: nothing to read or link, just delete (move and resize
     // them with the lasso).
     if (selection && !n) {
-      for (const b of ['wm-kind', 'wm-drawing', 'wm-correct', 'wm-group', 'wm-ungroup', 'wm-link']) $(b).hidden = true;
+      for (const b of ['wm-kind', 'wm-drawing', 'wm-correct', 'wm-right', 'wm-group', 'wm-ungroup', 'wm-link']) $(b).hidden = true;
     } else {
       $('wm-link').hidden = false;
       $('wm-kind').hidden = false;
@@ -281,9 +292,27 @@ export class WordMenu {
   }
 
   _saveText() {
-    const text = this.$('wm-correct-text').value;
-    if (this.canvas.correct_word(this.word.id, text, this.word.kind)) this.onChange();
+    this._check(this.$('wm-correct-text').value);
     this.close();
+  }
+
+  /** Store `text` as what the word says, checked by the writer, and report
+   *  it as feedback on the recogniser's reading (if it had one). */
+  _check(text) {
+    const w = this.word;
+    const reading = w.engine === 'user' ? null : w.text;
+    if (!this.canvas.correct_word(w.id, text, w.kind)) return;
+    this.onChange();
+    const label = text.trim();
+    if (!label || w.kind === 'drawing') return;
+    this.onFeedback({
+      strokes: w.strokes || [],
+      kind: w.kind,
+      label,
+      labelSource: reading != null && reading.trim() === label ? 'confirmed' : 'corrected',
+      reading: reading || null,
+      engine: reading ? w.engine || null : null,
+    });
   }
 
   /** Below the word if it fits, otherwise above; always on screen. */

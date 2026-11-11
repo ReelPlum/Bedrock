@@ -8,6 +8,7 @@ import { SelectionView } from './selection-view.js';
 import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
+import * as collect from './collect.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -75,6 +76,10 @@ function loadSettings() {
     recognize: s.recognize !== false,
     recognizeMode: ['live', 'careful', 'both'].includes(s.recognizeMode) ? s.recognizeMode : 'both',
     spelling: s.spelling !== false,
+    // Off unless the writer turns it on: sends a word's ink and its checked
+    // text to the training data backend when a reading is confirmed or
+    // corrected.
+    shareCorrections: s.shareCorrections === true,
     scribbleErase: s.scribbleErase !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
@@ -224,9 +229,31 @@ async function main() {
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
   const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
+  // A reading the writer confirmed ("This is right") or corrected becomes a
+  // training sample: that one word's ink, moved to 0,0, with the checked
+  // text as its label. Only when "Send my corrections" is on. A reading
+  // nobody checked is never sent.
+  async function shareFeedback({ strokes, kind, label, labelSource, reading, engine }) {
+    if (!settings.shareCorrections || !collect.isReady() || !strokes.length) return null;
+    const ink = strokes.map((id) => canvas.stroke_json(id)).filter(Boolean).map((j) => JSON.parse(j));
+    if (!ink.length) return null;
+    const sample = collect.fromNote({
+      strokes: ink,
+      channels: JSON.parse(canvas.meta_json()).channels,
+      label,
+      labelSource,
+      kind: kind === 'math' ? 'math' : 'text',
+      language: kind === 'math' ? 'zxx' : 'en',
+      reading,
+      engine,
+    });
+    await collect.enqueue(sample);
+    return sample;
+  }
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     onChange: wordChanged,
     requestFrame: () => input.requestFrame(),
+    onFeedback: shareFeedback,
     // What the recogniser made of a word, for the word's menu.
     describe: (w) => {
       if (w.text != null) {
@@ -1009,6 +1036,19 @@ async function main() {
     canvas.set_scribble_erase(settings.scribbleErase);
     saveSettings();
   });
+  // Feedback on readings goes to the training data backend only when this
+  // is on, and only after consent and an invite code (set up on /train).
+  $('share-corrections').checked = settings.shareCorrections && collect.isReady();
+  $('share-corrections').addEventListener('change', (e) => {
+    if (e.target.checked && !collect.isReady()) {
+      e.target.checked = false;
+      toast('Set up saving on the Train page first (bedrock/train): it explains what is sent and needs your invite code.', 7000);
+      return;
+    }
+    settings.shareCorrections = e.target.checked;
+    saveSettings();
+    if (settings.shareCorrections) collect.flush().catch(() => {});
+  });
   $('spelling').checked = settings.spelling;
   $('spelling').addEventListener('change', (e) => {
     settings.spelling = e.target.checked;
@@ -1197,7 +1237,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { collect, shareFeedback, settings, canvas, input, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

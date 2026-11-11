@@ -14,7 +14,7 @@
     <h1>Train</h1>
   </header>
   <main class="choices">
-    <p class="lead">Write the prompts you are shown, so Bedrock can learn from real handwriting. Nothing is saved yet: this is a practice run of the pages.</p>
+    <p class="lead">Write the prompts you are shown, so Bedrock can learn from real handwriting.</p>
     <a class="choice" href="handwriting/">
       <span class="choice-title">Handwriting</span>
       <span class="choice-text">Write random words and maths, then tap Done.</span>
@@ -23,6 +23,43 @@
       <span class="choice-title">Scribble to erase</span>
       <span class="choice-text">Scribble out a word in one stroke, as you would to erase it.</span>
     </a>
+
+    <section class="card" id="setup" aria-labelledby="setup-title">
+      <h2 id="setup-title">Saving your samples</h2>
+      <p class="state" id="state" aria-live="polite"></p>
+      <form id="setup-form" novalidate>
+        <div class="consent">
+          <p><b>What is saved.</b> The pen strokes you write on these pages, the word or formula you were asked to write, the language, the kind of device (for example "ipad") and whether you used a pen, a finger or a mouse. If you choose to say, whether you are left or right handed.</p>
+          <p><b>What is not.</b> No name, no email address and no account. You are a random number made on this device. Your notes are never sent from these pages.</p>
+          <p><b>What it is for.</b> Training Bedrock's handwriting recognition, and nothing else. The samples are kept private on Cloudflare in the EU and are not shared or sold.</p>
+          <p><b>Changing your mind.</b> "Delete my contributions" below removes everything you sent.</p>
+        </div>
+        <label class="field">Invite code
+          <input id="code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="bedrock-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx">
+        </label>
+        <label class="field">Writing hand (optional)
+          <select id="handedness">
+            <option value="">Rather not say</option>
+            <option value="right">Right</option>
+            <option value="left">Left</option>
+          </select>
+        </label>
+        <details class="advanced">
+          <summary>Server address</summary>
+          <label class="field">Where samples are sent
+            <input id="api" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…workers.dev">
+          </label>
+        </details>
+        <label class="agree"><input type="checkbox" id="agree"> I agree that my samples are saved and used as described.</label>
+        <p class="error" id="setup-error" hidden></p>
+        <div class="actions">
+          <button type="submit" class="primary" id="save">Save</button>
+          <button type="button" id="stop" hidden>Stop saving</button>
+          <button type="button" class="danger" id="delete" hidden>Delete my contributions</button>
+        </div>
+      </form>
+    </section>
   </main>
+  <script type="module" src="setup.js"></script>
 </body>
 </html>
