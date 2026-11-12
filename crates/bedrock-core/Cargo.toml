@@ -1,0 +1,11 @@
+[package]
+name = "bedrock-core"
+description = "Platform independent canvas engine for Bedrock: strokes, brushes, camera, note format."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+miniz_oxide = "0.9"

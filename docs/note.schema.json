@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ReelPlum/Bedrock/docs/note.schema.json",
+  "title": "Bedrock note (note.json)",
+  "type": "object",
+  "required": ["format", "strokes"],
+  "properties": {
+    "format": { "const": "bedrock-note" },
+    "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string" },
+    "created": { "type": "number", "description": "Unix time, ms" },
+    "modified": { "type": "number", "description": "Unix time, ms" },
+    "background": { "$ref": "#/$defs/color" },
+    "paper": { "type": "string", "examples": ["plain", "dots", "grid", "lines"] },
+    "units": { "const": "px" },
+    "channels": {
+      "type": "array",
+      "items": { "type": "string" },
+      "allOf": [{ "contains": { "const": "x" } }, { "contains": { "const": "y" } }],
+      "default": ["x", "y", "pressure", "altitude", "azimuth", "t"]
+    },
+    "strokes": { "type": "array", "items": { "$ref": "#/$defs/stroke" } },
+    "recognition": {
+      "description": "Only in standalone .json/.svg; inside .bedrock this is recognized.json",
+      "type": "array",
+      "items": { "$ref": "#/$defs/recognized" }
+    },
+    "links": {
+      "description": "Handwriting that links somewhere (saved only while all its strokes exist)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["strokes", "target"],
+        "properties": {
+          "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 },
+          "target": { "type": "string" },
+          "type": { "type": "string", "description": "url | note | later kinds; unknown kinds are kept", "default": "url" },
+          "text": { "type": "string", "description": "The linked words as recognised text" }
+        }
+      }
+    },
+    "groups": {
+      "description": "Strokes the writer made into one word, overriding the automatic word split",
+      "type": "array",
+      "items": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 }
+    },
+    "kinds": {
+      "description": "Strokes the writer said are text or maths; a word with any of these strokes follows it",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["strokes", "kind"],
+        "properties": {
+          "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" }, "minItems": 1 },
+          "kind": { "type": "string", "enum": ["text", "math", "drawing"] }
+        }
+      }
+    },
+    "images": {
+      "description": "Pictures on the page (files in the bundle), under all ink",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "x", "y", "w", "h"],
+        "properties": {
+          "id": { "$ref": "#/$defs/strokeId" },
+          "file": { "type": "string", "pattern": "^images/" },
+          "x": { "type": "number" }, "y": { "type": "number" },
+          "w": { "type": "number", "exclusiveMinimum": 0 }, "h": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "texts": {
+      "description": "Text boxes (typed or pasted text) on the page, under all ink; the lines fill the box's height",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "x", "y", "w", "h"],
+        "properties": {
+          "id": { "$ref": "#/$defs/strokeId" },
+          "text": { "type": "string" },
+          "x": { "type": "number" }, "y": { "type": "number" },
+          "w": { "type": "number", "exclusiveMinimum": 0 }, "h": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
+    "strokeId": { "type": "string", "pattern": "^[0-9a-f]{1,16}$" },
+    "stroke": {
+      "type": "object",
+      "required": ["id", "brush", "points"],
+      "properties": {
+        "id": { "$ref": "#/$defs/strokeId" },
+        "brush": {
+          "type": "object",
+          "required": ["kind", "color", "size"],
+          "properties": {
+            "kind": { "enum": ["pen", "pencil", "fountain", "marker", "highlighter"] },
+            "color": { "$ref": "#/$defs/color" },
+            "size": { "type": "number", "exclusiveMinimum": 0 },
+            "style": { "enum": ["solid", "dashed", "dotted"], "default": "solid" },
+            "stabilizer": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+            "taper_start": { "type": "number", "minimum": 0, "maximum": 1 },
+            "taper_end": { "type": "number", "minimum": 0, "maximum": 1 },
+            "taper_fade": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+            "pressure": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+            "speed": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "device": { "enum": ["pen", "mouse", "touch"] },
+        "start": { "type": "number", "description": "Unix time of the first sample, ms" },
+        "derivedFrom": { "type": "array", "items": { "$ref": "#/$defs/strokeId" } },
+        "points": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Flat list, channels.length numbers per sample"
+        }
+      }
+    },
+    "recognized": {
+      "type": "object",
+      "required": ["id", "text", "strokes"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "strokes": { "type": "array", "items": { "$ref": "#/$defs/strokeId" } },
+        "alternatives": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "language": { "type": "string" },
+        "engine": { "type": "string" }
+      }
+    }
+  }
+}

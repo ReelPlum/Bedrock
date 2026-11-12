@@ -1,0 +1,17 @@
+{
+  "name": "bedrock-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bedrock web app: infinite canvas for Apple Pencil, rendered by Rust/WebAssembly.",
+  "scripts": {
+    "build": "../../scripts/build-web.sh",
+    "start": "node serve.mjs 8080",
+    "pretest": "node tests/fetch-libs.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
+    "playwright": "^1.48.0"
+  }
+}

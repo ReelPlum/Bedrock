@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/bedrock-core", "crates/bedrock-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/ReelPlum/Bedrock"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

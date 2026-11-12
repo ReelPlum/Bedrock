@@ -1,0 +1,54 @@
+name: Pages
+
+# Publishes the web app to GitHub Pages: https://reelplum.github.io/Bedrock/
+# One-time setup in the repository: Settings > Pages > Source: GitHub Actions,
+# and (while deploying from a branch other than main) allow that branch in
+# Settings > Environments > github-pages > Deployment branches.
+
+on:
+  push:
+    branches: [main, master, claude/project-thread-764qqv]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.130
+      - name: Build WebAssembly
+        run: ./scripts/build-web.sh
+      - name: Collect the site
+        run: |
+          mkdir -p _site
+          cd apps/web
+          cp -r index.html style.css sw.js manifest.webmanifest src pkg dict icons train ../../_site/
+          touch ../../_site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
