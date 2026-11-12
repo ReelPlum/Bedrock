@@ -1,0 +1,9 @@
+{
+  "id": "bedrock-notes",
+  "name": "Bedrock",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Handwritten notes on an infinite canvas, made for Apple Pencil. Link handwriting to your notes and find it with search.",
+  "author": "Bedrock",
+  "isDesktopOnly": false
+}

@@ -20,6 +20,14 @@ html, body {
 #stage { position: fixed; inset: 0; touch-action: none; }
 #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 #overlay, #marks { pointer-events: none; }
+/* Where a search hit or a link landed: a frame that fades away. */
+.jump-flash {
+  position: absolute; pointer-events: none; border-radius: 10px;
+  border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+  animation: jump-flash 1.8s ease-out forwards;
+}
+@keyframes jump-flash { 0%, 55% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .jump-flash { animation-duration: 3s; animation-timing-function: step-end; } }
 /* A held stroke lifts off the paper: it alone is on the ink layer then, so the shadow follows the ink. */
 #overlay { filter: none; transition: filter 160ms ease-out; }
 #overlay.lifted { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.28)); }

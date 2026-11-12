@@ -30,7 +30,14 @@ export class WordMenu {
     for (const t of LINK_TYPES.filter((t) => t.available)) {
       types.append(Object.assign(document.createElement('option'), { value: t.id, textContent: t.label }));
     }
-    types.addEventListener('change', () => this._typeChanged());
+    types.addEventListener('change', () => {
+      this._typeChanged();
+      if (linkType(types.value).pick) this._browse();
+    });
+    // Kinds of link with a picker (notes in the host app) get a Browse button.
+    const browse = Object.assign(document.createElement('button'), { type: 'button', id: 'wm-link-browse', textContent: 'Browse…', hidden: true });
+    browse.addEventListener('click', () => this._browse());
+    $('wm-link-target').after(browse);
     $('wm-close').addEventListener('click', () => this.close());
     $('wm-open').addEventListener('click', () => {
       const l = this.word?.link;
@@ -41,6 +48,11 @@ export class WordMenu {
     $('wm-link').addEventListener('click', () => this._show('link'));
     $('wm-unlink').addEventListener('click', () => {
       if (this.word && this._link('', '')) this.onChange();
+      this.close();
+    });
+    $('wm-copy-here').addEventListener('click', () => {
+      const stroke = this._firstStroke();
+      if (stroke) linkType('note').copyHere?.(stroke);
       this.close();
     });
     $('wm-correct').addEventListener('click', () => { if (this._ensureWord()) this._show('correct'); });
@@ -210,6 +222,8 @@ export class WordMenu {
     $('wm-open').hidden = !l || !type;
     $('wm-unlink').hidden = !l;
     $('wm-link').textContent = l ? 'Change link…' : 'Make a link…';
+    // Inside a host (Obsidian), other notes can link to this very word.
+    $('wm-copy-here').hidden = !linkType('note').copyHere || !this._firstStroke();
     this._show('main');
     this.el.hidden = false;
     this._place();
@@ -245,6 +259,11 @@ export class WordMenu {
     paper?.classList.add('behind-lift');
   }
 
+  /** A stroke that stands for what the menu is open on. */
+  _firstStroke() {
+    return this.word?.strokes?.[0] || this.selection?.strokes?.[0] || null;
+  }
+
   close() {
     if (!this.el.hidden) this._lift([]);
     this.el.hidden = true;
@@ -261,11 +280,15 @@ export class WordMenu {
     if (view === 'link') {
       const l = this.word.link;
       const types = $('wm-link-type');
+      const preferred = LINK_TYPES.find((t) => t.available && t.preferred);
       if (l && [...types.options].some((o) => o.value === l.type)) types.value = l.type;
+      else if (!l && preferred) types.value = preferred.id;
       $('wm-link-target').value = l ? l.target : '';
       $('wm-link-error').hidden = true;
       this._typeChanged();
       $('wm-link-target').focus();
+      // A new link to a host note starts in the host's picker.
+      if (!l && linkType(types.value).pick) this._browse();
     } else if (view === 'correct') {
       $('wm-correct-text').value = this.word.text ?? '';
       $('wm-correct-text').focus();
@@ -284,6 +307,20 @@ export class WordMenu {
     const input = this.$('wm-link-target');
     input.placeholder = t.placeholder;
     input.type = t.inputType;
+    this.$('wm-link-browse').hidden = !t.pick;
+  }
+
+  /** Choose the target with the link kind's picker; links straight away. */
+  async _browse() {
+    const t = linkType(this.$('wm-link-type').value);
+    const word = this.word;
+    if (!t.pick || !word) return;
+    let target = null;
+    try { target = await t.pick(this.$('wm-link-target').value); } catch (e) { console.warn('picker failed', e); }
+    // Ignore a pick that arrives after the menu moved on to something else.
+    if (!target || this.word !== word || this.$('wm-link-type').value !== t.id) return;
+    this.$('wm-link-target').value = target;
+    this._saveLink();
   }
 
   _saveLink() {

@@ -47,3 +47,16 @@ jobs:
       - name: Browser tests
         working-directory: apps/web
         run: npm test
+      # The Obsidian plugin is built from the same web app and WebAssembly.
+      - name: Obsidian plugin tests
+        working-directory: apps/obsidian
+        run: |
+          npm install --no-package-lock
+          npm test
+      - name: Build Obsidian plugin
+        working-directory: apps/obsidian
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bedrock-obsidian-plugin
+          path: apps/obsidian/dist/

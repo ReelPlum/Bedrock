@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Bedrock host harness</title></head>
+<body style="margin:0">
+<!-- Plays Obsidian's part for the browser tests: the plugin's real bridge,
+     session and indexer, with an in-memory vault instead of Obsidian's. -->
+<iframe id="frame" style="width:1024px;height:768px;border:0;display:block"></iframe>
+<script type="module">
+import { HostBridge } from '/obsidian/src/bridge.js';
+import { createSession } from '/obsidian/src/session.js';
+import { Indexer, strokesForIndexPlace } from '/obsidian/src/index-note.js';
+import { readZip, text } from '/obsidian/src/zip.js';
+import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
+
+const frame = document.getElementById('frame');
+const vault = new FakeVault();
+const indexer = new Indexer(vault);
+const calls = [];
+const cameras = new Map();
+let bridge = null;
+let session = null;
+let file = null;
+let pickAnswer = 'Ideas';
+
+window.host = {
+  vault,
+  calls,
+  setPick(v) { pickAnswer = v; },
+  get session() { return session; },
+  get bridge() { return bridge; },
+  /** Open a vault file in the iframe, as the plugin's view does. */
+  async open(path) {
+    bridge?.close();
+    file = vault.files.get(path) || (await vault.createBinary(path, new ArrayBuffer(0)));
+    let ready;
+    const isReady = new Promise((r) => { ready = r; });
+    session = createSession({
+      vault,
+      file: () => file,
+      indexer,
+      kv: { get: (k) => cameras.get(k), set: async (k, v) => { cameras.set(k, v); } },
+      pickNote: async (query, source) => { calls.push(['pick', query, source]); return pickAnswer; },
+      openLink: (target, source) => calls.push(['open', target, source]),
+      copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
+      onReady: () => ready(),
+    });
+    bridge = new HostBridge(() => frame.contentWindow, session.handlers);
+    bridge.listen(window);
+    frame.src = `/index.html?host=obsidian&v=${Math.random()}`;
+    await isReady;
+  },
+  /** What the vault holds: the note's entries and its index note. */
+  async files(path) {
+    const f = vault.files.get(path);
+    const z = await readZip(f.data);
+    const note = JSON.parse(text(z.get('note.json')) || '{}');
+    const index = vault.files.get(indexer.pathFor(path))?.data ?? null;
+    return { strokes: (note.strokes || []).length, links: text(z.get('links.md')), index, size: f.data.byteLength };
+  },
+  /** Click a search result: `text` as found in the note's index note.
+   *  Works out the ink as the plugin does and asks the open view to show
+   *  it. Resolves to the stroke ids and the app's answer. */
+  async searchHit(path, text) {
+    const markdown = vault.files.get(indexer.pathFor(path)).data;
+    const i = markdown.indexOf(text);
+    const strokes = await strokesForIndexPlace(path, vault.files.get(path).data, markdown, { match: { content: markdown, matches: [[i, i + text.length]] } });
+    return { strokes, shown: await bridge.send('show', { strokes }) };
+  },
+  /** Another device changed the file: tell the view, as the plugin does. */
+  async outsideChange(path, fromPath) {
+    vault.outsideChange(path, vault.files.get(fromPath).data.slice(0));
+    if (session.isOutsideChange(file)) await bridge.send('reload');
+  },
+};
+</script>
+</body>
+</html>

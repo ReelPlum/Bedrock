@@ -15,6 +15,10 @@ pub const MAX_ZOOM: f64 = 2.5;
 /// f32 values (always relative to a nearby origin) stay exact.
 pub const WORLD_LIMIT: f64 = 1.0e7;
 
+/// Ink shown by [`Camera::reveal`] is at least this tall on screen (CSS px)
+/// where the zoom limits and the view allow.
+pub const REVEAL_MIN_HEIGHT: f64 = 24.0;
+
 /// Keep a world point on the page.
 pub fn clamp_to_world(p: Vec2) -> Vec2 {
     let c = |v: f64| if v.is_finite() { v.clamp(-WORLD_LIMIT, WORLD_LIMIT) } else { 0.0 };
@@ -95,6 +99,22 @@ impl Camera {
         let center = Vec2::new((r.min.x + r.max.x) / 2.0, (r.min.y + r.max.y) / 2.0);
         self.center_on(center, z.min(4.0));
     }
+
+    /// Bring `r` to the middle of the view so it can be read: the zoom is
+    /// kept if `r` fits and its writing is legible, lowered only as far as
+    /// needed to fit it, and raised (up to 100%) if it would be smaller than
+    /// [`REVEAL_MIN_HEIGHT`] on screen. Used to jump to a search hit.
+    pub fn reveal(&mut self, r: &Rect, margin: f64) {
+        if r.is_empty() {
+            return;
+        }
+        let avail = Vec2::new((self.viewport.x - 2.0 * margin).max(1.0), (self.viewport.y - 2.0 * margin).max(1.0));
+        let fit = (avail.x / r.width().max(1.0)).min(avail.y / r.height().max(1.0));
+        let legible = (REVEAL_MIN_HEIGHT / r.height().max(1.0)).min(1.0);
+        let zoom = self.zoom.max(legible).min(fit);
+        let center = Vec2::new((r.min.x + r.max.x) / 2.0, (r.min.y + r.max.y) / 2.0);
+        self.center_on(center, zoom);
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +172,32 @@ mod tests {
         // Bad input can't break the camera.
         c.center_on(Vec2::new(f64::NAN, 0.0), f64::NAN);
         assert!(c.offset.x.is_finite() && c.zoom.is_finite());
+    }
+
+    #[test]
+    fn reveal_centres_a_rect_and_keeps_the_zoom_when_it_can() {
+        let mut c = Camera { zoom: 1.5, ..Default::default() };
+        // A word far away: centred, zoom untouched.
+        let word = Rect::new(Vec2::new(5000.0, -3000.0), Vec2::new(5120.0, -2960.0));
+        c.reveal(&word, 40.0);
+        assert_eq!(c.zoom, 1.5);
+        let mid = c.screen_to_world(c.viewport * 0.5);
+        assert!(mid.distance(Vec2::new(5060.0, -2980.0)) < 1e-9, "{mid:?}");
+        // A paragraph wider than the view: zoomed out just enough to fit.
+        let wide = Rect::new(Vec2::new(0.0, 0.0), Vec2::new(2000.0, 100.0));
+        c.reveal(&wide, 40.0);
+        assert!(c.zoom < 1.5);
+        let v = c.visible_world();
+        assert!(v.contains(wide.min) && v.contains(wide.max));
+        // Zoomed far out, small writing is brought up to a legible size.
+        c.zoom = MIN_ZOOM;
+        let small = Rect::new(Vec2::new(0.0, 0.0), Vec2::new(60.0, 30.0));
+        c.reveal(&small, 40.0);
+        assert!((small.height() * c.zoom - REVEAL_MIN_HEIGHT).abs() < 1e-9, "{}", c.zoom);
+        // Nothing to show: the view stays where it is.
+        let before = c;
+        c.reveal(&Rect::EMPTY, 40.0);
+        assert_eq!(c, before);
     }
 
     #[test]

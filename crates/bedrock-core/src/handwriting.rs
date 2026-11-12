@@ -128,6 +128,23 @@ impl Handwriting {
         &self.layout
     }
 
+    /// The strokes of every word that has one of `ids`, plus `ids` that are
+    /// in no word (drawings), without repeats. A link or search hit names a
+    /// few strokes; this is all the ink to show for it.
+    pub fn whole_words(&mut self, doc: &Document, ids: &[StrokeId]) -> Vec<StrokeId> {
+        self.refresh(doc);
+        let mut out: Vec<StrokeId> = Vec::new();
+        for w in self.layout.words.iter().filter(|w| w.strokes.iter().any(|s| ids.contains(s))) {
+            out.extend(w.strokes.iter().filter(|s| doc.strokes().iter().any(|d| d.id == **s)));
+        }
+        for id in ids {
+            if !out.contains(id) && doc.strokes().iter().any(|d| d.id == *id) {
+                out.push(*id);
+            }
+        }
+        out
+    }
+
     fn text_for<'a>(doc: &'a Document, w: &Word) -> Option<&'a RecognizedText> {
         doc.recognition.iter().find(|r| r.strokes == w.strokes)
     }
@@ -278,6 +295,22 @@ mod tests {
             x += 20.0;
         }
         x + 30.0
+    }
+
+    #[test]
+    fn one_stroke_names_its_whole_word() {
+        let mut doc = Document::new(1);
+        let first = letter(&mut doc, 0.0, 100.0);
+        letter(&mut doc, 20.0, 100.0);
+        letter(&mut doc, 40.0, 100.0);
+        let far = letter(&mut doc, 900.0, 100.0);
+        let mut hw = Handwriting::new();
+        let word = hw.whole_words(&doc, &[first]);
+        assert_eq!(word.len(), 3);
+        assert!(word.contains(&first) && !word.contains(&far));
+        // Unknown strokes (erased since the link was made) are left out.
+        assert!(hw.whole_words(&doc, &[StrokeId(0xdead)]).is_empty());
+        assert_eq!(hw.whole_words(&doc, &[far, StrokeId(0xdead)]), vec![far]);
     }
 
     #[test]

@@ -777,6 +777,26 @@ impl Canvas {
         }
     }
 
+    /// Bring ink into view: `ids` are stroke ids (hex) separated by spaces,
+    /// as a search hit or a link names them. Each is widened to its whole
+    /// word. Returns the bounds shown `[x0, y0, x1, y1]`, or nothing if none
+    /// of the strokes is on the page any more (the view then stays put).
+    pub fn reveal_strokes(&mut self, ids: &str) -> Vec<f64> {
+        let ids: Vec<_> = ids.split_whitespace().filter_map(bedrock_core::stroke::StrokeId::parse).collect();
+        let doc = &self.engine.doc;
+        let shown = self.hw.whole_words(doc, &ids);
+        let mut r = bedrock_core::geom::Rect::EMPTY;
+        for s in doc.strokes().iter().filter(|s| shown.contains(&s.id)) {
+            r = r.union(&s.bounds());
+        }
+        if r.is_empty() {
+            return Vec::new();
+        }
+        self.engine.camera.reveal(&r, 60.0);
+        self.engine.invalidate();
+        vec![r.min.x, r.min.y, r.max.x, r.max.y]
+    }
+
     pub fn fit_content(&mut self) {
         let b = self.engine.doc.bounds();
         self.engine.camera.fit(&b, 40.0);
