@@ -33,8 +33,17 @@ async function fakeBackend(ctx) {
   return server;
 }
 
-async function context() {
+/** The address is built into the app and cannot be changed on the page;
+ *  a page served from this computer may use a stored one, which is how
+ *  these tests point the app at the pretend backend. */
+async function context({ address = API } = {}) {
   const ctx = await env.browser.newContext({ viewport: { width: 900, height: 800 } });
+  if (address) {
+    await ctx.addInitScript((a) => {
+      const s = JSON.parse(localStorage.getItem('bedrock.collect.v1') || '{}');
+      if (!s.api) localStorage.setItem('bedrock.collect.v1', JSON.stringify({ ...s, api: a }));
+    }, address);
+  }
   const server = await fakeBackend(ctx);
   return { ctx, server };
 }
@@ -57,9 +66,8 @@ async function openTrainer(ctx, path = 'train/handwriting/', { wait = false } = 
   return r;
 }
 
-async function agree(page, { code = CODE, api = API, hand = 'left' } = {}) {
+async function agree(page, { code = CODE, hand = 'left' } = {}) {
   await page.fill('#code', code);
-  await page.evaluate((a) => { document.querySelector('.advanced').open = true; document.getElementById('api').value = a; }, api);
   await page.selectOption('#handedness', hand);
   await page.check('#agree');
   await page.click('#save');
@@ -141,7 +149,30 @@ test('without consent the pages are practice only: nothing is kept or sent', asy
   await ctx.close();
 });
 
-test('the consent card: no tick, no code or no address saves nothing', async () => {
+test('people cannot change the server address: there is no field, and only a page on this computer may use another', async () => {
+  const { ctx } = await context({ address: null });
+  const { page } = await openSetup(ctx);
+  assert.equal(await page.$('#api'), null, 'no address field');
+  assert.equal(await page.isDisabled('#save'), true, 'nothing to save to before the address is built in');
+  assert.match(await page.textContent('#state'), /not available yet/);
+  const r = await page.evaluate(async () => {
+    const c = await import('/src/collect.js');
+    return {
+      site: c.apiAddress('https://someone-else.example', 'reelplum.github.io'),
+      plugin: c.apiAddress('https://someone-else.example', ''),
+      local: c.apiAddress('http://127.0.0.1:8787', '127.0.0.1'),
+      built: c.DEFAULT_API,
+      agreed: c.agree({ code: 'x', api: 'https://someone-else.example' }, { getItem: () => null, setItem() {} }).api,
+    };
+  });
+  assert.equal(r.site, r.built, 'the site always uses the built-in address');
+  assert.equal(r.plugin, r.built);
+  assert.equal(r.local, 'http://127.0.0.1:8787');
+  assert.notEqual(r.agreed, 'https://someone-else.example', 'agreeing cannot set it either');
+  await ctx.close();
+});
+
+test('the consent card: no tick or no code saves nothing', async () => {
   const { ctx } = await context();
   const { page } = await openSetup(ctx);
   assert.match(await page.textContent('#state'), /^Off\./);
@@ -152,9 +183,6 @@ test('the consent card: no tick, no code or no address saves nothing', async () 
   await page.fill('#code', '');
   await page.click('#save');
   assert.match(await page.textContent('#setup-error'), /invite code/);
-  await page.fill('#code', CODE);
-  await page.click('#save');
-  assert.match(await page.textContent('#setup-error'), /Server address/);
   const s = await page.evaluate(async () => (await import('/src/collect.js')).loadState());
   assert.equal(s.consent, 0);
   assert.equal(s.contributor, '', 'no id is made before consent');

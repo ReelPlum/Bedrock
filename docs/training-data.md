@@ -59,11 +59,15 @@ connection loses nothing. The server address must be `https`.
 "Delete my contributions" on `/train` removes everything the writer sent
 and everything still waiting. "Stop saving" withdraws consent on the device.
 
-## Setting the server address
+## The server address
 
-`DEFAULT_API` in `apps/web/src/collect.js` is empty until the backend is
-deployed. Until then the address can be typed under "Server address" on
-`/train`.
+The address is built into the app (`DEFAULT_API` in
+`apps/web/src/collect.js`) and people cannot change it: `/train` has no
+field for it, and a stored address is ignored. Only a page served from this
+computer (`localhost` or `127.0.0.1`, for development and the tests) may
+use a stored address instead. `DEFAULT_API` is empty until the backend is
+deployed, and until then `/train` says saving is not available yet and the
+pages are practice only.
 
 ## Tests
 
