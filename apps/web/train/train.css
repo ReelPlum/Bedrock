@@ -33,6 +33,9 @@ button, a { font: inherit; color: inherit; }
 .prompt { text-align: center; padding: 8px 0 0; }
 .prompt-kind { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; color: var(--muted); }
 .prompt-text { font-size: clamp(28px, 6vw, 44px); line-height: 1.25; margin: 6px 0; min-height: 1.3em; font-family: "Iowan Old Style", "Palatino", Georgia, serif; }
+.prompt-text.long { font-size: clamp(15px, 4.2vw, 26px); line-height: 1.35; }
+/* A paragraph's lines are written as shown, so the page must never wrap them differently. */
+.prompt-text .line { display: block; white-space: nowrap; }
 .prompt-text .frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; font-size: 0.7em; margin: 0 0.1em; }
 .prompt-text .frac > span:first-child { border-bottom: 1.5px solid currentColor; padding: 0 0.15em; }
 .prompt-text .sqrt { border-top: 1.5px solid currentColor; padding: 0 0.1em; }
@@ -50,6 +53,10 @@ button, a { font: inherit; color: inherit; }
 .controls button:disabled { opacity: 0.4; cursor: default; }
 .controls .primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; min-width: 110px; }
 .options { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .options { flex-basis: 100%; }
+  .options button { padding: 6px 12px; font-size: 14px; }
+}
 .options button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
 .last summary { color: var(--muted); cursor: pointer; font-size: 14px; }
 .last pre { max-height: 220px; overflow: auto; font-size: 11px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; white-space: pre-wrap; word-break: break-all; }

@@ -67,6 +67,18 @@ try {
     });
   }
   await sent(page, 3);
+  // A paragraph, written line by line: about 160 strokes, label with line breaks.
+  await page.evaluate(async () => {
+    for (const b of document.querySelectorAll('#options button')) if (b.textContent !== 'Paragraphs') b.click();
+    trainer.next();
+    const box = document.getElementById('stage').getBoundingClientRect();
+    const lines = trainer.prompt.text.split('\n');
+    for (let k = 0; k < lines.length; k++) {
+      for (let i = 0; i < 40; i++) await t.line(box.left + 30 + i * 18, box.top + 40 + k * 64, box.left + 40 + i * 18, box.top + 70 + k * 64);
+    }
+    document.getElementById('done').click();
+  });
+  await sent(page, 4);
   await page.goto(`${app}train/scribble/`);
   await page.waitForFunction(() => window.trainer?.ready);
   await installPointerHelpers(page);
@@ -76,7 +88,7 @@ try {
     await t.line(box.left + 300, box.top + 200, box.left + 500, box.top + 220);
     document.getElementById('done').click();
   });
-  await sent(page, 4);
+  await sent(page, 5);
 
   // "Send every word": two words from a note go up unchecked, then the
   // writer corrects one and says the other is not a word.
@@ -98,22 +110,23 @@ try {
     await bedrock.wordSharer.scan();
   });
   assert.equal((await words()).length, 2);
-  await sent(page, 6);
+  await sent(page, 7);
   await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[0]));
   await page.click('#wm-correct');
   await page.fill('#wm-correct-text', 'hello');
   await page.press('#wm-correct-text', 'Enter');
-  await sent(page, 7);
+  await sent(page, 8);
   await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[1]));
   await page.click('#wm-drawing');
-  await sent(page, 8);
+  await sent(page, 9);
 
   const rows = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
   console.table(rows.map((r) => ({ source: r.source, kind: r.kind, label: r.label, label_source: r.label_source, model_reading: r.model_reading, status: r.status, strokes: r.strokes, points: r.points, device: r.device, pointer: r.pointer, language: r.language })));
-  assert.equal(rows.length, 8, 'every sample the app sent passed the backend\'s checks');
-  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'note', 'note', 'note', 'note']);
-  assert.equal(rows[3].kind, 'scribble');
-  const note = rows.slice(4).map((r) => [r.kind, r.label, r.label_source, r.status]);
+  assert.equal(rows.length, 9, 'every sample the app sent passed the backend\'s checks');
+  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'train', 'note', 'note', 'note', 'note']);
+  assert.equal(rows[4].kind, 'scribble');
+  assert.ok(rows[3].label.includes('\n') && rows[3].strokes >= 120, 'the paragraph kept its lines and all its strokes');
+  const note = rows.slice(5).map((r) => [r.kind, r.label, r.label_source, r.status]);
   assert.deepEqual(note.sort(), [
     ['drawing', '', 'corrected', 'new'],
     ['text', 'hello', 'corrected', 'new'],
@@ -124,7 +137,7 @@ try {
   // And "Delete my contributions" really deletes.
   setup.on('dialog', (d) => d.accept());
   await setup.click('#delete');
-  await setup.waitForFunction(() => /Deleted 8 samples/.test(document.getElementById('state').textContent));
+  await setup.waitForFunction(() => /Deleted 9 samples/.test(document.getElementById('state').textContent));
   const left = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
   assert.equal(left.length, 0);
   console.log('ok: the app and the backend agree');

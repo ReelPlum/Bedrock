@@ -7,12 +7,38 @@
 import init, { Canvas } from '../pkg/bedrock_web.js';
 import { InputController } from '../src/input.js';
 import { randomSeed } from '../src/storage.js';
-import { wordPrompt, mathPrompt, scribblePrompt } from './prompts.js';
+import { wordPrompt, sentencePrompt, paragraphPrompt, mathPrompt, scribblePrompt } from './prompts.js';
 import * as collect from '../src/collect.js';
 
 const $ = (id) => document.getElementById(id);
 const mode = document.body.dataset.mode; // 'handwriting' | 'scribble'
 const OPTIONS_KEY = 'bedrock.train.options';
+
+// What the handwriting page asks for, and how often when all are on.
+const PROMPTS = {
+  words: { label: 'Words', weight: 0.3, make: wordPrompt },
+  sentences: { label: 'Sentences', weight: 0.35, make: sentencePrompt },
+  paragraphs: { label: 'Paragraphs', weight: 0.15, make: paragraphPrompt },
+  maths: { label: 'Maths', weight: 0.2, make: mathPrompt },
+};
+
+/** One of the switched-on kinds of prompt, by weight. */
+function choose(what, r = Math.random()) {
+  const on = Object.keys(PROMPTS).filter((k) => what[k]);
+  const total = on.reduce((t, k) => t + PROMPTS[k].weight, 0);
+  let x = r * total;
+  for (const k of on) {
+    x -= PROMPTS[k].weight;
+    if (x < 0) return k;
+  }
+  return on[on.length - 1];
+}
+
+function hintFor(p) {
+  if (p?.shape === 'paragraph') return 'Write it line by line, breaking the lines where they break here, then tap Done.';
+  if (p?.shape === 'sentence') return 'Write it on one line, then tap Done.';
+  return 'Write what you see, then tap Done.';
+}
 
 async function main() {
   await init();
@@ -34,7 +60,7 @@ async function main() {
   const samples = [];
   let prompt = null;
   let shownAt = 0;
-  let what = { words: true, maths: true };
+  let what = { words: true, sentences: true, paragraphs: true, maths: true };
   try { what = { ...what, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) || '{}') }; } catch (_) { /* private mode */ }
 
   const input = new InputController(stage, canvas, { onFrame: update, onCommit: update });
@@ -73,12 +99,12 @@ async function main() {
       $('target').innerHTML = prompt.html;
       hint('Scribble out the word in one stroke, then tap Done.');
     } else {
-      const useMaths = what.maths && (!what.words || Math.random() < 0.35);
-      prompt = useMaths ? mathPrompt() : wordPrompt();
-      $('prompt-kind').textContent = useMaths ? 'Write this formula' : 'Write this';
+      prompt = PROMPTS[choose(what)].make();
+      $('prompt-kind').textContent = prompt.kind === 'math' ? 'Write this formula' : prompt.shape === 'paragraph' ? 'Write this paragraph' : 'Write this';
       $('prompt-text').innerHTML = prompt.html;
+      $('prompt-text').classList.toggle('long', prompt.shape === 'sentence' || prompt.shape === 'paragraph');
       $('target').textContent = '';
-      hint('Write what you see, then tap Done.');
+      hint(hintFor(prompt));
     }
     shownAt = Date.now();
     input.requestFrame();
@@ -134,24 +160,24 @@ async function main() {
     else showStatus(await collect.status());
   });
   $('skip').addEventListener('click', next);
-  $('undo').addEventListener('click', () => { canvas.undo(); hint(mode === 'scribble' ? 'Scribble out the word in one stroke, then tap Done.' : 'Write what you see, then tap Done.'); input.requestFrame(); update(); });
+  $('undo').addEventListener('click', () => { canvas.undo(); hint(mode === 'scribble' ? 'Scribble out the word in one stroke, then tap Done.' : hintFor(prompt)); input.requestFrame(); update(); });
   $('clear').addEventListener('click', () => { canvas.new_document(...randomSeed()); canvas.set_paper(mode === 'handwriting' ? 'lines' : 'plain'); input.requestFrame(); update(); });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !$('done').disabled) $('done').click();
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); $('undo').click(); }
   });
 
-  // Handwriting: words, maths, or both.
+  // Handwriting: any mix of words, sentences, paragraphs and maths.
   if (mode === 'handwriting') {
     const opts = $('options');
-    for (const [key, label] of [['words', 'Words'], ['maths', 'Maths']]) {
+    for (const [key, { label }] of Object.entries(PROMPTS)) {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = label;
       b.setAttribute('aria-pressed', String(what[key]));
       b.addEventListener('click', () => {
         const nextWhat = { ...what, [key]: !what[key] };
-        if (!nextWhat.words && !nextWhat.maths) return; // keep one on
+        if (!Object.keys(PROMPTS).some((k) => nextWhat[k])) return; // keep one on
         what = nextWhat;
         b.setAttribute('aria-pressed', String(what[key]));
         try { localStorage.setItem(OPTIONS_KEY, JSON.stringify(what)); } catch (_) { /* private mode */ }

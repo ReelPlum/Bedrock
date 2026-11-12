@@ -111,6 +111,21 @@ test('ids, device class and the server address check', async () => {
   await ctx.close();
 });
 
+test('a batch stays under the request size limit, but always takes at least one sample', async () => {
+  const { ctx } = await context();
+  const { page } = await openSetup(ctx);
+  const r = await page.evaluate(async () => {
+    const { fitBatch, BATCH_BYTES } = await import('/src/collect.js');
+    const big = (id) => ({ id, strokes: [{ points: new Array(30_000).fill(123.45) }] }); // about 210 KB
+    return { limit: BATCH_BYTES, two: fitBatch([big('a'), big('b'), big('c')]).map((s) => s.id), huge: fitBatch([{ id: 'x', pad: 'z'.repeat(600_000) }, big('y')]).map((s) => s.id), small: fitBatch([{ id: 1 }, { id: 2 }, { id: 3 }]).length };
+  });
+  assert.equal(r.limit, 400_000);
+  assert.deepEqual(r.two, ['a']);
+  assert.deepEqual(r.huge, ['x'], 'one sample alone is still tried');
+  assert.equal(r.small, 3);
+  await ctx.close();
+});
+
 test('without consent the pages are practice only: nothing is kept or sent', async () => {
   const { ctx, server } = await context();
   const { page, errors } = await openTrainer(ctx);
