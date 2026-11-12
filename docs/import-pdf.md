@@ -15,7 +15,8 @@ a picture.
 |---|---|
 | Each pen stroke | One stroke, in the order it was written, with its colour and width. Transparent strokes become highlighter strokes. |
 | GoodNotes's own reading of the handwriting (hidden text in the page) | The reading of the word under it (engine `pdf-text`), shown like any recognised word. The recogniser keeps it rather than reading the word again. |
-| Pictures, typed text, filled shapes | Left out; the message after importing says how many. |
+| Pictures (screenshots, photos) | The same picture, at the same place and size on the page, under the ink. JPEGs are kept as they are; other pictures are saved as PNG. |
+| Typed text, filled shapes, JPEG 2000 pictures | Left out; the message after importing says how many. |
 
 A PDF keeps no timing or pressure. The strokes get times as if written at
 an even speed, and a middle pressure, so stroke order is kept exactly.
@@ -37,3 +38,9 @@ the width. Stroked paths (other apps) are taken as they are. The hidden
 text layer sits far off the page, so it is first lined up with the ink
 (bounds, then nudged towards the ink under it until it settles) and each
 piece of text is given to the word it lands on.
+
+Pictures are placed by the matrix in force when they are drawn (their
+bounds, so a mirrored picture is mirrored back). Raw pixels in any bit
+depth, grey, RGB, CMYK or palette colours, with or without PNG
+predictors, are written as PNG, with a soft mask as transparency. A
+picture drawn on every page (a paper template, say) is decoded once.

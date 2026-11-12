@@ -16,15 +16,20 @@
 //! invisible text. Each piece of it is matched to the word under it and kept
 //! as that word's recognised text (engine [`ENGINE`]).
 //!
-//! Only what is needed is read: the page tree, content streams (Flate or
-//! none), form XObjects, colours, transparency and text positions. Pictures
-//! and visible text are left out and reported.
+//! Pictures come across where they sit on the page: JPEGs as they are, and
+//! raw pixels (any bit depth, grey, RGB, CMYK or palette, with a soft mask
+//! as transparency) as PNG files.
+//!
+//! Only what is needed is read: the page tree, streams (Flate, with PNG
+//! predictors, or none), form XObjects, pictures, colours, transparency and
+//! text positions. Visible text and inline images are left out and
+//! reported.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::brush::{Brush, BrushKind};
 use crate::color::Rgba;
-use crate::document::{Document, RecognizedText};
+use crate::document::{Document, Image, RecognizedText};
 use crate::geom::{Rect, Vec2};
 use crate::input::InputPoint;
 use crate::stroke::{InputDevice, Stroke};
@@ -69,14 +74,15 @@ pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, St
     }
     let mut out = Vec::new();
     let mut t = start_ms;
+    let mut pictures = Pictures::new();
     for (i, page) in pages.iter().enumerate() {
         let mut ink = Ink::default();
         let content = file.page_content(page);
         let res = page.resources.clone();
         run(&file, &content, &res, IDENTITY, &mut ink, 0);
         let seed = seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut p = build_page(&ink, page.media, seed, &mut t);
-        if !p.doc.is_empty() {
+        let mut p = build_page(&file, &ink, page.media, seed, &mut t, &mut pictures);
+        if !p.doc.is_empty() || !p.doc.images().is_empty() {
             p.doc.created = start_ms;
             p.doc.modified = start_ms;
             out.push(p);
@@ -477,23 +483,37 @@ impl File {
     /// supported.
     fn decoded(&self, n: u32) -> Option<Vec<u8>> {
         let s = self.objects.get(&n)?;
-        let raw = s.stream.as_ref()?;
-        let filters: Vec<String> = match &s.value {
-            Obj::Dict(d) => match d.get("Filter").map(|f| self.get(f)) {
-                Some(Obj::Name(f)) => vec![f.clone()],
-                Some(Obj::Arr(a)) => a.iter().filter_map(|f| self.get(f).name().map(String::from)).collect(),
-                _ => Vec::new(),
-            },
+        let (filters, parms) = self.filters(&s.value);
+        self.unfilter(s.stream.as_ref()?.clone(), &filters, &parms)
+    }
+
+    /// A stream's filters in order, each with its parameters.
+    fn filters(&self, value: &Obj) -> (Vec<String>, Vec<Option<Dict>>) {
+        let Obj::Dict(d) = value else { return (Vec::new(), Vec::new()) };
+        let filters: Vec<String> = match d.get("Filter").map(|f| self.get(f)) {
+            Some(Obj::Name(f)) => vec![f.clone()],
+            Some(Obj::Arr(a)) => a.iter().filter_map(|f| self.get(f).name().map(String::from)).collect(),
             _ => Vec::new(),
         };
-        let mut data = raw.clone();
-        for f in filters {
+        let parms: Vec<Option<Dict>> = match d.get("DecodeParms").or(d.get("DP")).map(|p| self.get(p)) {
+            Some(Obj::Arr(a)) => a.iter().map(|p| self.dict(p).cloned()).collect(),
+            Some(Obj::Dict(p)) => vec![Some(p.clone())],
+            _ => Vec::new(),
+        };
+        (filters, parms)
+    }
+
+    fn unfilter(&self, mut data: Vec<u8>, filters: &[String], parms: &[Option<Dict>]) -> Option<Vec<u8>> {
+        for (i, f) in filters.iter().enumerate() {
             data = match f.as_str() {
                 "FlateDecode" | "Fl" => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_STREAM)
                     .or_else(|_| miniz_oxide::inflate::decompress_to_vec_with_limit(&data, MAX_STREAM))
                     .ok()?,
                 _ => return None,
             };
+            if let Some(Some(p)) = parms.get(i) {
+                data = unpredict(data, p, self)?;
+            }
         }
         Some(data)
     }
@@ -658,7 +678,10 @@ struct Span {
 struct Ink {
     paths: Vec<InkPath>,
     spans: Vec<Span>,
-    images: usize,
+    /// Picture objects drawn, each with the matrix that places it.
+    pictures: Vec<(u32, Matrix)>,
+    /// Pictures that cannot be brought in (inline images).
+    skipped_pictures: usize,
 }
 
 #[derive(Clone)]
@@ -910,7 +933,7 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                                         run(file, &data, &sub_res, mul(&m, &gs.ctm), ink, depth + 1);
                                     }
                                 }
-                                Some("Image") => ink.images += 1,
+                                Some("Image") => ink.pictures.push((n, gs.ctm)),
                                 _ => {}
                             }
                         }
@@ -922,12 +945,359 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                 if let Some(e) = find(content, b"EI", lx.pos) {
                     lx.pos = e + 2;
                 }
-                ink.images += 1;
+                ink.skipped_pictures += 1;
             }
             _ => {}
         }
         args.clear();
     }
+}
+
+// ---- Pictures -----------------------------------------------------------------
+
+/// Pictures already made, by object and mirroring, so one drawn on every
+/// page (a paper template, say) is decoded once: its file name and bytes.
+type Pictures = HashMap<(u32, (bool, bool)), Option<(String, Vec<u8>)>>;
+
+/// Largest picture brought in, in pixels.
+const MAX_PIXELS: usize = 16_777_216;
+
+/// Undoes a PNG predictor (`/Predictor` 10 to 15), which stores each row as
+/// a filter byte and the row's differences. Other predictors are refused.
+fn unpredict(data: Vec<u8>, parms: &Dict, file: &File) -> Option<Vec<u8>> {
+    let get = |k: &str, d: f64| parms.get(k).and_then(|v| file.get(v).num()).unwrap_or(d) as usize;
+    let predictor = get("Predictor", 1.0);
+    if predictor <= 1 {
+        return Some(data);
+    }
+    if predictor < 10 {
+        return None; // TIFF predictor: not used by note apps
+    }
+    let (colors, bpc, columns) = (get("Colors", 1.0).max(1), get("BitsPerComponent", 8.0).max(1), get("Columns", 1.0));
+    let row = (colors * bpc * columns).div_ceil(8);
+    let bpp = (colors * bpc).div_ceil(8);
+    if row == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len() / (row + 1) * row);
+    let mut prev = vec![0u8; row];
+    for chunk in data.chunks(row + 1) {
+        if chunk.len() < row + 1 {
+            break;
+        }
+        let (kind, src) = (chunk[0], &chunk[1..]);
+        let mut cur = vec![0u8; row];
+        for i in 0..row {
+            let a = if i >= bpp { cur[i - bpp] } else { 0 };
+            let b = prev[i];
+            let c = if i >= bpp { prev[i - bpp] } else { 0 };
+            let guess = match kind {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => ((a as u16 + b as u16) / 2) as u8,
+                4 => {
+                    let p = a as i16 + b as i16 - c as i16;
+                    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
+                    if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    }
+                }
+                _ => return None,
+            };
+            cur[i] = src[i].wrapping_add(guess);
+        }
+        out.extend_from_slice(&cur);
+        prev = cur;
+    }
+    Some(out)
+}
+
+/// A picture's colour space.
+#[derive(Debug, Clone)]
+enum Space {
+    Gray,
+    Rgb,
+    Cmyk,
+    /// A palette: `base` colours, `table` holding one entry per index.
+    Indexed(Box<Space>, Vec<u8>),
+}
+
+impl Space {
+    fn of(file: &File, o: &Obj, depth: usize) -> Option<Space> {
+        if depth > 4 {
+            return None;
+        }
+        let by_count = |n: f64| match n as usize {
+            1 => Some(Space::Gray),
+            3 => Some(Space::Rgb),
+            4 => Some(Space::Cmyk),
+            _ => None,
+        };
+        match file.get(o) {
+            Obj::Name(n) => match n.as_str() {
+                "DeviceGray" | "G" | "CalGray" => Some(Space::Gray),
+                "DeviceRGB" | "RGB" | "CalRGB" => Some(Space::Rgb),
+                "DeviceCMYK" | "CMYK" => Some(Space::Cmyk),
+                _ => None,
+            },
+            Obj::Arr(a) => match a.first().and_then(|f| file.get(f).name())? {
+                "ICCBased" => {
+                    let d = file.dict(a.get(1)?)?;
+                    match d.get("N").and_then(|n| file.get(n).num()) {
+                        Some(n) => by_count(n),
+                        None => Space::of(file, d.get("Alternate")?, depth + 1),
+                    }
+                }
+                "CalRGB" => Some(Space::Rgb),
+                "CalGray" => Some(Space::Gray),
+                "Indexed" | "I" => {
+                    let base = Space::of(file, a.get(1)?, depth + 1)?;
+                    if matches!(base, Space::Indexed(..)) {
+                        return None;
+                    }
+                    let table = match a.get(3)? {
+                        Obj::Ref(n) if file.objects.get(n).is_some_and(|s| s.stream.is_some()) => file.decoded(*n)?,
+                        t => match file.get(t) {
+                            Obj::Str(b) => b.clone(),
+                            _ => return None,
+                        },
+                    };
+                    Some(Space::Indexed(Box::new(base), table))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn components(&self) -> usize {
+        match self {
+            Space::Gray | Space::Indexed(..) => 1,
+            Space::Rgb => 3,
+            Space::Cmyk => 4,
+        }
+    }
+}
+
+/// Grey or RGB bytes for one pixel's colour values (0 to 1 each).
+fn to_pixel(space: &Space, v: &[f64], out: &mut Vec<u8>) {
+    let b = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+    match space {
+        Space::Gray => out.push(b(v[0])),
+        Space::Rgb => out.extend([b(v[0]), b(v[1]), b(v[2])]),
+        Space::Cmyk => {
+            let c = color_of(v).unwrap_or([0.0; 3]);
+            out.extend([b(c[0]), b(c[1]), b(c[2])]);
+        }
+        Space::Indexed(..) => {}
+    }
+}
+
+/// The picture's samples as 8 bit grey (1 channel) or RGB (3 channels).
+fn pixels(file: &File, n: u32) -> Option<(usize, usize, usize, Vec<u8>)> {
+    let s = file.objects.get(&n)?;
+    let Obj::Dict(d) = &s.value else { return None };
+    let num = |k: &str| d.get(k).and_then(|v| file.get(v).num());
+    let (w, h) = (num("Width")? as usize, num("Height")? as usize);
+    if w == 0 || h == 0 || w.checked_mul(h)? > MAX_PIXELS {
+        return None;
+    }
+    if file.get(d.get("ImageMask").unwrap_or(&Obj::Null)) == &Obj::Bool(true) {
+        return None; // a stencil, not a picture
+    }
+    let bpc = num("BitsPerComponent").unwrap_or(8.0) as usize;
+    if ![1, 2, 4, 8, 16].contains(&bpc) {
+        return None;
+    }
+    let space = match d.get("ColorSpace") {
+        Some(c) => Space::of(file, c, 0)?,
+        None => Space::Gray,
+    };
+    let comps = space.components();
+    let data = file.decoded(n)?;
+    let row = (w * comps * bpc).div_ceil(8);
+    if data.len() < row * h {
+        return None;
+    }
+    let max = ((1u32 << bpc) - 1) as f64;
+    let decode: Vec<f64> = match d.get("Decode").map(|x| file.get(x)) {
+        Some(Obj::Arr(a)) => a.iter().filter_map(|x| file.get(x).num()).collect(),
+        _ => Vec::new(),
+    };
+    let sample = |r: &[u8], i: usize| -> u32 {
+        match bpc {
+            8 => r[i] as u32,
+            16 => u16::from_be_bytes([r[2 * i], r[2 * i + 1]]) as u32,
+            _ => {
+                let bit = i * bpc;
+                ((r[bit / 8] >> (8 - bpc - bit % 8)) as u32) & ((1 << bpc) - 1)
+            }
+        }
+    };
+    let out_space = match &space {
+        Space::Indexed(base, _) => base.as_ref().clone(),
+        s => s.clone(),
+    };
+    let channels = if matches!(out_space, Space::Gray) { 1 } else { 3 };
+    let mut px = Vec::with_capacity(w * h * channels);
+    let mut v = vec![0.0; 4];
+    for y in 0..h {
+        let r = &data[y * row..(y + 1) * row];
+        for x in 0..w {
+            match &space {
+                Space::Indexed(base, table) => {
+                    let k = base.components();
+                    let at = sample(r, x) as usize * k;
+                    for (c, slot) in v.iter_mut().enumerate().take(k) {
+                        *slot = table.get(at + c).copied().unwrap_or(0) as f64 / 255.0;
+                    }
+                }
+                _ => {
+                    for (c, slot) in v.iter_mut().enumerate().take(comps) {
+                        let s = sample(r, x * comps + c) as f64 / max;
+                        *slot = match (decode.get(2 * c), decode.get(2 * c + 1)) {
+                            (Some(lo), Some(hi)) => lo + s * (hi - lo),
+                            _ => s,
+                        };
+                    }
+                }
+            }
+            to_pixel(&out_space, &v, &mut px);
+        }
+    }
+    Some((w, h, channels, px))
+}
+
+/// A picture as a file for the note: the JPEG as stored, or its pixels
+/// (with any soft mask as transparency) as a PNG. `flip` mirrors the pixels
+/// (across, down) when the page draws the picture mirrored.
+fn picture(file: &File, n: u32, flip: (bool, bool)) -> Option<(Vec<u8>, &'static str)> {
+    let s = file.objects.get(&n)?;
+    let (filters, parms) = file.filters(&s.value);
+    if filters.last().is_some_and(|f| f == "DCTDecode" || f == "DCT") {
+        let k = filters.len() - 1;
+        let jpeg = file.unfilter(s.stream.as_ref()?.clone(), &filters[..k], &parms[..k.min(parms.len())])?;
+        return jpeg.starts_with(&[0xFF, 0xD8]).then_some((jpeg, "jpg"));
+    }
+    let (w, h, mut channels, mut px) = pixels(file, n)?;
+    let Obj::Dict(d) = &s.value else { return None };
+    if let Some(Obj::Ref(m)) = d.get("SMask") {
+        if let Some((mw, mh, mc, mask)) = pixels(file, *m) {
+            let mut with_alpha = Vec::with_capacity(w * h * (channels + 1));
+            for y in 0..h {
+                for x in 0..w {
+                    let i = (y * w + x) * channels;
+                    with_alpha.extend_from_slice(&px[i..i + channels]);
+                    let (mx, my) = (x * mw / w, y * mh / h);
+                    with_alpha.push(mask[(my * mw + mx) * mc]);
+                }
+            }
+            px = with_alpha;
+            channels += 1;
+        }
+    }
+    if flip.0 || flip.1 {
+        let mut out = Vec::with_capacity(px.len());
+        for y in 0..h {
+            let sy = if flip.1 { h - 1 - y } else { y };
+            for x in 0..w {
+                let sx = if flip.0 { w - 1 - x } else { x };
+                let i = (sy * w + sx) * channels;
+                out.extend_from_slice(&px[i..i + channels]);
+            }
+        }
+        px = out;
+    }
+    Some((png(w, h, channels, &px), "png"))
+}
+
+/// A PNG file of 8 bit pixels: 1 (grey), 2 (grey, alpha), 3 (RGB) or 4
+/// (RGBA) channels.
+fn png(w: usize, h: usize, channels: usize, px: &[u8]) -> Vec<u8> {
+    let color = match channels {
+        1 => 0,
+        2 => 4,
+        3 => 2,
+        _ => 6,
+    };
+    let mut raw = Vec::with_capacity((w * channels + 1) * h);
+    for row in px.chunks(w * channels) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend(crate::zip::crc32(&body).to_be_bytes());
+    };
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend((w as u32).to_be_bytes());
+    ihdr.extend((h as u32).to_be_bytes());
+    ihdr.extend([8, color, 0, 0, 0]);
+    chunk(b"IHDR", &ihdr);
+    chunk(b"IDAT", &miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6));
+    chunk(b"IEND", &[]);
+    out
+}
+
+/// Puts the page's pictures on the note, under the ink, where they sit on
+/// the page. Returns how many could not be brought in.
+fn place_pictures(
+    doc: &mut Document,
+    file: &File,
+    placed: &[(u32, Matrix)],
+    to_page: &dyn Fn(Vec2) -> Vec2,
+    done: &mut Pictures,
+) -> usize {
+    let mut images = doc.images().to_vec();
+    let mut left_out = 0;
+    for (n, m) in placed {
+        // The picture fills the unit square; its first row is at the top (y = 1).
+        let p00 = to_page(apply(m, 0.0, 0.0));
+        let p10 = to_page(apply(m, 1.0, 0.0));
+        let p01 = to_page(apply(m, 0.0, 1.0));
+        let p11 = to_page(apply(m, 1.0, 1.0));
+        let mut r = Rect::EMPTY;
+        for p in [p00, p10, p01, p11] {
+            r.include(p);
+        }
+        if !(r.width() >= 0.5 && r.height() >= 0.5) {
+            continue; // nothing to see
+        }
+        let flip = (p10.x < p00.x, p01.y > p00.y);
+        let made = done.entry((*n, flip)).or_insert_with(|| {
+            picture(file, *n, flip).map(|(bytes, ext)| {
+                let name =
+                    format!("{}{:08x}{:08x}.{ext}", crate::format::IMAGES_DIR, crate::zip::crc32(&bytes), bytes.len());
+                (name, bytes)
+            })
+        });
+        let Some((name, bytes)) = made else {
+            left_out += 1;
+            continue;
+        };
+        let name = name.clone();
+        doc.assets.entry(name.clone()).or_insert_with(|| bytes.clone());
+        images.push(Image {
+            id: doc.next_id(),
+            file: name,
+            text: None,
+            x: r.min.x,
+            y: r.min.y,
+            w: r.width(),
+            h: r.height(),
+        });
+    }
+    doc.set_images(images);
+    left_out
 }
 
 // ---- Ink to strokes -------------------------------------------------------------
@@ -988,7 +1358,7 @@ fn centre_line(pieces: &[Vec<Vec2>]) -> Option<(Vec<Vec2>, f64)> {
     Some((line, w))
 }
 
-fn build_page(ink: &Ink, media: Rect, seed: u64, t: &mut f64) -> PdfPage {
+fn build_page(file: &File, ink: &Ink, media: Rect, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
     let mut doc = Document::new(seed);
     doc.paper = "plain".into();
     let to_page = |p: Vec2| Vec2::new(p.x - media.min.x, media.max.y - p.y);
@@ -1037,8 +1407,9 @@ fn build_page(ink: &Ink, media: Rect, seed: u64, t: &mut f64) -> PdfPage {
     }
     doc.set_strokes(strokes);
     let readings = attach_readings(&mut doc, &ink.spans, &to_page);
-    if ink.images > 0 {
-        warnings.push(format!("{} picture{} left out", ink.images, if ink.images == 1 { "" } else { "s" }));
+    let left_out = place_pictures(&mut doc, file, &ink.pictures, &to_page, pictures) + ink.skipped_pictures;
+    if left_out > 0 {
+        warnings.push(format!("{left_out} picture{} left out", if left_out == 1 { "" } else { "s" }));
     }
     let typed = ink.spans.iter().filter(|s| !s.invisible).count();
     if typed > 0 {
@@ -1299,5 +1670,123 @@ mod tests {
         assert_eq!(s.brush.size, 2.0);
         assert_eq!(s.brush.color, Rgba::rgb(0, 0, 255));
         assert!((doc.strokes()[1].points[0].x - 60.0).abs() < 0.01, "the form's matrix moves it");
+    }
+
+    /// The pixels of a PNG file, checking its structure: (width, height,
+    /// channels, pixels).
+    fn read_png(b: &[u8]) -> (usize, usize, usize, Vec<u8>) {
+        assert!(b.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG file");
+        let be = |i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+        let (mut w, mut h, mut channels, mut idat, mut i) = (0, 0, 0, Vec::new(), 8);
+        while i < b.len() {
+            let len = be(i);
+            let (kind, data) = (&b[i + 4..i + 8], &b[i + 8..i + 8 + len]);
+            assert_eq!(crate::zip::crc32(&b[i + 4..i + 8 + len]) as usize, be(i + 8 + len), "chunk CRC");
+            match kind {
+                b"IHDR" => {
+                    (w, h) = (be(i + 8), be(i + 12));
+                    assert_eq!(data[8], 8, "8 bits");
+                    channels = match data[9] {
+                        0 => 1,
+                        4 => 2,
+                        2 => 3,
+                        6 => 4,
+                        c => panic!("colour type {c}"),
+                    };
+                }
+                b"IDAT" => idat.extend_from_slice(data),
+                _ => {}
+            }
+            i += 12 + len;
+        }
+        let raw = miniz_oxide::inflate::decompress_to_vec_zlib(&idat).unwrap();
+        let mut px = Vec::new();
+        for row in raw.chunks(w * channels + 1) {
+            assert_eq!(row[0], 0);
+            px.extend_from_slice(&row[1..]);
+        }
+        assert_eq!(px.len(), w * h * channels);
+        (w, h, channels, px)
+    }
+
+    #[test]
+    fn pdf_pictures_come_across_where_they_sit_on_the_page() {
+        let z = |d: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(d, 6);
+        let jpeg = b"\xFF\xD8\xFF\xE0fake jpeg\xFF\xD9".to_vec();
+        // (number, dictionary, stream data)
+        let objects: Vec<(u32, String, Vec<u8>)> = vec![
+            (
+                4,
+                String::new(),
+                b"q 40 0 0 20 10 70 cm /Im1 Do Q q 30 0 0 -10 100 30 cm /Im2 Do Q \
+                  q 20 0 0 20 150 10 cm /Im3 Do Q q 10 0 0 10 150 60 cm /Im4 Do Q q 5 0 0 5 0 0 cm /Im5 Do Q"
+                    .to_vec(),
+            ),
+            // 2x2 RGB: red, green / blue, white.
+            (
+                5,
+                "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode".into(),
+                z(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]),
+            ),
+            // 1x2 grey, black over white, stored with the PNG "up" predictor,
+            // with a soft mask; drawn upside down.
+            (
+                6,
+                "/Type /XObject /Subtype /Image /Width 1 /Height 2 /ColorSpace [/ICCBased 9 0 R] /BitsPerComponent 8 \
+                 /Filter /FlateDecode /DecodeParms << /Predictor 12 /Colors 1 /Columns 1 >> /SMask 10 0 R"
+                    .into(),
+                z(&[2, 0, 2, 255]),
+            ),
+            (7, "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode".into(), jpeg.clone()),
+            // 2x1 palette, 1 bit: red, blue.
+            (
+                8,
+                "/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace [/Indexed /DeviceRGB 1 <ff00000000ff>] /BitsPerComponent 1".into(),
+                vec![0b0100_0000],
+            ),
+            (9, "/N 1".into(), Vec::new()),
+            (10, "/Type /XObject /Subtype /Image /Width 1 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8".into(), vec![255, 128]),
+            // JPEG 2000 is not supported.
+            (11, "/Type /XObject /Subtype /Image /Width 1 /Height 1 /Filter /JPXDecode".into(), vec![0]),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj << /Type /Page /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject \
+              << /Im1 5 0 R /Im2 6 0 R /Im3 7 0 R /Im4 8 0 R /Im5 11 0 R >> >> >> endobj\n",
+        );
+        for (n, dict, data) in &objects {
+            pdf.extend_from_slice(format!("{n} 0 obj << {dict} /Length {} >>\nstream\n", data.len()).as_bytes());
+            pdf.extend_from_slice(data);
+            pdf.extend_from_slice(b"\nendstream endobj\n");
+        }
+        let pages = import(&pdf, 1, 0.0).unwrap();
+        assert_eq!(pages.len(), 1, "a page with only pictures is kept");
+        let (doc, warnings) = (&pages[0].doc, &pages[0].warnings);
+        assert_eq!(warnings, &vec!["1 picture left out".to_string()]);
+        let images = doc.images();
+        assert_eq!(images.len(), 4);
+        let at = |i: usize| (images[i].x, images[i].y, images[i].w, images[i].h);
+        let file = |i: usize| &doc.assets[&images[i].file];
+
+        assert_eq!(at(0), (10.0, 10.0, 40.0, 20.0), "y flipped to the note's top-down page");
+        assert!(images[0].file.starts_with("images/") && images[0].file.ends_with(".png"));
+        assert_eq!(read_png(file(0)), (2, 2, 3, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]));
+
+        assert_eq!(at(1), (100.0, 70.0, 30.0, 10.0));
+        // Upside down on the page, so white is on top; grey with alpha.
+        assert_eq!(read_png(file(1)), (1, 2, 2, vec![255, 128, 0, 255]));
+
+        assert!(images[2].file.ends_with(".jpg"));
+        assert_eq!(file(2), &jpeg, "a JPEG is kept as it is");
+
+        assert_eq!(read_png(file(3)), (2, 1, 3, vec![255, 0, 0, 0, 0, 255]));
+
+        // The note is saved with its pictures and reads back the same.
+        let bundle = crate::format::to_bedrock(doc);
+        let back = crate::format::load_bytes(&bundle, 2).unwrap().doc;
+        assert_eq!(back.images(), doc.images());
+        assert_eq!(back.assets[&images[0].file], *file(0));
     }
 }
