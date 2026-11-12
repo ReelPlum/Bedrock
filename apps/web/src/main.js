@@ -363,6 +363,35 @@ async function main() {
     input.requestFrame();
   }
 
+  /** Bring strokes (ids) into view, each as its whole word, and flash a
+   *  frame around them. False if none of them is on the page. */
+  function showInk(strokes) {
+    if (!Array.isArray(strokes) || !strokes.length) return false;
+    const b = canvas.reveal_strokes(strokes.join(' '));
+    if (b.length !== 4) return false;
+    minimap?.update();
+    input.requestFrame();
+    saveCamera();
+    const [ox, oy, zoom] = canvas.camera();
+    const pad = 8;
+    for (const old of stage.querySelectorAll('.jump-flash')) old.remove();
+    const el = document.createElement('div');
+    el.className = 'jump-flash';
+    Object.assign(el.style, {
+      left: `${(b[0] - ox) * zoom - pad}px`,
+      top: `${(b[1] - oy) * zoom - pad}px`,
+      width: `${(b[2] - b[0]) * zoom + 2 * pad}px`,
+      height: `${(b[3] - b[1]) * zoom + 2 * pad}px`,
+    });
+    // It marks a spot on the page, so it goes when the page moves.
+    const done = () => { el.remove(); stage.removeEventListener('pointerdown', done, true); stage.removeEventListener('wheel', done, true); };
+    el.addEventListener('animationend', done);
+    stage.addEventListener('pointerdown', done, true);
+    stage.addEventListener('wheel', done, true);
+    stage.append(el);
+    return true;
+  }
+
   async function openNote(id) {
     if (saveTimer) await saveNow();
     const rec = store && (await store.get(id));
@@ -1059,7 +1088,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { canvas, input, minimap, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { canvas, input, showInk, minimap, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });
@@ -1069,6 +1098,9 @@ async function main() {
       saveTimer = null;
       return openNote(host.noteId);
     });
+    // A search hit or a link to a place in this note: go there and point
+    // it out. True if that ink is still on the page.
+    host.on('show', ({ strokes } = {}) => showInk(strokes));
     host.ready();
   }
 }

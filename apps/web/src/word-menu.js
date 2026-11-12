@@ -42,6 +42,11 @@ export class WordMenu {
       if (this.word && this._link('', '')) this.onChange();
       this.close();
     });
+    $('wm-copy-here').addEventListener('click', () => {
+      const stroke = this._firstStroke();
+      if (stroke) linkType('note').copyHere?.(stroke);
+      this.close();
+    });
     $('wm-correct').addEventListener('click', () => { if (this._ensureWord()) this._show('correct'); });
     // Wrongly taken for maths, or maths taken for text: read it again with
     // the other recogniser.
@@ -182,9 +187,16 @@ export class WordMenu {
     $('wm-open').hidden = !l || !type;
     $('wm-unlink').hidden = !l;
     $('wm-link').textContent = l ? 'Change link…' : 'Make a link…';
+    // Inside a host (Obsidian), other notes can link to this very word.
+    $('wm-copy-here').hidden = !linkType('note').copyHere || !this._firstStroke();
     this._show('main');
     this.el.hidden = false;
     this._place();
+  }
+
+  /** A stroke that stands for what the menu is open on. */
+  _firstStroke() {
+    return this.word?.strokes?.[0] || this.selection?.strokes?.[0] || null;
   }
 
   close() {
