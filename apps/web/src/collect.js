@@ -18,6 +18,21 @@ const DB_NAME = 'bedrock-collect';
 const STORE = 'queue';
 /** Small batches keep each request well inside the server's time limit. */
 export const BATCH = 5;
+/** And at most about this much JSON per request: the server takes 512 KB,
+ *  and a written paragraph can be a few hundred KB on its own. */
+export const BATCH_BYTES = 400_000;
+
+/** The first samples of `queued` that fit in one request (always one). */
+export function fitBatch(queued, maxBytes = BATCH_BYTES) {
+  let bytes = 0;
+  const out = [];
+  for (const s of queued) {
+    bytes += JSON.stringify(s).length;
+    if (out.length && bytes > maxBytes) break;
+    out.push(s);
+  }
+  return out;
+}
 /** Waiting samples are sent at most this often, so the device's radio and
  *  the server are woken once a minute, not for every word. They are also
  *  sent at once when the page is hidden or closed (an iPad may freeze a
@@ -313,7 +328,7 @@ export function flush() {
       for (;;) {
         const s = loadState();
         if (!isReady(s)) return;
-        const batch = await queue.first(BATCH);
+        const batch = fitBatch(await queue.first(BATCH));
         if (!batch.length) break;
         const { done, stored } = await send(s, batch);
         await queue.remove(done);

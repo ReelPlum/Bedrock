@@ -8,7 +8,7 @@ unless the writer agrees.
 
 | Where | What | When |
 |---|---|---|
-| The training pages (`/train`) | The ink written in the box and the prompt it answers. | After agreeing on the consent card on `/train` and entering an invite code. |
+| The training pages (`/train`) | The ink written in the box and the prompt it answers: a common word, a whole sentence, a short paragraph (its label keeps the line breaks it was shown with), or a formula. | After agreeing on the consent card on `/train` and entering an invite code. |
 | A note | Every handwritten word written after the setting was turned on, one sample per word: its ink, moved to 0,0, and what the recogniser read, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A word is sent once its reading has not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
 | A note | A word again, with its checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
 

@@ -63,26 +63,86 @@ test('handwriting trainer: shows a prompt, takes ink, Done makes a sample and sh
   await ctx.close();
 });
 
-test('handwriting trainer: words only, maths only, never neither; maths prompts carry LaTeX', async () => {
+test('handwriting trainer: any mix of words, sentences, paragraphs and maths, never none; maths prompts carry LaTeX', async () => {
   const { page, ctx } = await openTrainer('train/handwriting/');
   const r = await page.evaluate(() => {
-    const [words, maths] = document.querySelectorAll('#options button');
-    words.click(); // maths only
-    const kinds = new Set();
+    const buttons = Object.fromEntries([...document.querySelectorAll('#options button')].map((b) => [b.textContent, b]));
+    const only = (name) => {
+      if (buttons[name].getAttribute('aria-pressed') !== 'true') buttons[name].click();
+      for (const [n, b] of Object.entries(buttons)) if (n !== name && b.getAttribute('aria-pressed') === 'true') b.click();
+    };
+    const shapes = () => { const seen = new Set(); for (let i = 0; i < 100; i++) { trainer.next(); seen.add(trainer.prompt.kind === 'math' ? 'math' : trainer.prompt.shape); } return [...seen]; };
+    const all = shapes();
+    // Maths only; turning it off too would leave nothing, so it is refused.
+    for (const b of Object.values(buttons)) if (b.textContent !== 'Maths' && b.getAttribute('aria-pressed') === 'true') b.click();
     let latex = true;
-    for (let i = 0; i < 20; i++) { trainer.next(); kinds.add(trainer.prompt.kind); latex &&= !!trainer.prompt.latex; }
-    maths.click(); // would leave nothing: refused
-    const stillMaths = maths.getAttribute('aria-pressed');
-    words.click();
-    maths.click(); // words only
-    const kinds2 = new Set();
-    for (let i = 0; i < 20; i++) { trainer.next(); kinds2.add(trainer.prompt.kind); }
-    return { kinds: [...kinds], latex, stillMaths, kinds2: [...kinds2] };
+    const maths = new Set();
+    for (let i = 0; i < 20; i++) { trainer.next(); maths.add(trainer.prompt.kind); latex &&= !!trainer.prompt.latex; }
+    buttons.Maths.click();
+    const stillMaths = buttons.Maths.getAttribute('aria-pressed');
+    only('Sentences');
+    const sentences = shapes();
+    const oneSentence = trainer.prompt;
+    only('Paragraphs');
+    const paragraphs = shapes();
+    const p = trainer.prompt;
+    return {
+      names: Object.keys(buttons), all, maths: [...maths], latex, stillMaths, sentences, paragraphs,
+      sentence: { text: oneSentence.text, long: document.getElementById('prompt-text').classList.contains('long') },
+      paragraph: { lines: p.text.split('\n'), html: p.html, kind: p.kind, shown: document.getElementById('prompt-kind').textContent, hint: document.getElementById('hint').textContent },
+    };
   });
-  assert.deepEqual(r.kinds, ['math']);
+  assert.deepEqual(r.names, ['Words', 'Sentences', 'Paragraphs', 'Maths']);
+  assert.deepEqual(r.all.sort(), ['math', 'paragraph', 'sentence', 'word'], 'all four are on at first');
+  assert.deepEqual(r.maths, ['math']);
   assert.equal(r.latex, true);
   assert.equal(r.stillMaths, 'true');
-  assert.deepEqual(r.kinds2, ['text']);
+  assert.deepEqual(r.sentences, ['sentence']);
+  assert.match(r.sentence.text, /^[A-Z].*[.?!]$/, 'a whole sentence');
+  assert.deepEqual(r.paragraphs, ['paragraph']);
+  assert.equal(r.paragraph.kind, 'text');
+  assert.ok(r.paragraph.lines.length >= 3 && r.paragraph.lines.every((l) => l.length <= 32), 'shown in short lines');
+  assert.equal(r.paragraph.html.split('class="line"').length - 1, r.paragraph.lines.length, 'shown with the same line breaks');
+  assert.equal(r.paragraph.shown, 'Write this paragraph');
+  assert.match(r.paragraph.hint, /line by line/);
+  await ctx.close();
+});
+
+test('handwriting trainer: every paragraph fits a narrow phone line for line, so the writer breaks lines where the label does', async () => {
+  const { page, ctx } = await openTrainer('train/handwriting/');
+  await page.setViewportSize({ width: 340, height: 700 });
+  const r = await page.evaluate(async () => {
+    const { PARAGRAPHS, wrap } = await import('/train/prompts.js');
+    const el = document.getElementById('prompt-text');
+    el.classList.add('long');
+    const bad = [];
+    for (const text of PARAGRAPHS) {
+      el.innerHTML = wrap(text).map((l) => `<span class="line">${l}</span>`).join('');
+      if (el.scrollWidth > el.clientWidth + 1) bad.push(text);
+    }
+    return bad;
+  });
+  assert.deepEqual(r, []);
+  await ctx.close();
+});
+
+test('handwriting trainer: a paragraph sample keeps its line breaks in the label', async () => {
+  const { page, ctx, errors } = await openTrainer('train/handwriting/');
+  const r = await page.evaluate(async () => {
+    const buttons = [...document.querySelectorAll('#options button')];
+    for (const b of buttons) if (b.textContent !== 'Paragraphs') b.click();
+    trainer.next();
+    const want = trainer.prompt.text;
+    const box = document.getElementById('stage').getBoundingClientRect();
+    const lines = want.split('\n').length;
+    for (let k = 0; k < lines; k++) await t.line(box.left + 40, box.top + 60 + k * 70, box.left + 300, box.top + 70 + k * 70);
+    document.getElementById('done').click();
+    return { want, label: trainer.samples[0].label, strokes: trainer.samples[0].strokes.length };
+  });
+  assert.equal(r.label, r.want);
+  assert.ok(r.label.includes('\n'));
+  assert.ok(r.strokes >= 3);
+  assert.deepEqual(errors, []);
   await ctx.close();
 });
 
