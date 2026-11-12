@@ -410,6 +410,20 @@ export async function serverStats() {
   }
 }
 
+/** The training prompts set from the backend (`{ words, sentences,
+ *  paragraphs }`), or null when saving is off or the server cannot be
+ *  reached. */
+export async function serverPrompts() {
+  const s = loadState();
+  if (!isReady(s)) return null;
+  try {
+    const res = await fetch(`${s.api}/v1/prompts`, { headers: headers(s, false) });
+    return res.ok ? await res.json() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 /** What to tell the person about a problem, in plain words. */
 export function problemText(problem) {
   return {

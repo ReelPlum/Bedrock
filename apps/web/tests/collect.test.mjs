@@ -14,15 +14,18 @@ const CODE = 'bedrock-abcde-fghjk-mnpqr-stuvw-xyz23';
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
 
 /** A pretend backend. `answer(request)` may return `{ status, body }`,
- *  'abort' (no connection), or nothing (accept everything). */
+ *  'abort' (no connection), or nothing (accept everything). The training
+ *  prompts it holds are `prompts` (or 'abort'). */
 async function fakeBackend(ctx) {
-  const server = { requests: [], answer: null };
+  const server = { requests: [], answer: null, prompts: { words: [], sentences: [], paragraphs: [] } };
   await ctx.route(`${API}/**`, async (route) => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const entry = { method: req.method(), path: new URL(req.url()).pathname, auth: req.headers().authorization, contributor: req.headers()['x-contributor'], body: req.postDataJSON?.() ?? null };
     server.requests.push(entry);
-    const a = server.answer ? server.answer(entry) : null;
+    const a = entry.path === '/v1/prompts'
+      ? (server.prompts === 'abort' ? 'abort' : { body: server.prompts })
+      : server.answer ? server.answer(entry) : null;
     if (a === 'abort') return route.abort();
     const body = a?.body ?? (entry.method === 'DELETE' ? { deleted: { samples: 3, paragraphs: 0 }, more: false } : { accepted: (entry.body?.samples || []).map((s) => s.id), refused: [] });
     return route.fulfill({ status: a?.status ?? 200, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -190,6 +193,62 @@ test('after consent a sample is queued, sent with the code, and taken off the qu
   assert.equal(await waiting(page), 0);
   assert.equal(await page.textContent('#count'), '1 done');
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the training page uses the words, sentences and paragraphs set on the backend, and keeps them for offline use', async () => {
+  const { ctx, server } = await context();
+  const lists = {
+    words: ['kage', 'Aarhus'],
+    sentences: ['Vi ses i morgen.'],
+    paragraphs: ['En lang dag med regn og vind, men vi kom hjem til sidst og drak varm te i køkkenet.'],
+  };
+  server.prompts = lists;
+  const setup = await openSetup(ctx);
+  // Practice only (no consent): nothing is asked for and the built-in lists are used.
+  const before = await openTrainer(ctx);
+  await before.page.evaluate(() => trainer.promptsLoaded);
+  assert.equal(server.requests.filter((r) => r.path === '/v1/prompts').length, 0);
+  assert.equal(await before.page.evaluate(async () => (await import('/train/prompts.js')).lists().fromBackend.sentences), false);
+  await before.page.close();
+
+  await agree(setup.page);
+  await settle(setup.page, () => /^On\./.test(document.getElementById('state').textContent));
+  const draw = async (page) => page.evaluate(async () => {
+    await trainer.promptsLoaded;
+    const p = await import('/train/prompts.js');
+    const seen = (make) => [...new Set(Array.from({ length: 60 }, () => make().text))].sort();
+    return { words: seen(p.wordPrompt), sentences: seen(p.sentencePrompt), paragraphs: seen(p.paragraphPrompt), scribble: seen(p.scribblePrompt), from: p.lists().fromBackend };
+  });
+  const { page, errors } = await openTrainer(ctx);
+  const r = await draw(page);
+  const get = server.requests.find((q) => q.path === '/v1/prompts');
+  assert.equal(get.method, 'GET');
+  assert.equal(get.auth, `Bearer ${CODE}`, 'asked for with the invite code');
+  assert.deepEqual(r.from, { words: true, sentences: true, paragraphs: true });
+  assert.deepEqual(r.sentences, ['Vi ses i morgen.']);
+  assert.equal(r.paragraphs.length, 1);
+  assert.ok(r.paragraphs[0].split('\n').length >= 3 && r.paragraphs[0].split('\n').every((l) => l.length <= 32), 'wrapped into short lines');
+  assert.equal(r.paragraphs[0].replace(/\n/g, ' '), lists.paragraphs[0]);
+  // Words keep their variations; "Aarhus" is a name and is not changed.
+  const known = new Set(['kage', 'Kage', 'Aarhus', 'kage kage', 'kage?', 'kage!']);
+  assert.ok(r.words.filter((w) => !/^[\d/%]+$/.test(w)).every((w) => known.has(w)), r.words.join(', '));
+  assert.ok(r.scribble.every((w) => w === 'kage' || w === 'kage kage'));
+  assert.deepEqual(errors, []);
+  await page.close();
+
+  // No connection: the list fetched last time is still used.
+  server.prompts = 'abort';
+  const offline = await openTrainer(ctx);
+  assert.deepEqual((await draw(offline.page)).sentences, ['Vi ses i morgen.']);
+  await offline.page.close();
+
+  // Emptied on the backend: back to the built-in lists.
+  server.prompts = { words: [], sentences: [], paragraphs: [] };
+  const emptied = await openTrainer(ctx);
+  const e = await draw(emptied.page);
+  assert.deepEqual(e.from, { words: false, sentences: false, paragraphs: false });
+  assert.ok(e.sentences.length > 5);
   await ctx.close();
 });
 
