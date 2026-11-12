@@ -39,6 +39,11 @@ Readers keep reading every earlier version; writers may write a newer one.
 Each change to a format adds a test that reads data written by the version
 just before the change, kept as a fixture that is never regenerated.
 
+#### Scenario: Which changes bump the note format version
+- **GIVEN** a change to the note format
+- **WHEN** it only adds an optional field that older readers can ignore
+- **THEN** `version` stays the same; when it removes a field or changes what one means, `version` is bumped and readers keep reading the old version
+
 #### Scenario: Note files from every earlier version
 - **GIVEN** the note files in `crates/bedrock-core/tests/fixtures/old-formats/`
 - **WHEN** the tests run

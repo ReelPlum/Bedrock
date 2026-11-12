@@ -9,8 +9,10 @@ context: |
   apps/web (static web app and Playwright browser tests); the Obsidian
   plugin lives in apps/obsidian once PR #2 lands.
   The note format (docs/note-format.md, docs/note.schema.json) is a promise to
-  users that notes outlive the app: any change to it bumps `version`, updates
-  both documents and adds a migration test.
+  users that notes outlive the app: a breaking change (removing a field or
+  changing its meaning) bumps `version`; a new optional field older readers
+  can ignore keeps it. Any change updates both documents and adds a test that
+  reads files written before it.
   Data formats (note files, sidecars and index notes, the exported library,
   the on-device library, training samples and prompts, and the backend's API
   and storage) are listed in openspec/specs/data-format-changes/spec.md.

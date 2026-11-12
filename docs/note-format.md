@@ -257,6 +257,12 @@ covered by fuzz-style tests in `crates/bedrock-core/src/format.rs`.
 
 ## Versioning
 
-Any change to this format bumps `version`, updates this document and the
-JSON Schema, and adds a migration test that reads files of every earlier
-version.
+`version` is bumped only by a breaking change: removing a field, or changing
+what an existing field means. A new optional field that older readers can
+ignore (they keep fields they do not know, see above) keeps the version;
+pictures, text boxes, word groups, `kinds` and pen tuning were all added this
+way within version 1. Either way, a change to this format is agreed with the
+project owner first, updates this document and the JSON Schema, and adds a
+test that reads files written before the change
+(`crates/bedrock-core/tests/old_formats.rs`). Readers keep reading every
+earlier version.
