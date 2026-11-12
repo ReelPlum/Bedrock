@@ -11,7 +11,7 @@ pub use bedrock_core;
 use bedrock_core::brush::{Brush, BrushKind, LineStyle};
 use bedrock_core::color::Rgba;
 use bedrock_core::document::{Change, Document};
-use bedrock_core::engine::{Engine, PointerKind, ScreenSample, Tool};
+use bedrock_core::engine::{Engine, PointerKind, ScreenSample, Tool, DUPLICATE_OFFSET_CSS};
 use bedrock_core::format;
 use bedrock_core::geom::Vec2;
 use bedrock_core::mirror;
@@ -684,6 +684,13 @@ impl Canvas {
     /// Delete the selected strokes (one undo step).
     pub fn delete_selection(&mut self) -> bool {
         self.engine.delete_selection()
+    }
+
+    /// Copy the selection a little down and to the right of itself (one
+    /// undo step) and select the copy, so it can be dragged away. False if
+    /// nothing is selected.
+    pub fn duplicate_selection(&mut self) -> bool {
+        self.engine.duplicate_selection(DUPLICATE_OFFSET_CSS)
     }
 
     /// Make the selection one word. Returns the word's id ("" if nothing is

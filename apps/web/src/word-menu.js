@@ -1,8 +1,8 @@
 // Hold a handwritten word to open its menu: make it a link (or open or
 // remove one), or correct what the recogniser read. Holding a lasso
 // selection opens the same menu for the selected ink, which can also be
-// made one word (whatever the automatic word splitting thinks) or deleted;
-// linking or correcting a selection makes it one word first.
+// made one word (whatever the automatic word splitting thinks), duplicated
+// or deleted; linking or correcting a selection makes it one word first.
 
 import { LINK_TYPES, linkType } from './links.js';
 
@@ -13,12 +13,14 @@ const LIFT_MS = 160;
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback, onDuplicate } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
     this.requestFrame = requestFrame || (() => {});
+    // Called after the selection was duplicated (the copy is selected).
+    this.onDuplicate = onDuplicate || (() => {});
     // Called when the writer confirms or corrects a reading:
     // `{ strokes, kind, label, labelSource, reading, engine }`.
     this.onFeedback = onFeedback || (() => {});
@@ -74,6 +76,15 @@ export class WordMenu {
     $('wm-ungroup').addEventListener('click', () => {
       if (this.canvas.ungroup_selection()) this.onChange();
       this.close();
+    });
+    // A copy of the selection lands a little down and to the right, and
+    // becomes the selection, ready to be dragged away.
+    $('wm-duplicate').addEventListener('click', () => {
+      this.close();
+      if (this.canvas.duplicate_selection()) {
+        this.onChange();
+        this.onDuplicate();
+      }
     });
     $('wm-delete').addEventListener('click', () => {
       if (this.canvas.delete_selection()) this.onChange();
@@ -207,7 +218,8 @@ export class WordMenu {
     $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
-    // Pictures only: nothing to read or link, just delete (move and resize
+    $('wm-duplicate').hidden = !selection;
+    // Pictures only: nothing to read or link, just duplicate or delete (move and resize
     // them with the lasso).
     if (selection && !n) {
       for (const b of ['wm-kind', 'wm-drawing', 'wm-correct', 'wm-right', 'wm-group', 'wm-ungroup', 'wm-link']) $(b).hidden = true;

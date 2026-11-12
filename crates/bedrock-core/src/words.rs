@@ -226,7 +226,7 @@ pub fn layout(doc: &Document) -> Layout {
 }
 
 /// A word's id: a hash of its strokes, so it changes when they do.
-fn word_id(ids: &[StrokeId]) -> u64 {
+pub(crate) fn word_id(ids: &[StrokeId]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for id in ids {
         for b in id.0.to_le_bytes() {

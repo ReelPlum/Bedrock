@@ -101,6 +101,10 @@ enum Active {
     },
 }
 
+/// How far down and to the right a duplicate lands from what it copies, in
+/// css px: clear of the original, close enough to read as its copy.
+pub const DUPLICATE_OFFSET_CSS: f64 = 24.0;
+
 /// The resize handle's reach around a selected picture's corner, in css px.
 pub const HANDLE_REACH: f64 = 22.0;
 /// The smallest a picture can be made, in css px on screen.
@@ -306,6 +310,11 @@ impl Engine {
         } else {
             self.tool
         };
+        // Drawing or erasing lets go of the selection; only the lasso keeps it.
+        if tool != Tool::Lasso && !self.selection.is_empty() {
+            self.selection.clear();
+            self.dirty = true;
+        }
         match tool {
             Tool::Draw => {
                 let id_ = self.doc.next_id();
@@ -790,6 +799,24 @@ impl Engine {
             return false;
         }
         self.doc.remove(&ids);
+        self.dirty = true;
+        true
+    }
+
+    /// Copy the selection `offset_css` css px down and to the right of
+    /// itself (one undo step) and select the copy, so it can be dragged
+    /// away at once. False if nothing is selected.
+    pub fn duplicate_selection(&mut self, offset_css: f64) -> bool {
+        let ids = self.selection();
+        if ids.is_empty() {
+            return false;
+        }
+        let d = offset_css / self.camera.zoom.max(1e-9);
+        let copies = self.doc.duplicate(&ids, Vec2::new(d, d));
+        if copies.is_empty() {
+            return false;
+        }
+        self.selection = copies;
         self.dirty = true;
         true
     }
@@ -1351,6 +1378,72 @@ mod tests {
         e.tool = Tool::Lasso;
         draw(&mut e, 2, PointerKind::PenEraser, (250.0, 50.0), (250.0, 150.0), 100.0);
         assert!(e.doc.is_empty());
+    }
+
+    #[test]
+    fn duplicate_selects_the_copy_offset_so_it_can_be_dragged_away() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        let pic = e.insert_image("images/a.png", Some(vec![1]), 50.0, 50.0);
+        let pic_rect = e.doc.image(pic).unwrap().rect();
+        let a = e.doc.strokes()[0].id;
+        e.tool = Tool::Lasso;
+        e.select(vec![a, pic]);
+        let before = e.selection_bounds();
+        e.camera.zoom = 2.0;
+        assert!(e.duplicate_selection(24.0));
+        let copies = e.selection();
+        assert_eq!(copies.len(), 2, "the copy of the stroke and of the picture is selected");
+        assert!(!copies.contains(&a) && !copies.contains(&pic));
+        assert_eq!(e.doc.len(), 2);
+        assert_eq!(e.doc.images().len(), 2);
+        // 24 css px at zoom 2 is 12 world units.
+        let after = e.selection_bounds();
+        assert_eq!(after.min, before.min + Vec2::new(12.0, 12.0));
+        assert_eq!(after.max, before.max + Vec2::new(12.0, 12.0));
+        assert_eq!(e.doc.strokes()[0].id, a, "the original stays where it was");
+        assert_eq!(e.doc.strokes()[0].points[0].pos(), Vec2::new(0.0, 100.0));
+
+        // Dragging moves the copy, not the original.
+        e.camera.zoom = 1.0;
+        let c = Vec2::new((after.min.x + after.max.x) / 2.0, (after.min.y + after.max.y) / 2.0);
+        e.pointer_down(3, PointerKind::Pen, ScreenSample::new(c.x, c.y, 0.5, 300.0));
+        e.pointer_move(3, PointerKind::Pen, ScreenSample::new(c.x + 100.0, c.y, 0.5, 310.0));
+        e.pointer_up(3, PointerKind::Pen, None);
+        assert_eq!(e.selection_bounds().min, after.min + Vec2::new(100.0, 0.0));
+        assert_eq!(e.doc.strokes()[0].points[0].pos(), Vec2::new(0.0, 100.0));
+        assert_eq!(e.doc.image(pic).unwrap().rect(), pic_rect);
+
+        // Undo the drag, then the duplicate: back to the original alone.
+        e.undo();
+        e.undo();
+        assert_eq!(e.doc.len(), 1);
+        assert_eq!(e.doc.images().len(), 1);
+        assert_eq!(e.doc.strokes()[0].id, a);
+    }
+
+    #[test]
+    fn duplicate_with_nothing_selected_does_nothing() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        assert!(!e.duplicate_selection(24.0));
+        assert_eq!(e.doc.len(), 1);
+    }
+
+    #[test]
+    fn drawing_with_a_pen_lets_go_of_the_selection() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        // A word selected from its menu while the pen is the tool.
+        e.select(vec![e.doc.strokes()[0].id]);
+        draw(&mut e, 2, PointerKind::Pen, (0.0, 300.0), (100.0, 300.0), 100.0);
+        assert!(e.selection().is_empty());
+        assert_eq!(e.doc.len(), 2, "and the pen still draws");
+        // Erasing does too.
+        e.select(vec![e.doc.strokes()[0].id]);
+        e.tool = Tool::EraseStroke;
+        draw(&mut e, 3, PointerKind::Pen, (500.0, 500.0), (510.0, 500.0), 200.0);
+        assert!(e.selection().is_empty());
     }
 
     #[test]
