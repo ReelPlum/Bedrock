@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
 import { FakeVault } from './fake-vault.mjs';
 import { readZip, text } from '../src/zip.js';
-import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
+import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteForIndex, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
+import { libraryFiles } from '../../web/src/library.js';
 import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { installWebApp, webAppUrl } from '../src/assets.js';
@@ -191,6 +192,66 @@ test('indexer sync indexes notes written elsewhere and skips up-to-date ones', a
   vault.outsideChange('B.bedrock', note(['beta', 'gamma']));
   assert.equal(await ix.sync(), 1);
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/B.md`).data, /beta gamma/);
+});
+
+/** Put an exported web library into a vault under `under` (a folder
+ *  path, or '' for the vault's root), as dragging the unzipped folder in does. */
+async function dropLibrary(vault, files, under = '') {
+  for (const [path, bytes] of files) {
+    const at = under ? `${under}/${path}` : path;
+    if (at.endsWith('/')) { vault.folders.add(at.slice(0, -1)); continue; }
+    if (at.endsWith('.md')) await vault.create(at, new TextDecoder().decode(bytes));
+    else await vault.createBinary(at, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  }
+}
+
+const webLibrary = () => libraryFiles(
+  [{ id: 'f1', name: 'School', parent: null }],
+  [{ id: '1111222233334444', title: 'Forces', folder: 'f1', data: new Uint8Array(note(['Newton'], ['[[Ideas]]'])) }],
+);
+
+test('a library exported by the website drops into the vault root and is already indexed', async () => {
+  const vault = new FakeVault();
+  await dropLibrary(vault, await webLibrary());
+  const before = vault.files.get('School/Forces.bedrock.md').data;
+  const ix = new Indexer(vault);
+  vault.log.length = 0;
+  assert.equal(await ix.sync(), 0, 'its sidecars are what the plugin would write');
+  assert.deepEqual(vault.log, [], 'nothing is written, and nothing in the index folder');
+  assert.ok(isIndexPath('School/Forces.bedrock.md'), 'a sidecar counts as an index note with the default folder setting');
+  assert.equal(noteForIndex('School/Forces.bedrock.md', before, (p) => vault.files.has(p)), 'School/Forces.bedrock');
+  // Later saves update the sidecar, not a new note in the index folder.
+  vault.outsideChange('School/Forces.bedrock', note(['Newton', 'Hooke']));
+  assert.equal(await ix.sync(), 1);
+  assert.match(vault.files.get('School/Forces.bedrock.md').data, /Newton Hooke/);
+  assert.ok(![...vault.files.keys()].some((p) => p.startsWith(DEFAULT_INDEX_FOLDER)));
+});
+
+test('a library dropped into a subfolder: sidecars open their note and are fixed to the new path', async () => {
+  const vault = new FakeVault();
+  await dropLibrary(vault, await webLibrary(), 'Imports/Bedrock notes');
+  const path = 'Imports/Bedrock notes/School/Forces.bedrock';
+  const md = vault.files.get(`${path}.md`).data;
+  assert.equal(noteOfIndex(md), 'School/Forces.bedrock', 'written for the export root');
+  assert.equal(noteForIndex(`${path}.md`, md, (p) => vault.files.has(p)), path, 'the sidecar opens the note beside it');
+  const ix = new Indexer(vault);
+  assert.equal(await ix.sync(), 1, 'the sidecar is rewritten for where it now is');
+  assert.equal(noteOfIndex(vault.files.get(`${path}.md`).data), path);
+  assert.ok(![...vault.files.keys()].some((p) => p.startsWith(DEFAULT_INDEX_FOLDER)));
+  assert.equal(await ix.sync(), 0);
+});
+
+test('a sidecar moves with its note when the note is renamed, and goes when it is deleted', async () => {
+  const vault = new FakeVault();
+  await dropLibrary(vault, await webLibrary());
+  const ix = new Indexer(vault);
+  const bytes = await vault.readBinary(vault.files.get('School/Forces.bedrock'));
+  await ix.rename('School/Forces.bedrock', 'School/Motion.bedrock', bytes);
+  assert.ok(!vault.files.has('School/Forces.bedrock.md'));
+  assert.equal(noteOfIndex(vault.files.get('School/Motion.bedrock.md').data), 'School/Motion.bedrock');
+  await ix.remove('School/Motion.bedrock');
+  assert.ok(!vault.files.has('School/Motion.bedrock.md'));
+  assert.ok(![...vault.files.keys()].some((p) => p.startsWith(DEFAULT_INDEX_FOLDER)));
 });
 
 function session(vault, file, extra = {}) {

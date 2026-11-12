@@ -5,7 +5,7 @@
 const CACHE = 'bedrock-v24';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg',
-  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/selection-view.js', 'src/images.js', 'src/collect.js', 'src/share-words.js', 'src/host.js', 'src/boot-check.js', 'train/', 'train/setup.js', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'dict/en.txt.gz',
+  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/selection-view.js', 'src/images.js', 'src/collect.js', 'src/share-words.js', 'src/host.js', 'src/boot-check.js', 'src/library.js', 'src/sidecar.js', 'src/zip-read.js', 'train/', 'train/setup.js', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'dict/en.txt.gz',
   'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm',
 ];
 

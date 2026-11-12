@@ -21,12 +21,14 @@ const TYPES = {
   '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.json': 'application/json',
 };
 
-/** The web app at /, the plugin's sources under /obsidian/. */
+/** The web app at / (and at /web/, where the plugin's sources import
+ *  shared modules from), the plugin's sources under /obsidian/. */
 function serve() {
   const server = createServer(async (req, res) => {
     try {
       const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-      const [root, rel] = path.startsWith('/obsidian/') ? [HERE, path.slice('/obsidian'.length)] : [WEB, path];
+      const [root, rel] = path.startsWith('/obsidian/') ? [HERE, path.slice('/obsidian'.length)]
+        : path.startsWith('/web/') ? [WEB, path.slice('/web'.length)] : [WEB, path];
       let file = normalize(join(root, rel));
       if (!file.startsWith(root)) throw new Error('outside root');
       if ((await stat(file)).isDirectory()) file = join(file, 'index.html');

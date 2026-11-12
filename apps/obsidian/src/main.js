@@ -7,7 +7,7 @@ import bundle from 'virtual:web-app';
 import { installWebApp, webAppUrl } from './assets.js';
 import { HostBridge } from './bridge.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
-import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteOfIndex, strokesForIndexPlace } from './index-note.js';
+import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
 const EXTENSION = 'bedrock';
@@ -192,11 +192,14 @@ export default class BedrockPlugin extends Plugin {
     if (!this.settings.index || !(file instanceof TFile) || !isIndexPath(file.path, this.settings.indexFolder)) return null;
     const vault = this.app.vault;
     const markdown = await vault.cachedRead(file);
-    const notePath = noteOfIndex(markdown);
+    const notePath = noteForIndex(file.path, markdown, (p) => vault.getAbstractFileByPath(p) instanceof TFile);
     const note = notePath && vault.getAbstractFileByPath(notePath);
     if (!(note instanceof TFile)) return null;
+    // Places are found in the index as it was written (its own note path,
+    // which differs if the folder was dropped in somewhere else).
+    const layoutPath = noteOfIndex(markdown) || notePath;
     const strokes = eState
-      ? await vault.readBinary(note).then((bytes) => strokesForIndexPlace(notePath, bytes, markdown, eState)).catch(() => [])
+      ? await vault.readBinary(note).then((bytes) => strokesForIndexPlace(layoutPath, bytes, markdown, eState)).catch(() => [])
       : [];
     return { file: note, eState: strokes.length ? { bedrock: { strokes } } : {} };
   }
@@ -297,7 +300,7 @@ class BedrockSettings extends PluginSettingTab {
       }));
     new Setting(containerEl)
       .setName('Index folder')
-      .setDesc('Where index notes are kept. Leave empty to keep each beside its note as “Name.bedrock.md”.')
+      .setDesc('Where index notes are kept. Leave empty to keep each beside its note as “Name.bedrock.md”. A note that already has one beside it, as notes exported from the Bedrock website do, keeps using that one.')
       .addText((t) => t.setPlaceholder(DEFAULT_INDEX_FOLDER).setValue(p.settings.indexFolder).onChange(async (v) => {
         p.settings.indexFolder = normalizePath(v.trim() || '/').replace(/^\/$/, '');
         await p.persist();
