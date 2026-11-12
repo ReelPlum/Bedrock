@@ -53,9 +53,19 @@ try {
   await setup.check('#agree');
   await setup.click('#save');
 
+  // Prompts set on the backend replace the built-in sentences.
+  const put = await fetch(`${API}/v1/prompts`, { method: 'PUT', headers: { Authorization: `Bearer ${ADMIN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ sentences: ['Vi ses  i morgen.', 'Vi ses i morgen.'] }) });
+  assert.deepEqual(await put.json(), { words: 0, sentences: 1, paragraphs: 0 });
+
   const page = await ctx.newPage();
   await page.goto(`${app}train/handwriting/`);
   await page.waitForFunction(() => window.trainer?.ready);
+  const fromBackend = await page.evaluate(async () => {
+    await trainer.promptsLoaded;
+    const p = await import('/train/prompts.js');
+    return { sentence: p.sentencePrompt().text, from: p.lists().fromBackend };
+  });
+  assert.deepEqual(fromBackend, { sentence: 'Vi ses i morgen.', from: { words: false, sentences: true, paragraphs: false } });
   await installPointerHelpers(page);
   await page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
   for (let i = 0; i < 3; i++) {

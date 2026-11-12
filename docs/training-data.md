@@ -23,6 +23,19 @@ The logic is in `apps/web/src/share-words.js`. It remembers which sample it
 sent for each word (in local storage, the newest 5000), so a word is sent
 once per change.
 
+## What the training pages ask for
+
+The words, sentences and paragraphs are built into `apps/web/train/prompts.js`.
+They can also be set on the backend (`bedrock-data prompts` there). With
+saving on, the handwriting page asks the backend for them with the invite
+code when it opens (`GET /v1/prompts`) and keeps the answer in local storage
+(`bedrock.train.prompts`), so they also work offline. Each list the backend
+sends that is not empty replaces the built-in one, from the next prompt; an
+empty list, no backend, or practice without saving keeps the built-in one.
+Words that are all lower case still get their variations (capitalised, in
+short phrases); the others are shown as they are. Paragraphs are shown in
+lines of 32 characters, as before.
+
 ## What a sample holds
 
 `bedrock-training` version 2: the label and how we know it (`prompt`,

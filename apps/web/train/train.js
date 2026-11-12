@@ -7,12 +7,24 @@
 import init, { Canvas } from '../pkg/bedrock_web.js';
 import { InputController } from '../src/input.js';
 import { randomSeed } from '../src/storage.js';
-import { wordPrompt, sentencePrompt, paragraphPrompt, mathPrompt, scribblePrompt } from './prompts.js';
+import { wordPrompt, sentencePrompt, paragraphPrompt, mathPrompt, scribblePrompt, setLists } from './prompts.js';
 import * as collect from '../src/collect.js';
 
 const $ = (id) => document.getElementById(id);
 const mode = document.body.dataset.mode; // 'handwriting' | 'scribble'
 const OPTIONS_KEY = 'bedrock.train.options';
+const PROMPTS_KEY = 'bedrock.train.prompts';
+
+/** Uses the prompts last fetched from the backend at once (so they work
+ *  offline), then asks for the current ones. A new list is used from the
+ *  next prompt. */
+async function loadPrompts() {
+  try { setLists(JSON.parse(localStorage.getItem(PROMPTS_KEY) || 'null')); } catch (_) { /* private mode or damaged */ }
+  const p = await collect.serverPrompts();
+  if (!p) return;
+  setLists(p);
+  try { localStorage.setItem(PROMPTS_KEY, JSON.stringify(p)); } catch (_) { /* private mode */ }
+}
 
 // What the handwriting page asks for, and how often when all are on.
 const PROMPTS = {
@@ -57,6 +69,7 @@ async function main() {
   canvas.set_tool('draw');
   canvas.set_brush('pen', '#1c1c1e', 2.5);
 
+  const promptsLoaded = loadPrompts();
   const samples = [];
   let prompt = null;
   let shownAt = 0;
@@ -189,7 +202,7 @@ async function main() {
 
   resize();
   next();
-  window.trainer = { canvas, input, samples, get prompt() { return prompt; }, next, ready: true };
+  window.trainer = { canvas, input, samples, get prompt() { return prompt; }, next, promptsLoaded, ready: true };
 }
 
 main().catch((e) => {

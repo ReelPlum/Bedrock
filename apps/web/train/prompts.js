@@ -161,6 +161,48 @@ export function wrap(text, width = LINE_CHARS) {
 }
 export const LINE_CHARS = 32;
 
+// The lists in use: the built-in ones above, or those set from the backend
+// (`setLists`). Each list the backend sends that is not empty replaces the
+// built-in one; an empty one keeps it.
+let words = WORDS;
+let names = NAMES;
+let sentences = SENTENCES;
+let paragraphs = PARAGRAPHS;
+
+const tidyList = (a) => (Array.isArray(a) ? a : [])
+  .filter((x) => typeof x === 'string')
+  .map((x) => x.trim().replace(/\s+/g, ' '))
+  .filter(Boolean);
+
+/** Uses `{ words, sentences, paragraphs }` from the backend. Words that are
+ *  all lower case get the usual variations (capitalised, phrases); the
+ *  others (names) are shown as they are. Anything missing or empty falls
+ *  back to the built-in list. */
+export function setLists(p) {
+  const w = tidyList(p?.words);
+  if (w.length) {
+    const lower = w.filter((x) => x === x.toLowerCase());
+    const other = w.filter((x) => x !== x.toLowerCase());
+    words = lower.length ? lower : w;
+    names = other.length ? other : words;
+  } else {
+    words = WORDS;
+    names = NAMES;
+  }
+  const s = tidyList(p?.sentences);
+  sentences = s.length ? s : SENTENCES;
+  const para = tidyList(p?.paragraphs);
+  paragraphs = para.length ? para : PARAGRAPHS;
+}
+
+/** The lists in use now, and whether each came from the backend. */
+export function lists() {
+  return {
+    words, names, sentences, paragraphs,
+    fromBackend: { words: words !== WORDS, sentences: sentences !== SENTENCES, paragraphs: paragraphs !== PARAGRAPHS },
+  };
+}
+
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const int = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -169,11 +211,11 @@ const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 export function wordPrompt() {
   const r = Math.random();
   let text;
-  if (r < 0.55) text = pick(WORDS);
-  else if (r < 0.7) { const w = pick(WORDS); text = w[0].toUpperCase() + w.slice(1); }
-  else if (r < 0.8) text = pick(NAMES);
-  else if (r < 0.92) text = `${pick(WORDS)} ${pick(WORDS)}`;
-  else text = pick([String(int(2, 999)), `${int(1, 28)}/${int(1, 12)}`, `${int(1, 99)}%`, `${pick(WORDS)}?`, `${pick(WORDS)}!`]);
+  if (r < 0.55) text = pick(words);
+  else if (r < 0.7) { const w = pick(words); text = w[0].toUpperCase() + w.slice(1); }
+  else if (r < 0.8) text = pick(names);
+  else if (r < 0.92) text = `${pick(words)} ${pick(words)}`;
+  else text = pick([String(int(2, 999)), `${int(1, 28)}/${int(1, 12)}`, `${int(1, 99)}%`, `${pick(words)}?`, `${pick(words)}!`]);
   return { kind: 'text', shape: 'word', text, latex: null, html: esc(text) };
 }
 
@@ -203,14 +245,14 @@ const FORMULAS = [
 
 /** A whole sentence, written on one line. */
 export function sentencePrompt() {
-  const text = pick(SENTENCES);
+  const text = pick(sentences);
   return { kind: 'text', shape: 'sentence', text, latex: null, html: esc(text) };
 }
 
 /** A short paragraph, shown in lines that are written as shown. The label
  *  keeps the line breaks, so training can learn it line by line. */
 export function paragraphPrompt() {
-  const lines = wrap(pick(PARAGRAPHS));
+  const lines = wrap(pick(paragraphs));
   return { kind: 'text', shape: 'paragraph', text: lines.join('\n'), latex: null, html: lines.map((l) => `<span class="line">${esc(l)}</span>`).join('') };
 }
 
@@ -222,6 +264,6 @@ export function mathPrompt() {
 
 /** A word to scribble out (shown in the box). */
 export function scribblePrompt() {
-  const w = Math.random() < 0.8 ? pick(WORDS) : `${pick(WORDS)} ${pick(WORDS)}`;
+  const w = Math.random() < 0.8 ? pick(words) : `${pick(words)} ${pick(words)}`;
   return { kind: 'scribble', text: w, latex: null, html: esc(w) };
 }
