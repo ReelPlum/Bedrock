@@ -42,7 +42,7 @@ test('handwriting trainer: shows a prompt, takes ink, Done makes a sample and sh
     const s = trainer.samples[0];
     return {
       before, enabled, count: document.getElementById('count').textContent,
-      sample: { task: s.task, prompt: s.prompt, strokes: s.strokes.length, points: s.strokes[0].points.length, channels: s.channels },
+      sample: { format: s.format, version: s.version, source: s.source, kind: s.kind, label: s.label, labelSource: s.label_source, strokes: s.strokes.length, points: s.strokes[0].points.length, channels: s.channels, keys: Object.keys(s.strokes[0]) },
       first, cleared: trainer.canvas.stroke_count(), disabledAgain: done.disabled,
     };
   });
@@ -50,8 +50,10 @@ test('handwriting trainer: shows a prompt, takes ink, Done makes a sample and sh
   assert.ok(r.before.prompt.length > 0);
   assert.equal(r.enabled, true);
   assert.equal(r.count, '1 done');
-  assert.equal(r.sample.task, 'handwriting');
-  assert.deepEqual(r.sample.prompt, { kind: r.first.kind, text: r.first.text, latex: r.first.latex });
+  assert.deepEqual([r.sample.format, r.sample.version, r.sample.source, r.sample.labelSource], ['bedrock-training', 2, 'train', 'prompt']);
+  assert.equal(r.sample.kind, r.first.kind);
+  assert.equal(r.sample.label, r.first.kind === 'math' ? r.first.latex : r.first.text, 'a formula is labelled with its LaTeX');
+  assert.deepEqual(r.sample.keys, ['start', 'points'], 'no brush, colour or stroke id leaves the device');
   assert.equal(r.sample.strokes, 2);
   assert.ok(r.sample.points > 10 * 6, 'raw samples, six channels each');
   assert.deepEqual(r.sample.channels, ['x', 'y', 'pressure', 'altitude', 'azimuth', 't']);
@@ -102,7 +104,7 @@ test('scribble trainer: the word to scribble out is in the box, and only one str
     await t.line(box.left + 100, cy, box.left + 200, cy); // after Undo: taken
     const n2 = trainer.canvas.stroke_count();
     document.getElementById('done').click();
-    return { target, n, warned, n2, sample: trainer.samples[0].task, prompt: trainer.samples[0].prompt.text };
+    return { target, n, warned, n2, sample: trainer.samples[0].kind, prompt: trainer.samples[0].label };
   });
   assert.ok(r.target.length > 0);
   assert.equal(r.n, 1, 'only the scribble');

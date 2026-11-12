@@ -54,3 +54,26 @@ button, a { font: inherit; color: inherit; }
 .last summary { color: var(--muted); cursor: pointer; font-size: 14px; }
 .last pre { max-height: 220px; overflow: auto; font-size: 11px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; white-space: pre-wrap; word-break: break-all; }
 .fatal { position: fixed; inset: auto 16px 16px; padding: 14px; background: #fee; border: 1px solid #f99; border-radius: 10px; }
+
+/* Saving: the consent card on /train and the status line on the trainers. */
+.card { margin-top: 18px; padding: 18px 20px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+.card h2 { font-size: 18px; margin: 0 0 6px; }
+.state { margin: 0 0 12px; color: var(--muted); }
+.state.on { color: #15803d; }
+.state.warn, .saving.warn { color: #c2410c; }
+.consent { font-size: 14px; color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; margin-bottom: 14px; }
+.consent p { margin: 0 0 8px; }
+.consent b { color: var(--ink); }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 14px; color: var(--muted); }
+.field input, .field select { font: inherit; color: var(--ink); padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; width: 100%; }
+.advanced { margin-bottom: 12px; font-size: 14px; color: var(--muted); }
+.advanced summary { cursor: pointer; margin-bottom: 8px; }
+.agree { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+.agree input { margin-top: 3px; width: 18px; height: 18px; }
+.error { color: #b91c1c; margin: 0 0 12px; font-size: 14px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.actions button { padding: 10px 18px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); cursor: pointer; }
+.actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.actions .danger { color: #b91c1c; }
+.saving { margin: 0; font-size: 14px; color: var(--muted); }
+.saving a { color: var(--accent); }

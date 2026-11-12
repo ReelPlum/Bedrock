@@ -1,12 +1,14 @@
 // Training pages: show a prompt (a word, a formula, or a word to scribble
 // out), take ink in a box drawn by Bedrock's own engine, and on Done turn it
-// into a sample with the raw pen data, exactly as notes store it. Samples
-// are not saved yet: they are kept for this visit only, and the last one is
-// shown so it can be checked.
+// into a sample with the raw pen data, exactly as notes store it. Once the
+// writer has agreed and entered an invite code (on /train), each sample is
+// queued on the device and sent to the training data backend; until then
+// samples are kept for this visit only.
 import init, { Canvas } from '../pkg/bedrock_web.js';
 import { InputController } from '../src/input.js';
 import { randomSeed } from '../src/storage.js';
 import { wordPrompt, mathPrompt, scribblePrompt } from './prompts.js';
+import * as collect from '../src/collect.js';
 
 const $ = (id) => document.getElementById(id);
 const mode = document.body.dataset.mode; // 'handwriting' | 'scribble'
@@ -90,31 +92,46 @@ async function main() {
     $('clear').disabled = n === 0;
   }
 
-  /** The sample a backend would store (not saved yet). */
+  /** The sample the backend stores (`bedrock-training`, version 2). */
   function sample() {
     const note = JSON.parse(canvas.export_json());
     const r = stage.getBoundingClientRect();
-    return {
-      format: 'bedrock-training',
-      version: 1,
-      task: mode,
-      prompt: { kind: prompt.kind, text: prompt.text, latex: prompt.latex },
+    return collect.fromTraining({
+      prompt: { kind: mode === 'scribble' ? 'scribble' : prompt.kind, text: prompt.text, latex: prompt.latex },
+      note,
       box: { width: Math.round(r.width), height: Math.round(r.height) },
-      channels: note.channels,
-      strokes: note.strokes,
-      shown: shownAt,
-      done: Date.now(),
-    };
+      written: Date.now(),
+    });
   }
 
-  $('done').addEventListener('click', () => {
+  // "3 done · 1 waiting to send", and a line that says where samples go.
+  let done = 0;
+  let lastStatus = { ready: false, waiting: 0, problem: '' };
+  function showStatus(st = lastStatus) {
+    lastStatus = st;
+    const parts = [`${done} done`];
+    if (st.ready && st.waiting) parts.push(`${st.waiting} waiting to send`);
+    $('count').textContent = parts.join(' · ');
+    const saving = $('saving');
+    saving.classList.toggle('warn', !st.ready || !!st.problem);
+    if (!st.ready) saving.innerHTML = 'Practice only: nothing is saved. <a href="../">Set up saving</a> to help train Bedrock.';
+    else saving.textContent = collect.problemText(st.problem) || 'Your samples are saved and sent to train Bedrock.';
+  }
+  collect.onStatus(showStatus);
+  collect.status().then(showStatus);
+  collect.flush().catch(() => {});
+
+  $('done').addEventListener('click', async () => {
     if (!canvas.stroke_count()) return;
     const s = sample();
     samples.push(s);
-    $('count').textContent = `${samples.length} done`;
+    done += 1;
+    showStatus();
     $('last').hidden = false;
     $('last-json').textContent = JSON.stringify(s, null, 1).slice(0, 4000);
     next();
+    if (collect.isReady()) await collect.enqueue(s);
+    else showStatus(await collect.status());
   });
   $('skip').addEventListener('click', next);
   $('undo').addEventListener('click', () => { canvas.undo(); hint(mode === 'scribble' ? 'Scribble out the word in one stroke, then tap Done.' : 'Write what you see, then tap Done.'); input.requestFrame(); update(); });
