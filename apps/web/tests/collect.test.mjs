@@ -575,7 +575,7 @@ function goodnotesLikePdf() {
   return [...text].map((c) => c.charCodeAt(0));
 }
 
-test('importing a PDF: each page becomes a note, and every word is sent with the PDF\'s reading', async () => {
+test("importing a PDF: each page becomes a note, and every word is sent with the PDF's reading", async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
   await agree(setup.page);

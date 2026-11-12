@@ -10,4 +10,4 @@
 - [x] 2.1 Import from Open and the menu, one note per page
 - [x] 2.2 Send every imported word (unchecked, with the PDF's reading); consent text and version 2
 - [x] 2.3 Browser tests, docs
-- [x] 2.4 Spec check covers browser tests (`<!-- web test: "name" -->`) and changes in progress
+- [x] 2.4 Scenarios cite their browser tests (`<!-- test-js: … -->`)

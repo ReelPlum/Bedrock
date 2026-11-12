@@ -68,7 +68,7 @@ Importing SHALL NOT change the note format. Strokes, recognised text and picture
 - **GIVEN** a two page handwritten PDF
 - **WHEN** it is imported with "Import PDF (GoodNotes)…" or Open
 - **THEN** each page becomes its own note, named `<file> (page N)`
-<!-- web test: "importing a PDF: each page becomes a note, and every word is sent with the PDF's reading" -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every word is sent with the PDF's reading -->
 
 ### Requirement: Imported words SHALL be sent for training only with consent
 
@@ -78,19 +78,19 @@ Importing is the writer's own act, so with saving set up on `/train` every word 
 - **GIVEN** saving is set up on `/train`, and "Send every word" is off
 - **WHEN** a PDF is imported
 - **THEN** every word is queued and sent once, with the PDF's reading where it has one
-<!-- web test: "importing a PDF: each page becomes a note, and every word is sent with the PDF's reading" -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every word is sent with the PDF's reading -->
 
 #### Scenario: Saving not set up
 - **GIVEN** saving is not set up
 - **WHEN** a PDF is imported
 - **THEN** the notes are made and nothing is queued or sent
-<!-- web test: "importing a PDF without saving set up keeps it on the device" -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF without saving set up keeps it on the device -->
 
 #### Scenario: Consent given to the older consent text
 - **GIVEN** consent was given to consent text version 1, which did not mention imported PDFs
 - **WHEN** the training page or the app checks whether saving is set up
 - **THEN** saving is off until the writer agrees to the current text (version 2)
-<!-- web test: "consent given to an older consent text is asked for again" -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: consent given to an older consent text is asked for again -->
 
 ### Requirement: Words SHALL be laid out for the note that is open
 

@@ -8,6 +8,7 @@ import { SelectionView } from './selection-view.js';
 import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
+import { cleanName, folderContents, folderNameProblem, folderTrail, libraryFiles } from './library.js';
 import { host } from './host.js';
 import * as collect from './collect.js';
 import { WordSharer } from './share-words.js';
@@ -92,6 +93,8 @@ function loadSettings() {
     // Steady-hand smoothing for every pen, 0..100.
     smoothing: Number.isFinite(s.smoothing) ? Math.max(0, Math.min(100, s.smoothing)) : 0,
     lastNote: s.lastNote || null,
+    // The folder the notes list shows; new notes go there.
+    libraryFolder: typeof s.libraryFolder === 'string' ? s.libraryFolder : null,
   };
 }
 
@@ -135,7 +138,7 @@ async function main() {
   });
 
   // ----- state -------------------------------------------------------------
-  let note = { id: newNoteId(), created: Date.now() };
+  let note = { id: newNoteId(), created: Date.now(), folder: null };
   let savedRevision = -1;
   let saveTimer = null;
   let saving = Promise.resolve();
@@ -373,18 +376,21 @@ async function main() {
     const now = Date.now();
     note.modified = now;
     canvas.set_times(note.created, now);
-    const id = note.id, created = note.created, title = canvas.title();
+    const id = note.id, created = note.created, title = canvas.title(), folder = note.folder || null;
     setSaveState('Saving…');
     saveCamera();
     saving = saving.then(async () => {
       const data = await buildNoteFile();
-      await store.put({ id, title, created, modified: now, data });
+      // The folder is read when the write happens: a move made while this
+      // save waited is kept.
+      await store.put({ id, title, created, modified: now, folder: id === note.id ? note.folder || null : folder, data });
     }).then(() => {
       savedRevision = rev;
       setSaveState(canvas.revision() === rev ? 'Saved' : 'Saving…');
       settings.lastNote = note.id;
       saveSettings();
-      if (!$('library').hidden) renderLibrary();
+      // Not while a folder is being named: that would throw the name away.
+      if (!$('library').hidden && !$('note-list').querySelector('.folder-name')) renderLibrary();
     }).catch((e) => {
       setSaveState('Not saved!', true);
       toast(`Could not save this note on this device: ${e && e.message ? e.message : e}. Use “Save to iCloud Drive / Files” to keep a copy.`, 10000);
@@ -453,7 +459,7 @@ async function main() {
     if (!rec) return newNote();
     try {
       const warnings = canvas.load(rec.data, ...randomSeed());
-      note = { id: rec.id, created: rec.created };
+      note = { id: rec.id, created: rec.created, folder: rec.folder || null };
       const cam = await store.getKv(`camera:${id}`).catch(() => null);
       if (cam && cam.length === 3) canvas.set_camera(cam[0], cam[1], cam[2]);
       if (warnings.length) toast(`Some damaged parts of this note were skipped: ${warnings.slice(0, 3).join('; ')}`, 8000);
@@ -469,8 +475,9 @@ async function main() {
   async function newNote() {
     if (saveTimer) await saveNow();
     await shareWordsAndSend();
+    const folder = await libraryFolder();
     canvas.new_document(...randomSeed());
-    note = { id: host ? host.noteId : newNoteId(), created: Date.now() };
+    note = { id: host ? host.noteId : newNoteId(), created: Date.now(), folder };
     canvas.set_paper('dots');
     applyDocToUi();
     savedRevision = -1; // a new note is saved on its first stroke
@@ -478,12 +485,134 @@ async function main() {
   }
 
   // ----- library -------------------------------------------------------------
+  // Folders and notes, kept in IndexedDB (storage.js). The list shows one
+  // folder at a time; new notes are made in the folder it shows.
+  const hasFolders = () => !!store?.listFolders;
+  const listFolders = async () => (hasFolders() ? store.listFolders() : []);
+
+  /** The folder the list shows, if it still exists. */
+  async function libraryFolder() {
+    const id = settings.libraryFolder;
+    if (!id) return null;
+    return (await listFolders()).some((f) => f.id === id) ? id : null;
+  }
+
+  function showFolder(id) {
+    settings.libraryFolder = id || null;
+    saveSettings();
+    renderLibrary();
+  }
+
+  /** A text field in the list for naming a folder. Resolves with the
+   *  name, or null if it was left empty or cancelled. */
+  function askName(li, value, label) {
+    return new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.className = 'folder-name';
+      input.value = value;
+      input.placeholder = 'Folder name';
+      input.setAttribute('aria-label', label);
+      input.enterKeyHint = 'done';
+      let finished = false;
+      const finish = (v) => { if (!finished) { finished = true; resolve(v); } };
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim() || null); }
+        if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+      };
+      input.onblur = () => finish(input.value.trim() || null);
+      li.replaceChildren(input);
+      input.focus();
+      input.select();
+    });
+  }
+
+  async function nameFolder(li, { folder = null, parent = null } = {}) {
+    for (let value = folder ? folder.name : ''; ;) {
+      const name = await askName(li, value, folder ? `Rename ${folder.name}` : 'New folder name');
+      if (name === null) return renderLibrary();
+      const siblings = (await listFolders()).filter((f) => (f.parent || null) === (folder ? folder.parent || null : parent) && f.id !== folder?.id);
+      const problem = folderNameProblem(name, siblings);
+      if (!problem) {
+        await store.putFolder(folder ? { ...folder, name: cleanName(name) } : { id: newNoteId(), name: cleanName(name), parent, created: Date.now() });
+        return renderLibrary();
+      }
+      toast(problem);
+      value = name;
+    }
+  }
+
   async function renderLibrary() {
     const list = $('note-list');
+    const folders = await listFolders();
     const notes = store ? await store.list() : [];
-    list.replaceChildren(...notes.map((n) => {
+    const current = await libraryFolder();
+    if (current !== settings.libraryFolder) { settings.libraryFolder = current; saveSettings(); }
+    const trails = folderTrail(folders);
+    const trail = current ? trails.get(current) : [];
+    const here = folderContents(folders, notes, current);
+
+    // Heading: the folder's name and a way back up.
+    const up = $('library-up');
+    up.hidden = !current;
+    const parent = trail.length > 1 ? trail[trail.length - 2] : null;
+    up.textContent = `‹ ${parent ? parent.name : 'Notes'}`;
+    up.setAttribute('aria-label', `Back to ${parent ? parent.name : 'all notes'}`);
+    up.onclick = () => showFolder(parent ? parent.id : null);
+    $('library-title').textContent = current ? trail[trail.length - 1].name : 'Notes';
+    $('btn-new-folder').hidden = !hasFolders();
+
+    // Where a note can be moved: the top and every folder, by path.
+    const places = [{ id: '', label: 'Notes (top)' }, ...folders
+      .map((f) => ({ id: f.id, label: trails.get(f.id).map((t) => t.name).join(' › ') }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }))];
+
+    const rows = here.folders.map((f) => {
+      const li = document.createElement('li');
+      li.className = 'folder';
+      li.dataset.folder = f.id;
+      const open = document.createElement('button');
+      open.className = 'open';
+      const strong = document.createElement('strong');
+      strong.textContent = f.name;
+      const inside = folderContents(folders, notes, f.id);
+      const small = document.createElement('small');
+      const count = inside.notes.length + inside.folders.length;
+      small.textContent = count ? `${count} item${count === 1 ? '' : 's'}` : 'Empty';
+      open.append(strong, small);
+      open.onclick = () => showFolder(f.id);
+      const rename = document.createElement('button');
+      rename.className = 'rename';
+      rename.textContent = 'Rename';
+      rename.setAttribute('aria-label', `Rename ${f.name}`);
+      rename.onclick = () => nameFolder(li, { folder: f });
+      const del = document.createElement('button');
+      del.className = 'delete';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete ${f.name}`);
+      del.onclick = async () => {
+        const all = trails;
+        const below = folders.filter((g) => all.get(g.id).some((t) => t.id === f.id));
+        const ids = new Set(below.map((g) => g.id));
+        const n = notes.filter((x) => ids.has(x.folder)).length;
+        const what = n ? ` and the ${n} note${n === 1 ? '' : 's'} in it` : '';
+        if (!confirm(`Delete the folder “${f.name}”${what} from this device? Copies you saved to iCloud Drive are not affected.`)) return;
+        await saving; // a save under way must not bring a deleted note back
+        const deleted = await store.removeFolder(f.id);
+        if (deleted.includes(note.id)) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+          await newNote();
+        }
+        renderLibrary();
+      };
+      li.append(open, rename, del);
+      return li;
+    });
+
+    rows.push(...here.notes.map((n) => {
       const li = document.createElement('li');
       if (n.id === note.id) li.className = 'current';
+      li.dataset.note = n.id;
       const open = document.createElement('button');
       open.className = 'open';
       const strong = document.createElement('strong');
@@ -492,6 +621,23 @@ async function main() {
       small.textContent = new Date(n.modified).toLocaleString();
       open.append(strong, small);
       open.onclick = () => { openNote(n.id); $('library').hidden = true; };
+      li.append(open);
+      if (hasFolders() && folders.length) {
+        // A native picker: on iPad it opens as a list over the button.
+        const move = document.createElement('select');
+        move.className = 'move';
+        move.setAttribute('aria-label', `Move ${n.title || 'Untitled note'} to a folder`);
+        const label = new Option('Move', '', true, true);
+        label.disabled = true;
+        move.append(label, ...places.filter((p) => p.id !== (n.folder || '')).map((p) => new Option(p.label, p.id)));
+        move.onchange = async () => {
+          const to = move.value || null;
+          if (n.id === note.id) note.folder = to;
+          await store.move(n.id, to);
+          renderLibrary();
+        };
+        li.append(move);
+      }
       const del = document.createElement('button');
       del.className = 'delete';
       del.textContent = 'Delete';
@@ -502,16 +648,27 @@ async function main() {
         if (n.id === note.id) await newNote();
         renderLibrary();
       };
-      li.append(open, del);
+      li.append(del);
       return li;
     }));
-    if (!notes.length) {
+    list.replaceChildren(...rows);
+    if (!rows.length) {
       const li = document.createElement('li');
-      li.textContent = 'No saved notes yet.';
-      li.style.padding = '10px';
+      li.className = 'empty';
+      li.textContent = current ? 'This folder is empty.' : 'No saved notes yet.';
       list.append(li);
     }
   }
+
+  $('btn-new-folder').onclick = async () => {
+    if (!hasFolders()) return;
+    const li = document.createElement('li');
+    li.className = 'folder editing';
+    const list = $('note-list');
+    list.querySelector('.empty')?.remove();
+    list.prepend(li);
+    await nameFolder(li, { parent: await libraryFolder() });
+  };
 
   // ----- Pencil hover preview ---------------------------------------------------
   // With an Apple Pencil that hovers (Pencil Pro, Pencil 2 on M2 iPads and
@@ -918,7 +1075,7 @@ async function main() {
       try {
         if (saveTimer) await saveNow();
         const warnings = canvas.load(f.bytes, ...randomSeed());
-        note = { id: newNoteId(), created: Date.now() };
+        note = { id: newNoteId(), created: Date.now(), folder: await libraryFolder() };
         if (!canvas.title()) canvas.set_title(f.name.replace(/\.(bedrock|svg|json)$/i, ''));
         applyDocToUi();
         savedRevision = -1;
@@ -937,18 +1094,19 @@ async function main() {
     'export-svg': async () => {
       await saveFile(new TextEncoder().encode(canvas.export_svg()), safeFileName(canvas.title(), 'svg'), 'image/svg+xml');
     },
+    // The whole library as a folder: notes in their folders, each with
+    // its Markdown sidecar, ready to drop into an Obsidian vault.
     'export-all': async () => {
       if (!store) return;
       if (saveTimer) await saveNow();
-      const zip = new ZipBuilder();
-      const used = new Set();
+      const notes = [];
       for (const meta of await store.list()) {
         const rec = await store.get(meta.id);
-        let name = safeFileName(rec.title || peek_title(rec.data) || 'Untitled note', 'bedrock');
-        while (used.has(name)) name = name.replace(/(\.bedrock)$/, ` ${rec.id.slice(0, 4)}$1`);
-        used.add(name);
-        zip.add(name, rec.data);
+        if (rec) notes.push(rec);
       }
+      const zip = new ZipBuilder();
+      const files = await libraryFiles(await listFolders(), notes, { titleOf: (n) => n.title || peek_title(n.data) });
+      for (const [name, bytes] of files) zip.add(name, bytes);
       const date = new Date().toISOString().slice(0, 10);
       await saveFile(zip.finish(), `Bedrock notes ${date}.zip`, 'application/zip');
     },
@@ -1313,7 +1471,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });

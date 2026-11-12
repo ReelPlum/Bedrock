@@ -198,6 +198,55 @@ and shows a placeholder card.
   can follow writing as it happens instead of rescanning the page.
 - Results live in `recognized.json`, separate from ink.
 
+## Markdown sidecar (`Name.bedrock.md`)
+
+Beside a note, a Markdown file with the same name plus `.md` makes the
+handwriting searchable in tools that only read Markdown, such as Obsidian.
+The Bedrock Obsidian plugin keeps one for each note (its "index note") and
+the web app writes them when it exports the library. Both make the same
+bytes (`apps/web/src/sidecar.js`), from `recognized.json` and `links.md`:
+
+```markdown
+---
+bedrock: "School/Physics/Forces.bedrock"
+tags: [bedrock]
+---
+> Handwritten note: [[School/Physics/Forces.bedrock|Forces]]. This index is written by the Bedrock plugin from the handwriting; changes made here are replaced.
+
+## Text
+
+Newton Hooke
+
+## Links
+
+- [[Ideas]]
+```
+
+`bedrock` is the note's path from the vault (or export) root. The text is
+the recognised items in saved order, separated by spaces, with `[` and `]`
+escaped so handwriting never becomes a link; `_Nothing read yet._` when
+there is none. `## Links` is present only when the note has links, and is
+the list from `links.md`. A sidecar is derived data: it is rewritten from
+the note, and losing it loses nothing.
+
+## An exported library
+
+"Export all notes" in the web app writes a ZIP whose layout is a folder an
+Obsidian vault can take as it is:
+
+```
+School/                       one directory per folder, empty ones too
+School/Physics/Forces.bedrock
+School/Physics/Forces.bedrock.md
+Shopping.bedrock              notes outside any folder at the top
+Shopping.bedrock.md
+```
+
+A note's folder is not stored in the note: it is where its file is. Names
+drop characters file systems refuse (`\ / : * ? " < > |`), leading dots and
+trailing dots or spaces; two notes with the same name in one folder get the
+start of their id added.
+
 ## Robustness
 
 Readers should recover what they can from a damaged file instead of failing:

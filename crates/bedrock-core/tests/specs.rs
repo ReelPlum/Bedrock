@@ -1,10 +1,12 @@
-//! Keeps the specs honest: the living specs in `openspec/specs/` and the
-//! delta specs of changes in progress (`openspec/changes/`, not the archive).
-//! Every scenario that names its proving test must point at a test that
-//! still exists: `<!-- test: name -->` a Rust test function under `crates/`,
-//! `<!-- web test: "name" -->` a browser test (`test('name', …)`) under
-//! `apps/*/tests/`. Renaming or deleting a test without updating the spec
-//! fails here.
+//! Keeps the living specs in `openspec/specs/` honest: every scenario that
+//! names its proving test with `<!-- test: name -->` must point at a test
+//! function that still exists somewhere under `crates/`. Renaming or deleting
+//! a test without updating the spec fails here.
+//!
+//! Scenarios proved by a JavaScript test (the web app, the Obsidian plugin)
+//! cite it as `<!-- test-js: apps/web/tests/x.test.mjs :: test title -->`;
+//! that file must still hold `test('test title'`. Open changes in
+//! `openspec/changes/` (not the archive) are checked too.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,36 +41,58 @@ fn cited_tests(spec: &str) -> Vec<String> {
         .collect()
 }
 
-/// Browser test names cited by `<!-- web test: "name" -->` comments.
-fn cited_web_tests(spec: &str) -> Vec<String> {
-    spec.match_indices("<!-- web test:")
+/// `(file, title)` pairs cited by `<!-- test-js: file :: title -->` comments.
+fn cited_js_tests(spec: &str) -> Vec<(String, String)> {
+    spec.match_indices("<!-- test-js:")
         .filter_map(|(i, m)| {
-            let rest = spec[i + m.len()..].trim_start().strip_prefix('"')?;
-            let end = rest.find("\" -->")?;
-            Some(rest[..end].to_string())
+            let rest = &spec[i + m.len()..];
+            let body = &rest[..rest.find("-->")?];
+            let (file, title) = body.split_once("::")?;
+            Some((file.trim().to_string(), title.trim().to_string()))
         })
         .collect()
 }
 
-/// Living specs, and the delta specs of changes not yet archived.
-fn all_specs(root: &Path) -> Vec<PathBuf> {
+/// Spec files: the living specs and the delta specs of open changes.
+fn spec_files(root: &Path) -> Vec<PathBuf> {
     let mut specs = Vec::new();
     files_with_ext(&root.join("openspec/specs"), "md", &mut specs);
-    if let Ok(entries) = fs::read_dir(root.join("openspec/changes")) {
-        for e in entries.flatten() {
-            if e.file_name() != "archive" {
-                files_with_ext(&e.path().join("specs"), "md", &mut specs);
+    let mut changes = Vec::new();
+    files_with_ext(&root.join("openspec/changes"), "md", &mut changes);
+    let archive = root.join("openspec/changes/archive");
+    specs.extend(changes.into_iter().filter(|p| !p.starts_with(&archive) && p.ends_with("spec.md")));
+    specs
+}
+
+#[test]
+fn every_js_test_named_in_a_spec_exists() {
+    let root = repo_root();
+    let mut missing = Vec::new();
+    for spec in spec_files(&root) {
+        let text = fs::read_to_string(&spec).unwrap();
+        for (file, title) in cited_js_tests(&text) {
+            let source = fs::read_to_string(root.join(&file)).unwrap_or_default();
+            let quoted = [format!("test('{title}'"), format!("test(\"{title}\""), format!("test(`{title}`")];
+            if !quoted.iter().any(|q| source.contains(q.as_str())) {
+                missing.push(format!("{}: {file} :: {title}", spec.display()));
             }
         }
     }
-    specs
+    assert!(missing.is_empty(), "specs cite JavaScript tests that do not exist:\n{}", missing.join("\n"));
+}
+
+#[test]
+fn cited_js_tests_are_parsed() {
+    let spec = "<!-- test-js: apps/web/tests/a.test.mjs :: does a thing -->\n<!-- test: rust_one -->\n";
+    assert_eq!(cited_js_tests(spec), vec![("apps/web/tests/a.test.mjs".to_string(), "does a thing".to_string())]);
+    assert!(cited_tests(spec) == vec!["rust_one"]);
 }
 
 #[test]
 fn every_test_named_in_a_spec_exists() {
     let root = repo_root();
-    let specs = all_specs(&root);
-    assert!(!specs.is_empty(), "no specs found under openspec/specs");
+    let specs = spec_files(&root);
+    assert!(specs.iter().any(|p| p.starts_with(root.join("openspec/specs"))), "no specs found under openspec/specs");
 
     let mut sources = String::new();
     let mut rust = Vec::new();
@@ -87,42 +111,6 @@ fn every_test_named_in_a_spec_exists() {
         }
     }
     assert!(missing.is_empty(), "specs cite tests that do not exist:\n{}", missing.join("\n"));
-}
-
-#[test]
-fn every_browser_test_named_in_a_spec_exists() {
-    let root = repo_root();
-    let mut sources = String::new();
-    if let Ok(apps) = fs::read_dir(root.join("apps")) {
-        for app in apps.flatten() {
-            let mut js = Vec::new();
-            files_with_ext(&app.path().join("tests"), "mjs", &mut js);
-            for file in js {
-                sources.push_str(&fs::read_to_string(file).unwrap());
-            }
-        }
-    }
-    let mut missing = Vec::new();
-    for spec in all_specs(&root) {
-        let text = fs::read_to_string(&spec).unwrap();
-        for name in cited_web_tests(&text) {
-            let quoted = [
-                format!("test('{}'", name.replace('\'', "\\'")),
-                format!("test(\"{}\"", name.replace('"', "\\\"")),
-                format!("test(`{name}`"),
-            ];
-            if !quoted.iter().any(|q| sources.contains(q.as_str())) {
-                missing.push(format!("{}: {name}", spec.display()));
-            }
-        }
-    }
-    assert!(missing.is_empty(), "specs cite browser tests that do not exist:\n{}", missing.join("\n"));
-}
-
-#[test]
-fn cited_web_tests_are_parsed() {
-    let spec = "<!-- web test: \"it's sent\" -->\n<!-- web test: \"two\" -->\n<!-- test: rust_one -->\n";
-    assert_eq!(cited_web_tests(spec), vec!["it's sent", "two"]);
 }
 
 #[test]
