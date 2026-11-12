@@ -18,6 +18,26 @@ Each scenario names the test that proves it in a comment
 (`<!-- test: name -->`). `crates/bedrock-core/tests/specs.rs` fails when a
 cited test no longer exists, so specs and tests cannot drift apart silently.
 
+## Data formats
+
+Note files, sidecars and index notes, the exported library, the on-device
+library, training samples and prompts, and the backend's API and storage are
+data formats: people's notes and data depend on them. The full list is in
+`openspec/specs/data-format-changes/spec.md`. For any change to one:
+
+1. **Ask first.** Tell Frederik what would change, why, and how old data
+   keeps working, and wait for their approval before writing it. Claude
+   sessions do the same: they stop and ask, they do not decide. The
+   proposal's "Data format change" section records the reason and the
+   approval.
+2. **Old formats keep working.** Readers keep reading every earlier version;
+   only writers move on. Before the change, add a fixture written by the
+   current version to `crates/bedrock-core/tests/fixtures/old-formats/` (or
+   the matching place for other formats) and a test that reads it. Fixtures
+   are never regenerated.
+3. **Write it down.** Update the format's spec and its document
+   (`docs/note-format.md` and `docs/note.schema.json` for notes).
+
 ## The loop
 
 1. `/interlock:spec "<idea>"` writes a change and stops. For a bug, give the

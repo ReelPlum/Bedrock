@@ -94,3 +94,68 @@ Bedrock SHALL write `.bedrock` (ZIP), `.svg` and `.json` files that open again t
 - **WHEN** the note is saved, the group is kept; when one stroke is erased and the note is saved again
 - **THEN** the saved note has no `groups` entry for it
 <!-- test: word_groups_are_saved_while_their_strokes_exist -->
+
+### Requirement: Note files written by every earlier Bedrock SHALL keep opening
+
+A note file is a promise that outlives the app, so a change to Bedrock SHALL
+NOT stop an older file opening with all of its content. Files written by
+earlier versions are kept, never regenerated, in
+`crates/bedrock-core/tests/fixtures/old-formats/`, and each format change adds
+one written by the version just before it (see the `data-format-changes` spec).
+
+#### Scenario: The first note format
+- **GIVEN** a `.bedrock`, `.json` and `.svg` file written by the first Bedrock (commit dc1b86b)
+- **WHEN** each is opened, and saved and opened again
+- **THEN** it opens without warnings, with every stroke, every raw sample, each brush and device, and the recognised text
+<!-- test: the_first_note_format_still_opens -->
+
+#### Scenario: Notes from before pictures
+- **GIVEN** files written before pictures existed, with links, a word group, a maths override, a dashed line and a stabiliser
+- **WHEN** each is opened, and saved and opened again
+- **THEN** all of those come back as they were written
+<!-- test: notes_from_before_pictures_still_open -->
+
+#### Scenario: Notes with pictures and text boxes
+- **GIVEN** files with a picture, a text box and per-stroke pen tuning
+- **WHEN** each is opened
+- **THEN** the picture and the text box are where they were, the pen tuning is kept, and a `.bedrock` file gives back the picture's own bytes
+<!-- test: notes_with_pictures_and_text_boxes_still_open -->
+
+### Requirement: Pictures and text boxes SHALL be stored as plain files and plain text
+
+A picture SHALL be stored in the `.bedrock` archive as the original image
+file under `images/`, named by its content, and placed by `images` in
+`note.json`; a text box SHALL be its text in `texts`. A file no picture uses
+SHALL NOT be saved.
+
+#### Scenario: A picture round-trips as a plain image file
+- **GIVEN** a note with a PNG picture and an unused picture file
+- **WHEN** it is saved as `.bedrock` and opened again
+- **THEN** the archive holds the PNG unchanged and not the unused file, and the picture is at the same place and size
+- **AND** the `.svg` export embeds the picture and `preview.svg` refers to the file
+<!-- test: pictures_round_trip_in_a_bedrock_file_as_plain_image_files -->
+
+#### Scenario: Text boxes
+- **GIVEN** a note with a two-line text box holding `<`
+- **WHEN** it is saved and opened again
+- **THEN** `texts` holds the text, `images` does not, and the `.svg` export shows it as escaped SVG text
+<!-- test: text_boxes_round_trip_and_export_as_svg_text -->
+
+### Requirement: Positions SHALL survive saving at full zoom precision
+
+#### Scenario: Fine positions
+- **GIVEN** samples a hundredth of a unit apart at the far edge of the page
+- **WHEN** the note is saved and opened again
+- **THEN** every sample is back within a fraction of a screen pixel at the highest zoom
+<!-- test: positions_survive_saving_at_full_zoom_precision -->
+
+### Requirement: The SVG export SHALL be a viewable picture that opens again
+
+#### Scenario: SVG export
+- **GIVEN** a note with highlighter and pen strokes and text holding `]]>`
+- **WHEN** it is exported as `.svg`
+- **THEN** the SVG is a valid picture with highlighters drawn first, the embedded note is escaped, and opening the SVG gives the same strokes
+<!-- test: svg_roundtrip_and_is_viewable -->
+<!-- test: highlighter_paths_come_first -->
+<!-- test: cdata_terminator_in_text_is_escaped -->
+<!-- test: number_formatting -->

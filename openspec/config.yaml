@@ -11,17 +11,30 @@ context: |
   The note format (docs/note-format.md, docs/note.schema.json) is a promise to
   users that notes outlive the app: any change to it bumps `version`, updates
   both documents and adds a migration test.
+  Data formats (note files, sidecars and index notes, the exported library,
+  the on-device library, training samples and prompts, and the backend's API
+  and storage) are listed in openspec/specs/data-format-changes/spec.md.
+  Changing one needs the owner's approval first, asked with the reason, and
+  old data must keep working: readers keep reading every earlier version,
+  proved by a test that reads a fixture written by the version before.
   Every bug fix starts with a test that reproduces the bug.
   Performance matters: a 100 000-stroke budget is enforced in
   crates/bedrock-core/tests/perf.rs.
 
 rules:
+  proposal:
+    - If the change touches a data format (see openspec/specs/data-format-changes/spec.md), add a "Data format change" section that says what changes, why, and how data written by earlier versions keeps working, and stop to ask the owner for approval before any task is shipped. Record the approval in that section.
+  design:
+    - A data format change keeps every earlier version readable; say how, and which old-format fixture proves it.
   tasks:
+    - When the change touches a data format, the first task adds a fixture written by the current version (before the change) and a test that reads it; it must still pass after the change.
     # tasks.md is the wave plan that /interlock:ship executes.
     - Default grouping is the numbered section; a `## N.` section is one wave (`1.x` share a wave, `2.x` share the next).
     - Sequential same-file work is one checkbox, not one checkbox per TDD step on the same file.
     - Start a new numbered section only when later tasks need the previous section's output to exist.
     - A bug fix's first task writes the failing test that reproduces it.
   specs:
+    - Every feature and data format has a living spec in openspec/specs/; a change that adds one adds its spec.
+    - A capability that stores or exchanges data has a "Data formats" section describing the format.
     - Scenarios use GIVEN / WHEN / THEN and name observable behaviour, not implementation.
     - Name the test that proves each scenario in an HTML comment under it (`<!-- test: name -->`).
