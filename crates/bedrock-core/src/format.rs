@@ -540,8 +540,59 @@ pub fn load(text: &str, seed: u64) -> Result<Loaded, FormatError> {
     if t.starts_with('{') {
         from_json(t, seed)
     } else {
-        from_json(extract_json(t).ok_or(FormatError::NotABedrockNote)?, seed)
+        let mut loaded = from_json(extract_json(t).ok_or(FormatError::NotABedrockNote)?, seed)?;
+        pictures_from_svg(t, &mut loaded);
+        Ok(loaded)
     }
+}
+
+/// The SVG export embeds each picture's file in its `<image>` as a
+/// `data:` URL; give those files back so a re-saved note keeps them.
+fn pictures_from_svg(svg: &str, loaded: &mut Loaded) {
+    let wanted: Vec<(StrokeId, String)> = loaded
+        .doc
+        .images()
+        .iter()
+        .filter(|i| i.text.is_none() && !i.file.is_empty() && !loaded.doc.assets.contains_key(&i.file))
+        .map(|i| (i.id, i.file.clone()))
+        .collect();
+    for (id, file) in wanted {
+        let Some(at) = svg.find(&format!("<image id=\"i{id}\"")) else { continue };
+        let tag = &svg[at..at + svg[at..].find('>').unwrap_or(svg.len() - at)];
+        let Some(data) = tag.split("href=\"data:").nth(1).and_then(|h| h.split('"').next()) else { continue };
+        match data.split_once(";base64,").and_then(|(_, b)| unbase64(b)) {
+            Some(bytes) => {
+                loaded.doc.assets.insert(file, bytes);
+            }
+            None => loaded.warnings.push(format!("the picture {file} embedded in the SVG is damaged and was left out")),
+        }
+    }
+}
+
+fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let digits = text.trim_end_matches('=').as_bytes();
+    if digits.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for chunk in digits.chunks(4) {
+        let mut n = 0u32;
+        for (k, &c) in chunk.iter().enumerate() {
+            n |= value(c)? << (18 - 6 * k);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
+    }
+    Some(out)
 }
 
 // ----- .bedrock container ---------------------------------------------------
@@ -976,6 +1027,31 @@ mod tests {
         // The SVG export embeds it; the preview refers to the file.
         assert!(to_svg(&d).contains("href=\"data:image/png;base64,iVBORwECAwQ=\""));
         assert!(to_preview_svg(&d).contains("href=\"images/abc.png\""));
+    }
+
+    #[test]
+    fn an_svg_export_gives_its_pictures_back_when_opened() {
+        let mut d = sample_doc();
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4, 5];
+        let jpg = vec![0xff, 0xd8, 0xff, 7];
+        let r = crate::geom::Rect::new(crate::geom::Vec2::new(10.0, 20.0), crate::geom::Vec2::new(110.0, 70.0));
+        let a = d.add_image("images/abc.png", Some(png.clone()), r);
+        let b = d.add_image("images/def.jpg", Some(jpg.clone()), r);
+        let back = load(&to_svg(&d), 1).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.doc.assets.get("images/abc.png"), Some(&png), "the picture embedded in the SVG");
+        assert_eq!(back.doc.assets.get("images/def.jpg"), Some(&jpg));
+        assert_eq!(back.doc.image(a).unwrap().file, "images/abc.png");
+        assert_eq!(back.doc.image(b).unwrap().file, "images/def.jpg");
+        // Saving it as a .bedrock file keeps the picture files.
+        let (files, _) = crate::zip::read(&to_bedrock(&back.doc)).unwrap();
+        assert!(files.iter().any(|(n, f)| n == "images/abc.png" && *f == png));
+        // A damaged embedded picture is left out, with a warning, and the note still opens.
+        let broken = to_svg(&d).replace("base64,iVBORwECAwQF", "base64,!!!");
+        let l = load(&broken, 1).unwrap();
+        assert!(!l.doc.assets.contains_key("images/abc.png"));
+        assert_eq!(l.doc.assets.get("images/def.jpg"), Some(&jpg));
+        assert!(l.warnings.iter().any(|w| w.contains("images/abc.png")), "{:?}", l.warnings);
     }
 
     #[test]

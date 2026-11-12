@@ -10,7 +10,7 @@ afternoon without Bedrock's code. The machine readable schema for
 | Extension | What it is |
 |---|---|
 | `.bedrock` | The normal note file: a ZIP archive (described below). |
-| `.svg` | Export: a standalone SVG picture with the same note JSON embedded, so it can be opened in Bedrock again. |
+| `.svg` | Export: a standalone SVG picture with the same note JSON embedded, so it can be opened in Bedrock again. Pictures are embedded as `data:` URLs in their `<image id="i<id>">`, and opening the SVG gives their files back. |
 | `.json` | The bare `note.json`. Bedrock opens it too. |
 
 ### `.bedrock` (ZIP archive)
@@ -257,6 +257,12 @@ covered by fuzz-style tests in `crates/bedrock-core/src/format.rs`.
 
 ## Versioning
 
-Any change to this format bumps `version`, updates this document and the
-JSON Schema, and adds a migration test that reads files of every earlier
-version.
+`version` is bumped only by a breaking change: removing a field, or changing
+what an existing field means. A new optional field that older readers can
+ignore (they keep fields they do not know, see above) keeps the version;
+pictures, text boxes, word groups, `kinds` and pen tuning were all added this
+way within version 1. Either way, a change to this format is agreed with the
+project owner first, updates this document and the JSON Schema, and adds a
+test that reads files written before the change
+(`crates/bedrock-core/tests/old_formats.rs`). Readers keep reading every
+earlier version.
