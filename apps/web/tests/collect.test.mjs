@@ -275,7 +275,7 @@ test('notes: "This is right" marks a reading as checked, and sends nothing while
   const setup = await openSetup(ctx);
   await agree(setup.page);
   const { page, errors } = await noteWithWord(ctx);
-  assert.equal(await page.isChecked('#share-corrections'), false, 'off unless turned on');
+  assert.equal(await page.isChecked('#share-words'), false, 'off unless turned on');
   await openMenu(page);
   assert.equal(await page.isVisible('#wm-right'), true);
   await page.click('#wm-right');
@@ -293,10 +293,10 @@ test('notes: "This is right" marks a reading as checked, and sends nothing while
 test('notes: the setting cannot be turned on before consent', async () => {
   const { ctx } = await context();
   const { page } = await noteWithWord(ctx);
-  await page.evaluate(() => document.getElementById('share-corrections').click());
-  assert.equal(await page.isChecked('#share-corrections'), false);
+  await page.evaluate(() => document.getElementById('share-words').click());
+  assert.equal(await page.isChecked('#share-words'), false);
   assert.match(await page.textContent('#toast'), /Train page first/);
-  assert.equal(await page.evaluate(() => bedrock.settings.shareCorrections), false);
+  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), false);
   await ctx.close();
 });
 
@@ -305,8 +305,8 @@ test('notes: with the setting on, a confirmed word is sent as one word moved to 
   const setup = await openSetup(ctx);
   await agree(setup.page);
   const { page, errors } = await noteWithWord(ctx);
-  await page.evaluate(() => document.getElementById('share-corrections').click());
-  assert.equal(await page.evaluate(() => bedrock.settings.shareCorrections), true);
+  await page.evaluate(() => document.getElementById('share-words').click());
+  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), true);
   // A second word elsewhere must not be sent with it.
   await page.evaluate(async () => {
     const box = document.getElementById('stage').getBoundingClientRect();
@@ -336,7 +336,7 @@ test('notes: a correction is sent with the writer\'s text as the label and the r
   const setup = await openSetup(ctx);
   await agree(setup.page);
   const { page } = await noteWithWord(ctx);
-  await page.evaluate(() => document.getElementById('share-corrections').click());
+  await page.evaluate(() => document.getElementById('share-words').click());
   await openMenu(page);
   await page.click('#wm-correct');
   await page.fill('#wm-correct-text', 'hello');
@@ -354,5 +354,102 @@ test('notes: a correction is sent with the writer\'s text as the label and the r
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 2);
   const again = server.requests.filter((r) => r.path === '/v1/samples').at(-1).body.samples[0];
   assert.deepEqual([again.label, again.label_source, again.model_reading], ['Hello', 'corrected', undefined]);
+  assert.deepEqual(again.supersedes, [s.id], 'replaces the first correction of the same ink');
+  await ctx.close();
+});
+
+const sentSamples = (server) => server.requests.filter((r) => r.path === '/v1/samples').flatMap((r) => r.body.samples);
+
+/** Turns "Send every word" on, then writes one word and gives it a reading. */
+async function newWordWithSettingOn(ctx, reading = 'helo') {
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.evaluate(() => { bedrock.handwriting.enabled = false; bedrock.wordSharer.settleMs = 0; document.getElementById('share-words').click(); });
+  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), true);
+  await page.evaluate(async (text) => {
+    const box = document.getElementById('stage').getBoundingClientRect();
+    await t.line(box.left + 400, box.top + 300, box.left + 430, box.top + 340);
+    await t.line(box.left + 440, box.top + 300, box.left + 470, box.top + 340);
+    if (text != null) {
+      const w = JSON.parse(bedrock.canvas.words_json())[0];
+      bedrock.canvas.set_word_text(w.id, text, 'text', 'Xenova/trocr-small-handwritten (fake)', 0.8);
+    }
+  }, reading);
+  return { page, errors };
+}
+
+test('notes: with "Send every word" on, a new word is sent unchecked, then replaced when the writer checks it', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page, errors } = await newWordWithSettingOn(ctx);
+
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 1);
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 0, 'sent once');
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  const [first] = sentSamples(server);
+  assert.deepEqual([first.source, first.kind, first.label, first.label_source, first.model_reading], ['note', 'text', 'helo', 'unchecked', 'helo']);
+  assert.equal(first.supersedes, undefined);
+
+  // A new reading from the recogniser replaces the unchecked one.
+  await page.evaluate(() => { const w = JSON.parse(bedrock.canvas.words_json())[0]; bedrock.canvas.set_word_text(w.id, 'hello', 'text', 'Xenova/trocr-base-handwritten (fake)', 0.9); });
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 1);
+
+  // "This is right" sends a checked copy that replaces it.
+  await openMenu(page);
+  await page.click('#wm-right');
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 3);
+  const [, second, third] = sentSamples(server);
+  assert.deepEqual([second.label, second.label_source, second.supersedes], ['hello', 'unchecked', [first.id]]);
+  assert.deepEqual([third.label, third.label_source, third.supersedes], ['hello', 'confirmed', [second.id]]);
+
+  // An unchecked reading never replaces a checked one.
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan({ force: true })), 0);
+
+  // "Not a word" replaces it again, as a drawing with no text.
+  await openMenu(page);
+  await page.click('#wm-drawing');
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 4);
+  const fourth = sentSamples(server)[3];
+  assert.deepEqual([fourth.kind, fourth.label, fourth.label_source, fourth.supersedes], ['drawing', '', 'corrected', [third.id]]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('notes: an unchecked reading waits until it settles, and is sent at once when the app is hidden', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page } = await newWordWithSettingOn(ctx);
+  await page.evaluate(() => { bedrock.wordSharer.settleMs = 60_000; });
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 0, 'still settling');
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan({ force: true })), 1);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  assert.equal(sentSamples(server)[0].label_source, 'unchecked');
+  await ctx.close();
+});
+
+test('notes: words written before the setting was on are not sent by themselves', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page } = await noteWithWord(ctx);
+  await page.evaluate(() => { bedrock.wordSharer.settleMs = 0; document.getElementById('share-words').click(); });
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan({ force: true })), 0);
+  await page.waitForTimeout(200);
+  assert.equal(server.requests.length, 0);
+  await ctx.close();
+});
+
+test('notes: with the recogniser off, words are sent without text', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page } = await newWordWithSettingOn(ctx, null);
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 0, 'waits for a reading while the recogniser is on');
+  await page.evaluate(() => { bedrock.settings.recognize = false; });
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 1);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  const [s] = sentSamples(server);
+  assert.deepEqual([s.label, s.label_source], ['', 'unchecked']);
   await ctx.close();
 });

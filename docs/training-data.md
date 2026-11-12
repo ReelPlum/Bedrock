@@ -9,15 +9,24 @@ unless the writer agrees.
 | Where | What | When |
 |---|---|---|
 | The training pages (`/train`) | The ink written in the box and the prompt it answers. | After agreeing on the consent card on `/train` and entering an invite code. |
-| A note | One word: its ink, moved to 0,0, and its checked text. | Only with "Send my corrections to improve recognition" turned on (it is off by default), and only when the writer taps "This is right" or corrects a reading. |
+| A note | Every handwritten word written after the setting was turned on, one sample per word: its ink, moved to 0,0, and what the recogniser read, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A word is sent once its reading has not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
+| A note | A word again, with its checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
 
-A reading nobody checked is never sent, and never becomes a label. The rest
-of a note is never sent.
+A checked sample names the earlier sample of the same ink in `supersedes`,
+and the backend keeps only the newest. A checked word is never replaced by
+an unchecked reading. An unchecked reading is never trained on until the
+writer or a reviewer checks it (`bedrock-data review` in the backend). The
+rest of a note (typed text, pictures, the title, where words are on the
+page) is never sent.
+
+The logic is in `apps/web/src/share-words.js`. It remembers which sample it
+sent for each word (in local storage, the newest 5000), so a word is sent
+once per change.
 
 ## What a sample holds
 
 `bedrock-training` version 2: the label and how we know it (`prompt`,
-`confirmed` or `corrected`), what the recogniser read (if anything), the
+`unchecked`, `confirmed` or `corrected`), what the recogniser read (if anything), the
 language, a coarse device class (for example `ipad`, never the full user
 agent), pen, finger or mouse, and the raw pen samples. No stroke ids, brushes
 or colours, no note title, no name or email. The writer is a random id made

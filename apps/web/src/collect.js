@@ -124,7 +124,7 @@ export function shortTag(text, max) {
   return String(text).normalize('NFKD').replace(/[^A-Za-z0-9 ._\-/+]/g, '-').slice(0, max) || 'unknown';
 }
 
-function sample({ source, kind, label, labelSource, language, strokes, channels, written, box, reading, engine }) {
+function sample({ source, kind, label, labelSource, language, strokes, channels, written, box, reading, engine, supersedes = [] }) {
   return {
     format: 'bedrock-training',
     version: 2,
@@ -140,6 +140,8 @@ function sample({ source, kind, label, labelSource, language, strokes, channels,
     written: Math.round(written ?? Date.now()),
     app_version: APP_VERSION,
     ...(box ? { box } : {}),
+    // Earlier samples of the same ink that this one replaces.
+    ...(supersedes.length ? { supersedes } : {}),
     channels,
     // Only what a recogniser needs: no brush, colour or stroke id.
     strokes: strokes.map((s) => ({ start: s.start, points: s.points })),
@@ -168,11 +170,12 @@ export function fromTraining({ prompt, note, box, written }) {
 }
 
 /**
- * A sample from a real note: one word the writer confirmed or corrected.
+ * A sample from a real note: one word, checked by the writer or not
+ * (`labelSource`: unchecked | confirmed | corrected).
  * The ink is moved so its top left corner is at 0,0: where on the page it
  * was written says something about the note, and nobody needs to know.
  */
-export function fromNote({ strokes, channels, label, labelSource, kind = 'text', language = 'en', reading, engine }) {
+export function fromNote({ strokes, channels, label, labelSource, kind = 'text', language = 'en', reading, engine, supersedes }) {
   const n = channels.length;
   const ix = channels.indexOf('x');
   const iy = channels.indexOf('y');
@@ -192,7 +195,7 @@ export function fromNote({ strokes, channels, label, labelSource, kind = 'text',
     }
     return { ...s, points };
   });
-  return sample({ source: 'note', kind, label, labelSource, language, strokes: moved, channels, reading, engine, written: Math.max(...strokes.map((s) => s.start)) });
+  return sample({ source: 'note', kind, label, labelSource, language, strokes: moved, channels, reading, engine, supersedes, written: Math.max(...strokes.map((s) => s.start)) });
 }
 
 // ---- The queue (IndexedDB) -------------------------------------------------
@@ -352,6 +355,8 @@ export async function deleteMine() {
     }
   }
   saveState({ sent: 0, problem: '' });
+  // Which note words were sent (share-words.js): nothing is left to replace.
+  try { globalThis.localStorage?.removeItem('bedrock.sharedWords.v1'); } catch (_) { /* private mode */ }
   await announce();
   return deleted;
 }

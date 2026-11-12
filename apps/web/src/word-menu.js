@@ -129,7 +129,15 @@ export class WordMenu {
     const ok = this.selection && !this.selection.word
       ? this.canvas.set_selection_kind(kind)
       : this.canvas.set_word_kind(this.word.id, kind);
-    if (ok) this.onChange();
+    if (ok) {
+      this.onChange();
+      // "Not a word" on one word is the writer's answer about its reading.
+      if (kind === 'drawing' && !(this.selection && !this.selection.word) && this.word.id != null) {
+        const w = this.word;
+        const reading = w.engine === 'user' ? null : w.text ?? null;
+        this.onFeedback(this._wordById(w.id) || w, { labelSource: 'corrected', reading, engine: reading ? w.engine || null : null });
+      }
+    }
     this.close();
   }
 
@@ -305,10 +313,7 @@ export class WordMenu {
     this.onChange();
     const label = text.trim();
     if (!label || w.kind === 'drawing') return;
-    this.onFeedback({
-      strokes: w.strokes || [],
-      kind: w.kind,
-      label,
+    this.onFeedback(this._wordById(w.id) || w, {
       labelSource: reading != null && reading.trim() === label ? 'confirmed' : 'corrected',
       reading: reading || null,
       engine: reading ? w.engine || null : null,

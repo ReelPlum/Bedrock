@@ -9,6 +9,7 @@ import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } f
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 import * as collect from './collect.js';
+import { WordSharer } from './share-words.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -76,10 +77,11 @@ function loadSettings() {
     recognize: s.recognize !== false,
     recognizeMode: ['live', 'careful', 'both'].includes(s.recognizeMode) ? s.recognizeMode : 'both',
     spelling: s.spelling !== false,
-    // Off unless the writer turns it on: sends a word's ink and its checked
-    // text to the training data backend when a reading is confirmed or
-    // corrected.
-    shareCorrections: s.shareCorrections === true,
+    // Off unless the writer turns it on: sends every word written in notes
+    // (from `shareWordsSince` on) to the training data backend, and again
+    // when the writer confirms, corrects or says it is not a word.
+    shareWords: s.shareWords === true,
+    shareWordsSince: Number.isFinite(s.shareWordsSince) ? s.shareWordsSince : 0,
     scribbleErase: s.scribbleErase !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
@@ -229,31 +231,22 @@ async function main() {
   handwriting.spelling = settings.spelling;
   handwriting.loadDictionary().then(() => input.requestFrame());
   const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
-  // A reading the writer confirmed ("This is right") or corrected becomes a
-  // training sample: that one word's ink, moved to 0,0, with the checked
-  // text as its label. Only when "Send my corrections" is on. A reading
-  // nobody checked is never sent.
-  async function shareFeedback({ strokes, kind, label, labelSource, reading, engine }) {
-    if (!settings.shareCorrections || !collect.isReady() || !strokes.length) return null;
-    const ink = strokes.map((id) => canvas.stroke_json(id)).filter(Boolean).map((j) => JSON.parse(j));
-    if (!ink.length) return null;
-    const sample = collect.fromNote({
-      strokes: ink,
-      channels: JSON.parse(canvas.meta_json()).channels,
-      label,
-      labelSource,
-      kind: kind === 'math' ? 'math' : 'text',
-      language: kind === 'math' ? 'zxx' : 'en',
-      reading,
-      engine,
-    });
-    await collect.enqueue(sample);
-    return sample;
-  }
+  // "Send every word I write in notes": each word's ink, moved to 0,0, with
+  // what the recogniser read as an unchecked label, and again when the
+  // writer checks it (see share-words.js).
+  const wordSharer = new WordSharer({
+    canvas,
+    noteId: () => note.id,
+    enabled: () => settings.shareWords && collect.isReady(),
+    since: () => settings.shareWordsSince,
+    reading: () => settings.recognize,
+  });
+  const shareWordsNow = (force = false) => wordSharer.scan({ force }).catch(() => {});
+  setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     onChange: wordChanged,
     requestFrame: () => input.requestFrame(),
-    onFeedback: shareFeedback,
+    onFeedback: (word, info) => wordSharer.checked(word, info).catch(() => {}),
     // What the recogniser made of a word, for the word's menu.
     describe: (w) => {
       if (w.text != null) {
@@ -419,6 +412,7 @@ async function main() {
 
   async function openNote(id) {
     if (saveTimer) await saveNow();
+    await shareWordsNow(true);
     const rec = store && (await store.get(id));
     if (!rec) return newNote();
     try {
@@ -438,6 +432,7 @@ async function main() {
 
   async function newNote() {
     if (saveTimer) await saveNow();
+    await shareWordsNow(true);
     canvas.new_document(...randomSeed());
     note = { id: newNoteId(), created: Date.now() };
     canvas.set_paper('dots');
@@ -1036,18 +1031,20 @@ async function main() {
     canvas.set_scribble_erase(settings.scribbleErase);
     saveSettings();
   });
-  // Feedback on readings goes to the training data backend only when this
-  // is on, and only after consent and an invite code (set up on /train).
-  $('share-corrections').checked = settings.shareCorrections && collect.isReady();
-  $('share-corrections').addEventListener('change', (e) => {
+  // Words go to the training data backend only when this is on, and only
+  // after consent and an invite code (set up on /train).
+  $('share-words').checked = settings.shareWords && collect.isReady();
+  $('share-words').addEventListener('change', (e) => {
     if (e.target.checked && !collect.isReady()) {
       e.target.checked = false;
       toast('Set up saving on the Train page first (bedrock/train): it explains what is sent and needs your invite code.', 7000);
       return;
     }
-    settings.shareCorrections = e.target.checked;
+    settings.shareWords = e.target.checked;
+    // Only what is written from now on is sent by itself.
+    if (settings.shareWords) settings.shareWordsSince = Date.now();
     saveSettings();
-    if (settings.shareCorrections) collect.flush().catch(() => {});
+    if (settings.shareWords) collect.flush().catch(() => {});
   });
   $('spelling').checked = settings.spelling;
   $('spelling').addEventListener('change', (e) => {
@@ -1222,9 +1219,9 @@ async function main() {
   // Flush pending saves when the app is backgrounded or closed (iPad
   // suspends hidden tabs without warning).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); }
+    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsNow(true); }
   });
-  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); });
+  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsNow(true); });
 
   // ----- start ---------------------------------------------------------------------
   applyDock();
@@ -1237,7 +1234,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { collect, shareFeedback, settings, canvas, input, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { collect, wordSharer, settings, canvas, input, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
 }
 

@@ -76,33 +76,52 @@ try {
   });
   await sent(page, 4);
 
-  // A confirmed word and a corrected word from a note.
+  // "Send every word": two words from a note go up unchecked, then the
+  // writer corrects one and says the other is not a word.
   await page.goto(app);
   await page.waitForFunction(() => window.bedrock?.ready);
   await installPointerHelpers(page);
+  const words = () => page.evaluate(() => JSON.parse(bedrock.canvas.words_json()));
   await page.evaluate(async () => {
     bedrock.handwriting.enabled = false;
-    document.getElementById('share-corrections').click();
+    bedrock.wordSharer.settleMs = 0;
+    document.getElementById('share-words').click();
     const box = document.getElementById('stage').getBoundingClientRect();
-    await t.line(box.left + 400, box.top + 300, box.left + 430, box.top + 340);
-    const w = JSON.parse(bedrock.canvas.words_json())[0];
-    bedrock.canvas.set_word_text(w.id, 'helo', 'text', 'Xenova/trocr-small-handwritten (fake)', 0.8);
-    bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[0]);
-    document.getElementById('wm-right').click();
+    await t.line(box.left + 200, box.top + 200, box.left + 230, box.top + 240);
+    await t.line(box.left + 500, box.top + 500, box.left + 560, box.top + 520);
+    const [a, b] = JSON.parse(bedrock.canvas.words_json());
+    bedrock.canvas.set_word_text(a.id, 'helo', 'text', 'Xenova/trocr-small-handwritten (fake)', 0.8);
+    bedrock.canvas.set_word_text(b.id, 'x', 'text', 'Xenova/trocr-small-handwritten (fake)', 0.4);
+    await bedrock.wordSharer.scan();
   });
-  await sent(page, 5);
+  assert.equal((await words()).length, 2);
+  await sent(page, 6);
+  await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[0]));
+  await page.click('#wm-correct');
+  await page.fill('#wm-correct-text', 'hello');
+  await page.press('#wm-correct-text', 'Enter');
+  await sent(page, 7);
+  await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[1]));
+  await page.click('#wm-drawing');
+  await sent(page, 8);
 
   const rows = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
-  console.table(rows.map((r) => ({ source: r.source, kind: r.kind, label: r.label, label_source: r.label_source, model_reading: r.model_reading, strokes: r.strokes, points: r.points, device: r.device, pointer: r.pointer, language: r.language })));
-  assert.equal(rows.length, 5, 'every sample the app sent passed the backend\'s checks');
-  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'note']);
+  console.table(rows.map((r) => ({ source: r.source, kind: r.kind, label: r.label, label_source: r.label_source, model_reading: r.model_reading, status: r.status, strokes: r.strokes, points: r.points, device: r.device, pointer: r.pointer, language: r.language })));
+  assert.equal(rows.length, 8, 'every sample the app sent passed the backend\'s checks');
+  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'note', 'note', 'note', 'note']);
   assert.equal(rows[3].kind, 'scribble');
-  assert.deepEqual([rows[4].label, rows[4].label_source, rows[4].model_reading], ['helo', 'confirmed', 'helo']);
+  const note = rows.slice(4).map((r) => [r.kind, r.label, r.label_source, r.status]);
+  assert.deepEqual(note.sort(), [
+    ['drawing', '', 'corrected', 'new'],
+    ['text', 'hello', 'corrected', 'new'],
+    ['text', 'helo', 'unchecked', 'superseded'],
+    ['text', 'x', 'unchecked', 'superseded'],
+  ]);
 
   // And "Delete my contributions" really deletes.
   setup.on('dialog', (d) => d.accept());
   await setup.click('#delete');
-  await setup.waitForFunction(() => /Deleted 5 samples/.test(document.getElementById('state').textContent));
+  await setup.waitForFunction(() => /Deleted 8 samples/.test(document.getElementById('state').textContent));
   const left = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
   assert.equal(left.length, 0);
   console.log('ok: the app and the backend agree');
