@@ -98,10 +98,10 @@ fn notes_with_pictures_and_text_boxes_still_open() {
     for ext in FORMATS {
         let what = format!("v1-pictures-and-text-boxes.{ext}");
         let first = open("v1-pictures-and-text-boxes", ext);
-        // Only a `.bedrock` file carries the picture's own file; `.json` and
-        // `.svg` exports keep where it is but not its bytes, so only the
-        // `.bedrock` file is saved again here.
-        let again = (ext == "bedrock").then(|| resave(&first));
+        // A `.bedrock` file carries the picture's own file and the `.svg`
+        // export embeds it; a `.json` export keeps only where it is, so it is
+        // not saved again here.
+        let again = (ext != "json").then(|| resave(&first));
         for d in std::iter::once(first).chain(again) {
             check_common(&d, &what);
             let s = d.strokes();
@@ -116,7 +116,7 @@ fn notes_with_pictures_and_text_boxes_still_open() {
             assert_eq!(text.text.as_deref(), Some("Shopping list\nmilk"), "{what}");
             assert_eq!((text.x, text.y, text.w, text.h), (10.0, 100.0, 120.0, 47.0), "{what}");
             assert_eq!(pic.file, "images/abc.png", "{what}");
-            if ext == "bedrock" {
+            if ext != "json" {
                 let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
                 assert_eq!(d.assets.get(&pic.file), Some(&png), "{what}: the picture file");
             }

@@ -118,7 +118,7 @@ one written by the version just before it (see the `data-format-changes` spec).
 #### Scenario: Notes with pictures and text boxes
 - **GIVEN** files with a picture, a text box and per-stroke pen tuning
 - **WHEN** each is opened
-- **THEN** the picture and the text box are where they were, the pen tuning is kept, and a `.bedrock` file gives back the picture's own bytes
+- **THEN** the picture and the text box are where they were, the pen tuning is kept, and the `.bedrock` and `.svg` files give back the picture's own bytes
 <!-- test: notes_with_pictures_and_text_boxes_still_open -->
 
 ### Requirement: Pictures and text boxes SHALL be stored as plain files and plain text
@@ -140,6 +140,12 @@ SHALL NOT be saved.
 - **WHEN** it is saved and opened again
 - **THEN** `texts` holds the text, `images` does not, and the `.svg` export shows it as escaped SVG text
 <!-- test: text_boxes_round_trip_and_export_as_svg_text -->
+
+#### Scenario: An SVG export gives its pictures back (regression)
+- **GIVEN** a note with pictures exported as `.svg`, which embeds each picture's file
+- **WHEN** the SVG is opened and saved as `.bedrock`
+- **THEN** the picture files come back from the SVG unchanged and are saved; a damaged embedded picture is left out with a warning and the note still opens
+<!-- test: an_svg_export_gives_its_pictures_back_when_opened -->
 
 ### Requirement: Positions SHALL survive saving at full zoom precision
 

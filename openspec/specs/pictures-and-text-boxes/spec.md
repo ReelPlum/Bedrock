@@ -31,6 +31,12 @@ moving, resizing and deleting them. How they are stored is in `note-format`
 - **THEN** it opens with a warning and a placeholder
 <!-- test: a_missing_picture_file_is_reported_and_the_note_still_opens -->
 
+#### Scenario: Pictures in an SVG export
+- **GIVEN** a note with pictures exported as `.svg`
+- **WHEN** the SVG is opened in Bedrock
+- **THEN** the pictures show, and saving keeps their files
+<!-- test: an_svg_export_gives_its_pictures_back_when_opened -->
+
 ### Requirement: Paste SHALL work as the system does
 
 #### Scenario: Pasting a picture or text

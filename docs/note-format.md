@@ -10,7 +10,7 @@ afternoon without Bedrock's code. The machine readable schema for
 | Extension | What it is |
 |---|---|
 | `.bedrock` | The normal note file: a ZIP archive (described below). |
-| `.svg` | Export: a standalone SVG picture with the same note JSON embedded, so it can be opened in Bedrock again. |
+| `.svg` | Export: a standalone SVG picture with the same note JSON embedded, so it can be opened in Bedrock again. Pictures are embedded as `data:` URLs in their `<image id="i<id>">`, and opening the SVG gives their files back. |
 | `.json` | The bare `note.json`. Bedrock opens it too. |
 
 ### `.bedrock` (ZIP archive)
