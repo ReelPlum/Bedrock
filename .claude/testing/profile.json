@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "updated": "2026-11-12T00:00:00Z",
+  "discovered_from": [".github/workflows/ci.yml"],
+  "unit": {
+    "command": "cargo test --workspace",
+    "cwd": ".",
+    "filter_syntax": "cargo test --workspace <pattern>",
+    "single_file": "cargo test -p bedrock-core --test <name>",
+    "env": {},
+    "timeout_ms": 600000,
+    "prerequisites": ["A stable Rust toolchain (rustup)"]
+  },
+  "e2e": {
+    "enabled": true,
+    "command": "./scripts/build-web.sh && cd apps/web && npm install --no-package-lock && npm test",
+    "cwd": ".",
+    "filter_syntax": "node --test --test-name-pattern <pattern> tests/*.test.mjs",
+    "single_file": "node --test tests/<file>.test.mjs",
+    "env": {},
+    "timeout_ms": 900000,
+    "prerequisites": [
+      "rustup target add wasm32-unknown-unknown",
+      "cargo install wasm-bindgen-cli --version 0.2.130",
+      "npx playwright install chromium (from apps/web)"
+    ]
+  },
+  "coverage": {
+    "enabled": false,
+    "command": null,
+    "report_path": "lcov.info",
+    "format": "lcov"
+  },
+  "typecheck": {
+    "command": "cargo clippy --workspace --all-targets -- -D warnings",
+    "cwd": "."
+  },
+  "lint": {
+    "command": "cargo fmt --all -- --check",
+    "cwd": "."
+  },
+  "known_flaky": [],
+  "notes": [
+    "The perf budget runs separately in CI: cargo test --release -p bedrock-core --test perf -- --ignored"
+  ]
+}

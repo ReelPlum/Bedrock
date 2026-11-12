@@ -1,0 +1,27 @@
+schema: spec-driven
+
+# Shown to the model when it writes proposals, designs, tasks and delta specs.
+context: |
+  Bedrock is a note-taking app for Apple Pencil and other pens. It runs in the
+  browser (iPad first) and inside Obsidian, and the core is Rust.
+  Layout: crates/bedrock-core (engine, note format, ink, recognition; pure Rust,
+  tested with `cargo test`), crates/bedrock-web (WebAssembly + WebGL front end),
+  apps/web (static web app and Playwright browser tests); the Obsidian
+  plugin lives in apps/obsidian once PR #2 lands.
+  The note format (docs/note-format.md, docs/note.schema.json) is a promise to
+  users that notes outlive the app: any change to it bumps `version`, updates
+  both documents and adds a migration test.
+  Every bug fix starts with a test that reproduces the bug.
+  Performance matters: a 100 000-stroke budget is enforced in
+  crates/bedrock-core/tests/perf.rs.
+
+rules:
+  tasks:
+    # tasks.md is the wave plan that /interlock:ship executes.
+    - Default grouping is the numbered section; a `## N.` section is one wave (`1.x` share a wave, `2.x` share the next).
+    - Sequential same-file work is one checkbox, not one checkbox per TDD step on the same file.
+    - Start a new numbered section only when later tasks need the previous section's output to exist.
+    - A bug fix's first task writes the failing test that reproduces it.
+  specs:
+    - Scenarios use GIVEN / WHEN / THEN and name observable behaviour, not implementation.
+    - Name the test that proves each scenario in an HTML comment under it (`<!-- test: name -->`).
