@@ -206,7 +206,7 @@ test('after consent a sample is queued, sent with the code, and taken off the qu
   assert.equal(auth, `Bearer ${CODE}`);
   assert.match(contributor, /^[0-9a-f-]{36}$/);
   assert.equal(body.contributor.id, contributor);
-  assert.equal(body.contributor.consent_version, 1);
+  assert.equal(body.contributor.consent_version, 2);
   assert.equal(body.contributor.handedness, 'left');
   const s = body.samples[0];
   assert.deepEqual([s.format, s.version, s.source, s.label_source], ['bedrock-training', 2, 'train', 'prompt']);
@@ -544,6 +544,87 @@ test('notes: with "Send every word" on, a new word is sent unchecked, then repla
   const fourth = sentSamples(server)[3];
   assert.deepEqual([fourth.kind, fourth.label, fourth.label_source, fourth.supersedes], ['drawing', '', 'corrected', [third.id]]);
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+/** A two page PDF like a GoodNotes export: every stroke a filled outline
+ *  of short pieces, and the handwriting's reading as invisible text placed
+ *  with a large offset. Page 1: a word of three strokes read as "hi", and
+ *  one read as "ok". Page 2: one stroke the PDF has no reading for. */
+function goodnotesLikePdf() {
+  const stroke = (x, y) => {
+    let c = '';
+    for (const [a, b] of [[[x, y], [x + 5, y + 10]], [[x + 5, y + 10], [x + 10, y + 20]]]) {
+      c += `${a[0]} ${a[1]} m ${b[0]} ${b[1]} l ${b[0] + 2} ${b[1]} l ${a[0] + 2} ${a[1]} l h `;
+    }
+    return `${c}f\n`;
+  };
+  const page1 = '0.1 0.1 0.1 sc\n' + stroke(100, 300) + stroke(115, 300) + stroke(130, 300) + stroke(300, 300)
+    + '3 Tr q 1 0 0 1 5100 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (hi) Tj ET Q\n'
+    + 'q 1 0 0 1 5300 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (ok) Tj ET Q\n';
+  const page2 = '0 0 1 sc\n' + stroke(200, 200);
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 600 400] >>',
+    '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+    `<< /Length ${page1.length} >>\nstream\n${page1}\nendstream`,
+    '<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>',
+    `<< /Length ${page2.length} >>\nstream\n${page2}\nendstream`,
+  ];
+  const text = `%PDF-1.4\n${objs.map((o, i) => `${i + 1} 0 obj\n${o}\nendobj\n`).join('')}trailer << /Root 1 0 R >>\n%%EOF\n`;
+  return [...text].map((c) => c.charCodeAt(0));
+}
+
+test('importing a PDF: each page becomes a note, and every word is sent with the PDF\'s reading', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page, errors } = await openApp(env, { context: ctx });
+  await sendAtOnce(page);
+  await page.evaluate(() => { bedrock.handwriting.enabled = false; });
+  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), false, '"Send every word" is off: importing sends anyway');
+  const pages = await page.evaluate(async (bytes) => bedrock.importPdf({ name: 'Lecture 7.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  assert.equal(pages, 2);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 3);
+  const notes = await page.evaluate(async () => (await bedrock.store.list()).map((n) => n.title).sort());
+  assert.deepEqual(notes.filter((t) => t.startsWith('Lecture')), ['Lecture 7 (page 1)', 'Lecture 7 (page 2)']);
+  assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 1, 'the last page is open');
+  const samples = sentSamples(server).sort((a, b) => a.label.localeCompare(b.label));
+  assert.deepEqual(samples.map((s) => [s.source, s.label, s.label_source, s.model_reading ?? null, s.model_engine ?? null, s.strokes.length]), [
+    ['note', '', 'unchecked', null, null, 1],
+    ['note', 'hi', 'unchecked', 'hi', 'pdf-text', 3],
+    ['note', 'ok', 'unchecked', 'ok', 'pdf-text', 1],
+  ]);
+  // Imported again later (or opened with the setting on), nothing is sent twice.
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan({ imported: true })), 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('importing a PDF without saving set up keeps it on the device', async () => {
+  const { ctx, server } = await context();
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.evaluate(() => { bedrock.handwriting.enabled = false; });
+  const pages = await page.evaluate(async (bytes) => bedrock.importPdf({ name: 'x.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  assert.equal(pages, 2);
+  await page.evaluate(async () => (await import('/src/collect.js')).flush());
+  assert.equal(server.requests.filter((r) => r.path === '/v1/samples').length, 0);
+  const words = await page.evaluate(() => JSON.parse(bedrock.canvas.words_json()).map((w) => [w.text, w.engine]));
+  assert.deepEqual(words, [[null, null]], 'page 2 has no reading');
+  assert.equal(await page.evaluate(() => bedrock.handwriting.isCareful({ text: 'hi', engine: 'pdf-text', kind: 'text' })), true, 'a reading from the PDF is not redone');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('consent given to an older consent text is asked for again', async () => {
+  const { ctx } = await context();
+  const { page } = await openSetup(ctx);
+  const r = await page.evaluate(async () => {
+    const c = await import('/src/collect.js');
+    const s = c.agree({ code: 'x' });
+    return { now: c.isReady(s), old: c.isReady({ ...s, consent: 1 }), version: c.CONSENT_VERSION };
+  });
+  assert.deepEqual(r, { now: true, old: false, version: 2 });
   await ctx.close();
 });
 
