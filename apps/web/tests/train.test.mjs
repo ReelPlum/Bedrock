@@ -175,3 +175,19 @@ test('scribble trainer: the word to scribble out is in the box, and only one str
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('a page put together from two versions (just after an update) says to reload instead of staying empty', async () => {
+  // An older prompts.js, from before sentences and paragraphs: the new
+  // train.js cannot start with it.
+  const old = "export const wordPrompt = () => ({ kind: 'text', text: 'a', html: 'a' });\n"
+    + "export const mathPrompt = wordPrompt;\nexport const scribblePrompt = wordPrompt;\n";
+  const ctx = await env.browser.newContext({ viewport: { width: 1000, height: 700 } });
+  await ctx.route('**/train/prompts.js', (r) => r.fulfill({ contentType: 'text/javascript', body: old }));
+  const page = await ctx.newPage();
+  await page.goto(env.url + 'train/handwriting/');
+  await page.waitForFunction(() => !document.getElementById('fatal').hidden, null, { timeout: 10000 });
+  assert.match(await page.textContent('#fatal'), /reload the page/i);
+  assert.equal(await page.isVisible('#fatal button'), true);
+  await ctx.close();
+});
+
