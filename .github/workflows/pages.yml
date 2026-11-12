@@ -1,13 +1,12 @@
 name: Pages
 
 # Publishes the web app to GitHub Pages: https://reelplum.github.io/Bedrock/
-# One-time setup in the repository: Settings > Pages > Source: GitHub Actions,
-# and (while deploying from a branch other than main) allow that branch in
-# Settings > Environments > github-pages > Deployment branches.
+# Deploys from main only. One-time setup in the repository:
+# Settings > Pages > Source: GitHub Actions.
 
 on:
   push:
-    branches: [main, master, claude/project-thread-764qqv]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
