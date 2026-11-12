@@ -8,8 +8,17 @@ async function show() {
   const s = collect.loadState();
   const st = await collect.status();
   const on = st.ready;
+  // No server built into the app yet: nothing can be saved.
+  const missing = !collect.isSafeApi(s.api);
+  $('save').disabled = missing;
+  if (missing) {
+    $('state').className = 'state';
+    $('state').textContent = 'Saving is not available yet: the server is still being set up. The pages work for practice.';
+    $('stop').hidden = true;
+    $('delete').hidden = true;
+    return;
+  }
   $('code').value = s.code;
-  $('api').value = s.api;
   $('handedness').value = s.handedness || '';
   $('agree').checked = on;
   $('stop').hidden = !on;
@@ -29,12 +38,11 @@ function fail(text) {
 $('setup-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const code = $('code').value.trim();
-  const api = $('api').value.trim().replace(/\/+$/, '');
+  if (!collect.isSafeApi(collect.loadState().api)) return;
   if (!$('agree').checked) return fail('Tick the box to agree, or leave saving off.');
   if (!code) return fail('Enter your invite code.');
-  if (!collect.isSafeApi(api)) return fail('Enter the server address under "Server address". It starts with https://');
   fail('');
-  collect.agree({ code, api, handedness: $('handedness').value });
+  collect.agree({ code, handedness: $('handedness').value });
   await collect.flush().catch(() => {});
   await show();
 });

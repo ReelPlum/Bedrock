@@ -10,9 +10,16 @@
 // the reference (collect-core/src/sample.rs in the backend repository).
 
 export const CONSENT_VERSION = 1;
-/** The backend's address. Empty until the backend is deployed; it can also
- *  be set on the /train page. */
+/** The backend's address, fixed in the app: people cannot change it. Empty
+ *  until the backend is deployed, and saving stays off until it is set. */
 export const DEFAULT_API = '';
+
+/** Where samples go: always `DEFAULT_API`, except on a page served from
+ *  this computer (development and tests), which may use a stored address. */
+export function apiAddress(stored, host = globalThis.location?.hostname) {
+  const local = host === 'localhost' || host === '127.0.0.1';
+  return local && typeof stored === 'string' && stored ? stored : DEFAULT_API;
+}
 const STATE_KEY = 'bedrock.collect.v1';
 const DB_NAME = 'bedrock-collect';
 const STORE = 'queue';
@@ -47,7 +54,7 @@ export function loadState(storage = globalThis.localStorage) {
   let s = {};
   try { s = JSON.parse(storage.getItem(STATE_KEY) || '{}') || {}; } catch (_) { /* private mode */ }
   return {
-    api: typeof s.api === 'string' ? s.api : DEFAULT_API,
+    api: apiAddress(s.api),
     code: typeof s.code === 'string' ? s.code : '',
     contributor: isUuid(s.contributor) ? s.contributor : '',
     consent: Number.isInteger(s.consent) ? s.consent : 0,
@@ -76,11 +83,10 @@ export function isSafeApi(api) {
 
 /** Agree to the consent text and store the code. Makes the random
  *  contributor id the first time. */
-export function agree({ code, api, handedness }, storage = globalThis.localStorage) {
+export function agree({ code, handedness }, storage = globalThis.localStorage) {
   const s = loadState(storage);
   return saveState({
     code: String(code || '').trim(),
-    api: String(api ?? s.api).trim().replace(/\/+$/, ''),
     handedness: handedness === 'left' || handedness === 'right' ? handedness : null,
     consent: CONSENT_VERSION,
     contributor: s.contributor || uuidv4(),

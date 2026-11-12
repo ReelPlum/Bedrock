@@ -45,11 +45,12 @@ try {
   };
 
   // Consent, then three training samples (words, maths) and a scribble.
+  // The address is built into the app; a page on this computer may use a stored one.
+  await ctx.addInitScript((a) => localStorage.setItem('bedrock.collect.v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('bedrock.collect.v1') || '{}'), api: a })), API);
   const setup = await ctx.newPage();
   await setup.goto(`${app}train/`);
   await setup.waitForFunction(() => window.setup?.ready);
   await setup.fill('#code', INVITE);
-  await setup.evaluate((a) => { document.getElementById('api').value = a; }, API);
   await setup.check('#agree');
   await setup.click('#save');
 
