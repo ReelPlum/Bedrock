@@ -56,8 +56,13 @@ pub fn write(files: &[(&str, &[u8])]) -> Vec<u8> {
     // 1980-01-01 00:00 in DOS format; we deliberately don't embed clock time.
     let (dos_time, dos_date) = (0u16, (1 << 5) | 1);
     for (name, data) in files {
-        let compressed = miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL);
-        let (method, body): (u16, &[u8]) = if compressed.len() < data.len() { (8, &compressed) } else { (0, data) };
+        // Pictures are compressed already: deflating megabytes again on
+        // every autosave would only cost time.
+        let packed =
+            [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"].iter().any(|e| name.to_ascii_lowercase().ends_with(e));
+        let compressed = if packed { Vec::new() } else { miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL) };
+        let (method, body): (u16, &[u8]) =
+            if !packed && compressed.len() < data.len() { (8, &compressed) } else { (0, data) };
         let crc = crc32(data);
         let offset = out.len() as u32;
         u32le(0x0403_4b50, &mut out);

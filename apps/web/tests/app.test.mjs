@@ -1775,3 +1775,319 @@ test('steady hand smooths a shaky line, old ink included', async () => {
   assert.equal(r.saved, 100);
   await ctx.close();
 });
+
+/** A solid-colour PNG made in the page. */
+const makePicture = `async (w, h, color) => {
+  const c = new OffscreenCanvas(w, h);
+  const g = c.getContext('2d');
+  g.fillStyle = color;
+  g.fillRect(0, 0, w, h);
+  const b = await c.convertToBlob({ type: 'image/png' });
+  return new File([b], 'square.png', { type: 'image/png' });
+}`;
+
+test('pictures: inserted in the middle under the ink, saved as a plain file in the note, and back after a reload', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page, errors } = await openApp(env, { context });
+  const r = await page.evaluate(async (make) => {
+    const picture = await eval(make)(200, 100, '#e53935');
+    await bedrock.insertPictures([picture]);
+    for (let i = 0; i < 40 && bedrock.canvas.missing_images().length; i++) await t.frame();
+    const tool = document.querySelector('[data-tool="lasso"]').getAttribute('aria-checked');
+    const sel = JSON.parse(bedrock.canvas.selection_json());
+    const [w, h] = [innerWidth, innerHeight];
+    const centre = Array.from(bedrock.canvas.pixel_at(w / 2, h / 2));
+    // Ink drawn over the picture stays on top.
+    document.querySelector('[data-brush="pen"]').click();
+    await t.line(w / 2 - 60, h / 2, w / 2 + 60, h / 2, { pressure: 1 });
+    const inked = Array.from(bedrock.canvas.pixel_at(w / 2, h / 2));
+    const note = JSON.parse(bedrock.canvas.export_json());
+    await bedrock.saveNow();
+    const saved = await bedrock.store.get(bedrock.noteId);
+    return { tool, sel, centre, inked, images: note.images, files: bedrock.canvas.image_files(), size: saved.data.length };
+  }, makePicture);
+  assert.equal(r.tool, 'true', 'the lasso is picked so it can be moved right away');
+  assert.equal(r.sel.images.length, 1);
+  assert.ok(r.sel.handle, 'a lone picture has a resize handle');
+  assert.ok(r.centre[0] > 200 && r.centre[1] < 90 && r.centre[2] < 90, `red picture in the middle: ${r.centre}`);
+  assert.ok(r.inked[0] < 80, `pen ink over the picture: ${r.inked}`);
+  assert.equal(r.images.length, 1);
+  assert.match(r.images[0].file, /^images\/[0-9a-f]{32}\.png$/);
+  assert.deepEqual([r.images[0].w, r.images[0].h], [200, 100]);
+  assert.deepEqual(r.files, [r.images[0].file]);
+  await page.waitForTimeout(100);
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock && window.bedrock.ready);
+  const back = await page.evaluate(async () => {
+    // (the pointer helpers are gone after a reload)
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    for (let i = 0; i < 60 && bedrock.canvas.missing_images().length; i++) await frame();
+    await frame();
+    const img = JSON.parse(bedrock.canvas.images_json())[0];
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    const px = Array.from(bedrock.canvas.pixel_at((img.x + 20 - ox) * zoom, (img.y + 20 - oy) * zoom));
+    return { n: JSON.parse(bedrock.canvas.images_json()).length, px };
+  });
+  assert.equal(back.n, 1);
+  assert.ok(back.px[0] > 200 && back.px[1] < 90, `the picture shows after reopening: ${back.px}`);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('pictures: drag the corner to resize, drag to move, delete; undo brings each back', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async (make) => {
+    await bedrock.insertPictures([await eval(make)(200, 100, '#2f6bff')]);
+    const c = bedrock.canvas;
+    const img = () => JSON.parse(c.images_json())[0];
+    const [ox, oy, zoom] = c.camera();
+    const scr = (x, y) => [(x - ox) * zoom, (y - oy) * zoom];
+    const a = img();
+    const [hx, hy] = scr(a.x + a.w, a.y + a.h);
+    await t.line(hx, hy, hx + 100, hy + 10); // handle → 300 wide
+    const resized = img();
+    const [mx, my] = scr(resized.x + 50, resized.y + 50);
+    await t.line(mx, my, mx - 40, my + 30); // move
+    const moved = img();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
+    const afterDelete = JSON.parse(c.images_json()).length;
+    c.undo();
+    const undone1 = img();
+    c.undo();
+    const undone2 = img();
+    c.undo();
+    return { a, resized, moved, afterDelete, undone1, undone2, gone: JSON.parse(c.images_json()).length };
+  }, makePicture);
+  assert.ok(Math.abs(r.resized.w - 300) < 1 && Math.abs(r.resized.h - 150) < 1, `kept its shape: ${JSON.stringify(r.resized)}`);
+  assert.equal(r.resized.x, r.a.x);
+  assert.ok(Math.abs(r.moved.x - (r.resized.x - 40)) < 1 && Math.abs(r.moved.y - (r.resized.y + 30)) < 1);
+  assert.equal(r.afterDelete, 0);
+  assert.deepEqual(r.undone1, r.moved);
+  assert.deepEqual(r.undone2, r.resized);
+  assert.equal(r.gone, 1, 'the third undo takes back the resize, the picture stays');
+  await ctx.close();
+});
+
+test('paste works as the system does: a picture pastes a picture, text pastes a text box; text fields keep their paste', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async (make) => {
+    const paste = (fill, target = document.body) => {
+      const dt = new DataTransfer();
+      fill(dt);
+      const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      target.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    const pic = await eval(make)(60, 40, '#2e7d32');
+    const a = paste((dt) => dt.items.add(pic));
+    for (let i = 0; i < 20 && !JSON.parse(bedrock.canvas.images_json()).length; i++) await t.frame();
+    const b = paste((dt) => dt.setData('text/plain', 'Shopping list\r\nmilk\teggs\n\n'));
+    // In the title field the system's own paste is left alone.
+    const c = paste((dt) => dt.setData('text/plain', 'title'), document.getElementById('title'));
+    for (let i = 0; i < 20 && bedrock.canvas.missing_images().length; i++) await t.frame();
+    const note = JSON.parse(bedrock.canvas.export_json());
+    const box = note.texts?.[0];
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    // Some dark text pixels inside the box.
+    let dark = 0;
+    for (let x = box.x; x < box.x + box.w; x += 2) {
+      const [r] = bedrock.canvas.pixel_at((x - ox) * zoom, (box.y + box.h * 0.35 - oy) * zoom);
+      if (r < 120) dark++;
+    }
+    return { a, b, c, images: note.images?.length, text: box?.text, dark, selected: JSON.parse(bedrock.canvas.selection_json()).images.length };
+  }, makePicture);
+  assert.deepEqual({ a: r.a, b: r.b, c: r.c }, { a: true, b: true, c: false });
+  assert.equal(r.images, 1);
+  assert.equal(r.text, 'Shopping list\nmilk    eggs');
+  assert.ok(r.dark > 3, `the text is drawn (${r.dark} dark samples)`);
+  assert.equal(r.selected, 1, 'the pasted text box is selected');
+  await ctx.close();
+});
+
+// Smoothness: a frame while the pen is writing is only the stroke under it.
+// The underlines, the minimap and the selection used to be redrawn on every
+// frame, also when only the live stroke had changed.
+test('while the pen is down, frames draw the ink and nothing else', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    let draws = 0;
+    const draw = hw.draw.bind(hw);
+    hw.draw = () => { draws++; return draw(); };
+    let maps = 0;
+    const update = bedrock.minimap.update.bind(bedrock.minimap);
+    bedrock.minimap.update = () => { maps++; return update(); };
+    await t.frame();
+    const before = { ...bedrock.frameStats };
+    draws = 0; maps = 0;
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let i = 1; i <= 40; i++) {
+      t.ev('pointermove', 1, 'pen', 200 + i * 6, 300 + Math.sin(i / 4) * 40, { pressure: 0.5 });
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    await t.frame();
+    const during = { draws, maps, inkOnly: bedrock.frameStats.inkOnly - before.inkOnly, full: bedrock.frameStats.full - before.full };
+    t.ev('pointerup', 1, 'pen', 440, 300, { pressure: 0 });
+    await t.frame();
+    return { during, afterDraws: draws, afterMaps: maps, strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.ok(r.during.inkOnly >= 20, `ink-only frames while writing: ${JSON.stringify(r.during)}`);
+  assert.equal(r.during.full, 0, 'no full frame while writing');
+  assert.equal(r.during.draws, 0, 'the underlines are not redrawn mid-stroke');
+  assert.equal(r.during.maps, 0, 'the minimap is not redrawn mid-stroke');
+  assert.ok(r.afterDraws > 0 && r.afterMaps > 0, 'everything is redrawn once the stroke is on the page');
+  assert.equal(r.strokes, 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a scribble fades the ink it will erase before the pen lifts', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.handwriting.enabled = false;
+    const c = bedrock.canvas;
+    for (let k = 0; k < 3; k++) {
+      const x = 300 + k * 22;
+      t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+      for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+      t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+    }
+    await t.frame();
+    const out = { early: -1, late: -1 };
+    t.ev('pointerdown', 2, 'pen', 290, 272, { pressure: 0.6 });
+    for (let i = 1; i <= 90; i++) {
+      const pass = Math.floor(i / 6);
+      const f = (i % 6) / 6;
+      t.ev('pointermove', 2, 'pen', pass % 2 === 0 ? 290 + 80 * f : 370 - 80 * f, 272 + i * 0.4, { pressure: 0.6 });
+      if (i === 8) out.early = c.scribble_preview();
+    }
+    await t.frame();
+    out.late = c.scribble_preview();
+    out.stillThere = c.stroke_count();
+    t.ev('pointerup', 2, 'pen', 290, 308, { pressure: 0 });
+    await t.frame();
+    out.after = c.stroke_count();
+    out.cleared = c.scribble_preview();
+    return out;
+  });
+  assert.equal(r.early, 0, 'one pass is not a scribble');
+  assert.equal(r.late, 3, 'the three strokes of the word are marked');
+  assert.equal(r.stillThere, 3, 'nothing is erased while the pen is down');
+  assert.equal(r.after, 0);
+  assert.equal(r.cleared, 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('“Show latency” reports the frame rate, and a pen trace can be recorded', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    document.getElementById('show-latency').click();
+    const input = bedrock.input;
+    input.startTrace();
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5 });
+    for (let i = 1; i <= 30; i++) {
+      t.ev('pointermove', 1, 'pen', 200 + i * 6, 300, { pressure: 0.5 });
+      await new Promise((res) => requestAnimationFrame(res));
+    }
+    t.ev('pointerup', 1, 'pen', 380, 300, { pressure: 0 });
+    await t.frame();
+    const trace = input.stopTrace();
+    return { hud: document.getElementById('hud').textContent, trace, again: input.stopTrace(), button: document.getElementById('record-trace').textContent };
+  });
+  assert.match(r.hud, /frames \d+\/s \(every [\d.]+ ms, slowest [\d.]+\) {2}drawing [\d.]+ ms/);
+  const types = r.trace.events.map((e) => e.type);
+  assert.equal(types[0], 'down');
+  assert.equal(types.at(-1), 'up');
+  assert.equal(types.filter((x) => x === 'move').length, 30);
+  assert.ok(r.trace.events.every((e) => e.kind === 'pen' && e.id === 1 && [e.x, e.y, e.pressure, e.altitude, e.azimuth, e.time].every(Number.isFinite)));
+  assert.equal(r.trace.pen_samples, 30);
+  assert.deepEqual(r.trace.viewport, [1024, 768]);
+  assert.equal(r.again, null);
+  assert.equal(r.button, 'Record a pen trace');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the main menu fits a short screen and scrolls', async () => {
+  const { page, ctx, errors } = await openApp(env, { viewport: { width: 1024, height: 420 } });
+  const r = await page.evaluate(async () => {
+    const out = {};
+    document.getElementById('btn-menu').click();
+    await t.frame();
+    const menu = document.getElementById('menu');
+    out.menuOpen = !menu.hidden;
+    out.bottom = menu.getBoundingClientRect().bottom;
+    out.vh = innerHeight;
+    out.overflows = menu.scrollHeight > menu.clientHeight + 20;
+    menu.scrollTop = menu.scrollHeight;
+    out.scrolled = menu.scrollTop > 0;
+    const items = [...menu.querySelectorAll('button, a')].filter((b) => b.offsetParent);
+    out.lastVisible = items[items.length - 1].getBoundingClientRect().bottom <= menu.getBoundingClientRect().bottom + 1;
+    return out;
+  });
+  assert.ok(r.menuOpen);
+  assert.ok(r.bottom <= r.vh, `menu ends on screen: ${r.bottom} <= ${r.vh}`);
+  assert.ok(r.overflows, 'menu content is taller than the short screen, so it scrolls');
+  assert.ok(r.scrolled && r.lastVisible, 'the last item can be scrolled into view');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('holding a stroke lifts it: it grows around its middle and casts a shadow; its menu just appears', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const c = bedrock.canvas;
+    bedrock.minimap.visible = false;
+    // A horizontal bar from x 300 to 500 at y 300: its middle is x 400.
+    t.ev('pointerdown', 1, 'pen', 300, 300, { pressure: 0.6 });
+    for (let j = 1; j <= 20; j++) t.ev('pointermove', 1, 'pen', 300 + j * 10, 300, { pressure: 0.6 });
+    t.ev('pointerup', 1, 'pen', 500, 300, { pressure: 0 });
+    await t.frame();
+    // Where the ink ends along the bar's row, on the paper layer and on the ink layer.
+    const extent = (read) => {
+      let lo = -1, hi = -1;
+      for (let x = 250; x <= 550; x += 1) {
+        const p = read(x);
+        if (p) { if (lo < 0) lo = x; hi = x; }
+      }
+      return [lo, hi];
+    };
+    const onPaper = (x) => c.pixel_at(x, 300)[0] < 128;
+    const onInk = (x) => { const p = c.overlay_pixel_at(x, 300); return p[3] > 128; };
+    const out = { before: extent(onPaper) };
+    const wm = document.getElementById('word-menu');
+    const sid = JSON.parse(c.words_json()).flatMap((w) => w.strokes)[0];
+    out.hasId = !!sid;
+    bedrock.wordMenu.open({ id: null, bounds: [300, 290, 500, 310], kind: 'text', text: null, link: null, strokes: [sid] });
+    out.menuAnims = wm.getAnimations().length;
+    out.menuShadow = getComputedStyle(wm).boxShadow;
+    await new Promise((res) => setTimeout(res, 300));
+    out.after = extent(onInk);
+    out.offPaper = !onPaper(400);
+    out.filter = getComputedStyle(document.getElementById('overlay')).filter;
+    out.paperFilter = getComputedStyle(document.getElementById('base')).filter;
+    bedrock.wordMenu.close();
+    await t.frame();
+    out.back = extent(onPaper);
+    out.inkBack = onPaper(400) && !onInk(400);
+    out.filterBack = document.getElementById('overlay').classList.contains('lifted');
+    out.paperBack = document.getElementById('base').classList.contains('behind-lift');
+    return out;
+  });
+  assert.ok(r.hasId && r.before[0] > 0, `the stroke is on the paper: ${r.before}`);
+  assert.equal(r.menuAnims, 0, 'the menu itself does not animate');
+  assert.doesNotMatch(r.menuShadow, /18px 40px/, 'the menu keeps its normal shadow');
+  assert.ok(r.offPaper, 'while held, the stroke is drawn on the ink layer, not the paper');
+  const grow = (r.after[1] - r.after[0]) - (r.before[1] - r.before[0]);
+  assert.ok(grow > 6, `it grows: ${r.before} -> ${r.after}`);
+  const mid = (a) => (a[0] + a[1]) / 2;
+  assert.ok(Math.abs(mid(r.after) - mid(r.before)) < 1.5, `around its middle: ${mid(r.before)} vs ${mid(r.after)}`);
+  assert.match(r.filter, /drop-shadow/, 'it casts a drop shadow');
+  assert.equal(r.paperFilter, 'blur(2px)', 'the rest of the page is blurred a little');
+  assert.ok(!r.paperBack, 'and sharp again once the menu closes');
+  assert.ok(r.inkBack && !r.filterBack, 'closing the menu puts it back');
+  assert.ok(Math.abs((r.back[1] - r.back[0]) - (r.before[1] - r.before[0])) < 1, `back at its own size: ${r.back}`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

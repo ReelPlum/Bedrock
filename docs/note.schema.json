@@ -55,6 +55,34 @@
           "kind": { "type": "string", "enum": ["text", "math", "drawing"] }
         }
       }
+    },
+    "images": {
+      "description": "Pictures on the page (files in the bundle), under all ink",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "x", "y", "w", "h"],
+        "properties": {
+          "id": { "$ref": "#/$defs/strokeId" },
+          "file": { "type": "string", "pattern": "^images/" },
+          "x": { "type": "number" }, "y": { "type": "number" },
+          "w": { "type": "number", "exclusiveMinimum": 0 }, "h": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "texts": {
+      "description": "Text boxes (typed or pasted text) on the page, under all ink; the lines fill the box's height",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "x", "y", "w", "h"],
+        "properties": {
+          "id": { "$ref": "#/$defs/strokeId" },
+          "text": { "type": "string" },
+          "x": { "type": "number" }, "y": { "type": "number" },
+          "w": { "type": "number", "exclusiveMinimum": 0 }, "h": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
     }
   },
   "additionalProperties": true,

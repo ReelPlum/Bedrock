@@ -28,6 +28,13 @@ html, body {
 }
 @keyframes jump-flash { 0%, 55% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .jump-flash { animation-duration: 3s; animation-timing-function: step-end; } }
+/* A held stroke lifts off the paper: it alone is on the ink layer then, so the shadow follows the ink. */
+#overlay { filter: none; transition: filter 160ms ease-out; }
+#overlay.lifted { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.28)); }
+/* The rest of the page goes slightly soft, so it's clear which stroke is held. */
+#base { filter: none; transition: filter 160ms ease-out; }
+#base.behind-lift { filter: blur(2px); }
+@media (prefers-reduced-motion: reduce) { #overlay, #base { transition: none; } }
 :root { --spelling: #e5484d; --selection: #2f6bff; }
 
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
@@ -117,7 +124,12 @@ svg circle { fill: currentColor; stroke: none; }
 .menu {
   top: calc(max(10px, env(safe-area-inset-top)) + 56px); right: max(10px, calc(50vw - 320px));
   border-radius: var(--radius); padding: 6px; min-width: 260px; display: flex; flex-direction: column;
+  /* Never taller than the screen: the rest scrolls inside the menu. */
+  max-height: calc(100vh - max(10px, env(safe-area-inset-top)) - 56px - max(10px, env(safe-area-inset-bottom)));
+  max-height: calc(100dvh - max(10px, env(safe-area-inset-top)) - 56px - max(10px, env(safe-area-inset-bottom)));
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y;
 }
+.menu > * { flex-shrink: 0; }
 .menu[hidden], .library[hidden], .popover[hidden] { display: none; }
 .popover {
   bottom: calc(max(12px, env(safe-area-inset-bottom)) + 66px); left: 50%; transform: translateX(-50%);
@@ -152,14 +164,14 @@ svg circle.ring { fill: none; stroke: currentColor; }
 .popover input[type="range"] { width: 100%; accent-color: var(--ink); }
 .pop-hint { margin: 0; color: var(--muted); font-size: 12px; }
 svg .dots { stroke-width: 3.2; stroke-linecap: round; }
-.menu button, .menu .row { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.menu button, .menu .row, .menu .menu-link { text-align: left; padding: 10px 12px; border-radius: 8px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .menu .row { justify-content: flex-start; }
 .menu .row select { margin-left: auto; font: inherit; }
 .menu .pressure-row { flex-wrap: wrap; row-gap: 4px; }
 .menu .pressure-row output { margin-left: auto; color: var(--muted, #888); font-variant-numeric: tabular-nums; }
 .menu .pressure-row input[type=range] { flex: 1 0 100%; margin: 0; }
 .menu .pressure-row .scale { flex: 1 0 100%; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted, #888); }
-.menu button:hover { background: rgba(0, 0, 0, 0.05); }
+.menu button:hover, .menu .menu-link:hover { background: rgba(0, 0, 0, 0.05); }
 .menu hr { border: 0; border-top: 1px solid var(--chrome-border); margin: 4px 0; width: 100%; }
 
 .library {
@@ -272,3 +284,4 @@ body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-
 .wm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .wm-actions button { padding: 8px 12px; border-radius: 9px; font-size: 14px; }
 .wm-save { background: var(--accent); color: #fff; }
+.menu .menu-link { color: inherit; text-decoration: none; }

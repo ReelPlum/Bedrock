@@ -92,7 +92,19 @@ enum Active {
         start: Vec2,
         delta: Vec2,
     },
+    /// Dragging a picture's corner handle: it keeps its shape and its
+    /// top-left corner stays put.
+    Resizing {
+        pointer: i32,
+        id: StrokeId,
+        rect: Rect,
+    },
 }
+
+/// The resize handle's reach around a selected picture's corner, in css px.
+pub const HANDLE_REACH: f64 = 22.0;
+/// The smallest a picture can be made, in css px on screen.
+const MIN_IMAGE_PX: f64 = 16.0;
 
 #[derive(Debug, Default)]
 struct TouchGesture {
@@ -115,6 +127,10 @@ pub const TAP_MAX_MS: f64 = 300.0;
 pub const TAP_MAX_MOVE: f64 = 12.0;
 /// Longest pause between the two taps of a double tap.
 pub const DOUBLE_TAP_GAP_MS: f64 = 350.0;
+
+/// The scribble preview is refreshed each time the live stroke has grown by
+/// this many samples (20 times a second at 240 Hz).
+pub const PREVIEW_EVERY: usize = 12;
 
 pub struct Engine {
     pub doc: Document,
@@ -145,6 +161,17 @@ pub struct Engine {
     dirty: bool,
     /// Only the live stroke layer must be redrawn.
     live_dirty: bool,
+    /// Keeps the settled part of the live stroke's mesh between frames.
+    live: tessellate::LiveTessellator,
+    /// What the stroke being drawn would erase if the pen lifted now (see
+    /// [`Engine::scribble_preview`]), and the stroke length it was worked
+    /// out at.
+    preview: Vec<StrokeId>,
+    preview_at: usize,
+    /// Strokes held up off the paper (their menu is open): drawn on the
+    /// live layer, grown by `lift_scale` around their middle.
+    lifted: Vec<StrokeId>,
+    lift_scale: f64,
 }
 
 impl Engine {
@@ -168,6 +195,11 @@ impl Engine {
             pen_down: false,
             dirty: true,
             live_dirty: true,
+            live: tessellate::LiveTessellator::new(),
+            preview: Vec::new(),
+            preview_at: 0,
+            lifted: Vec::new(),
+            lift_scale: 1.0,
         }
     }
 
@@ -280,6 +312,8 @@ impl Engine {
                 let mut stroke = Stroke::new(id_, self.brush, s.time, Self::device(kind), Vec::new());
                 stroke.input_scale = 1.0 / self.camera.zoom;
                 stroke.push(self.to_input(&s, s.time));
+                self.preview.clear();
+                self.preview_at = 0;
                 self.active = Some(Active::Drawing { pointer: id, stroke, last_screen: s.pos() });
             }
             Tool::Lasso => {
@@ -287,7 +321,12 @@ impl Engine {
                 // Grab the selection anywhere in its box (plus a finger's
                 // width of slop), otherwise start a new loop.
                 let slop = 12.0 / self.camera.zoom;
-                if !self.selection.is_empty() && self.selection_bounds().inflate(slop).contains(w) {
+                if let Some(img) =
+                    self.resizable_image().filter(|i| i.rect().max.distance(w) <= HANDLE_REACH / self.camera.zoom)
+                {
+                    let (image, rect) = (img.id, img.rect());
+                    self.active = Some(Active::Resizing { pointer: id, id: image, rect });
+                } else if !self.selection.is_empty() && self.selection_bounds().inflate(slop).contains(w) {
                     self.active = Some(Active::Moving { pointer: id, start: w, delta: Vec2::ZERO });
                 } else {
                     self.selection.clear();
@@ -335,6 +374,16 @@ impl Engine {
                 .sanitized();
                 stroke.push(p);
                 self.live_dirty = true;
+                // Would lifting the pen now erase something? Checked every
+                // few samples, so the ink can fade before it goes.
+                if self.scribble_erase
+                    && stroke.brush.kind != crate::brush::BrushKind::Highlighter
+                    && stroke.points.len() >= self.preview_at + PREVIEW_EVERY
+                {
+                    self.preview_at = stroke.points.len();
+                    self.preview =
+                        if scribble::is_scribble(stroke) { scribble::targets(&self.doc, stroke) } else { Vec::new() };
+                }
             }
             Some(Active::Erasing { pointer, last_world, mode }) if *pointer == id => {
                 let w = self.camera.screen_to_world(s.pos());
@@ -353,6 +402,22 @@ impl Engine {
             Some(Active::Moving { pointer, start, delta }) if *pointer == id => {
                 *delta = self.camera.screen_to_world(s.pos()) - *start;
                 self.live_dirty = true;
+                // Pictures are drawn on the base layer, so it redraws too.
+                let doc = &self.doc;
+                if self.selection.iter().any(|i| doc.image(*i).is_some()) {
+                    self.dirty = true;
+                }
+            }
+            Some(Active::Resizing { pointer, id: image, rect }) if *pointer == id => {
+                let w = self.camera.screen_to_world(s.pos());
+                if let Some(img) = self.doc.image(*image) {
+                    let aspect = img.w / img.h.max(1e-9);
+                    let min_w = MIN_IMAGE_PX / self.camera.zoom * aspect.max(1.0);
+                    let width = (w.x - img.x).max((w.y - img.y) * aspect).max(min_w);
+                    *rect =
+                        Rect { min: Vec2::new(img.x, img.y), max: Vec2::new(img.x + width, img.y + width / aspect) };
+                    self.dirty = true;
+                }
             }
             _ => {}
         }
@@ -418,9 +483,17 @@ impl Engine {
                     self.selection = self.doc.translate(&self.selection, delta);
                 }
             }
+            Some(Active::Resizing { pointer, id: image, rect }) if pointer == id => {
+                if self.doc.image(image).is_some_and(|i| i.rect() != rect) {
+                    self.doc.place_image(image, rect);
+                }
+            }
             other => self.active = other,
         }
         self.predicted.clear();
+        if !self.is_drawing() {
+            self.preview.clear();
+        }
         self.dirty = true;
     }
 
@@ -437,6 +510,7 @@ impl Engine {
             }
             self.active = None;
             self.predicted.clear();
+            self.preview.clear();
             self.dirty = true;
         }
     }
@@ -446,7 +520,8 @@ impl Engine {
             Some(Active::Drawing { pointer, .. })
             | Some(Active::Erasing { pointer, .. })
             | Some(Active::Lassoing { pointer, .. })
-            | Some(Active::Moving { pointer, .. }) => *pointer == id,
+            | Some(Active::Moving { pointer, .. })
+            | Some(Active::Resizing { pointer, .. }) => *pointer == id,
             None => false,
         }
     }
@@ -617,7 +692,11 @@ impl Engine {
 
     /// The selected strokes that still exist, in stacking order.
     pub fn selection(&self) -> Vec<StrokeId> {
-        self.selection.iter().copied().filter(|id| self.doc.find(*id).is_some()).collect()
+        self.selection
+            .iter()
+            .copied()
+            .filter(|id| self.doc.find(*id).is_some() || self.doc.image(*id).is_some())
+            .collect()
     }
 
     pub fn select(&mut self, ids: Vec<StrokeId>) {
@@ -634,6 +713,9 @@ impl Engine {
 
     /// Ink bounds of the selection (world), empty if nothing is selected.
     pub fn selection_bounds(&self) -> Rect {
+        if let Some(Active::Resizing { rect, .. }) = &self.active {
+            return *rect;
+        }
         selection::bounds(&self.doc, &self.selection)
     }
 
@@ -654,13 +736,50 @@ impl Engine {
     }
 
     /// Strokes the base layer must leave out right now: the selection while
-    /// it is dragged (it is drawn on the live layer instead).
+    /// it is dragged, or the lifted strokes (they are drawn on the live
+    /// layer instead).
     pub fn floating(&self) -> &[StrokeId] {
         if self.drag_offset().is_some() {
             &self.selection
         } else {
-            &[]
+            &self.lifted
         }
+    }
+
+    /// Hold these strokes up off the paper, grown `scale` times around
+    /// their middle (1 = their own size). An empty list puts them back.
+    pub fn set_lift(&mut self, ids: &[StrokeId], scale: f64) {
+        let ids: Vec<StrokeId> =
+            ids.iter().copied().filter(|id| self.doc.strokes().iter().any(|s| s.id == *id)).collect();
+        let scale = if scale.is_finite() { scale.clamp(0.5, 2.0) } else { 1.0 };
+        if ids != self.lifted {
+            self.lifted = ids;
+            self.dirty = true;
+        } else if scale != self.lift_scale {
+            self.live_dirty = true;
+        }
+        self.lift_scale = scale;
+    }
+
+    /// The lifted strokes' scale and the point it grows from (the middle of
+    /// their bounds), while some are lifted and none is being dragged.
+    pub fn lift(&self) -> Option<(f64, Vec2)> {
+        if self.lifted.is_empty() || self.drag_offset().is_some() {
+            return None;
+        }
+        let mut b: Option<Rect> = None;
+        for s in self.doc.strokes().iter().filter(|s| self.lifted.contains(&s.id)) {
+            let r = s.bounds();
+            b = Some(match b {
+                Some(a) => Rect {
+                    min: Vec2::new(a.min.x.min(r.min.x), a.min.y.min(r.min.y)),
+                    max: Vec2::new(a.max.x.max(r.max.x), a.max.y.max(r.max.y)),
+                },
+                None => r,
+            });
+        }
+        let b = b?;
+        Some((self.lift_scale, Vec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0)))
     }
 
     /// Delete the selected strokes (one undo step).
@@ -670,9 +789,68 @@ impl Engine {
         if ids.is_empty() {
             return false;
         }
-        self.doc.replace(&ids, vec![]);
+        self.doc.remove(&ids);
         self.dirty = true;
         true
+    }
+
+    /// The selected picture, when the selection is exactly one picture
+    /// (then its corner has a resize handle).
+    pub fn resizable_image(&self) -> Option<&crate::document::Image> {
+        match self.selection.as_slice() {
+            [one] => self.doc.image(*one),
+            _ => None,
+        }
+    }
+
+    /// Where each picture is drawn right now: dragged and resized ones
+    /// where the pen has them. Bottom first.
+    pub fn image_placements(&self) -> Vec<(StrokeId, String, Rect)> {
+        let delta = self.drag_offset().unwrap_or(Vec2::ZERO);
+        self.doc
+            .images()
+            .iter()
+            .map(|img| {
+                let mut r = img.rect();
+                match &self.active {
+                    Some(Active::Resizing { id, rect, .. }) if *id == img.id => r = *rect,
+                    Some(Active::Moving { .. }) if self.selection.contains(&img.id) => {
+                        r = Rect { min: r.min + delta, max: r.max + delta };
+                    }
+                    _ => {}
+                }
+                (img.id, img.texture_key(), r)
+            })
+            .collect()
+    }
+
+    /// Place a text box in the middle of the view, `width`×`height` css px
+    /// on screen at this zoom, and select it.
+    pub fn insert_text(&mut self, text: &str, width_css: f64, height_css: f64) -> StrokeId {
+        let z = self.camera.zoom.max(1e-9);
+        let size = Vec2::new(width_css.max(1.0) / z, height_css.max(1.0) / z);
+        let view = self.camera.visible_world();
+        let c = Vec2::new((view.min.x + view.max.x) / 2.0, (view.min.y + view.max.y) / 2.0);
+        let id = self.doc.add_text(text, Rect { min: c - size * 0.5, max: c + size * 0.5 });
+        self.selection = vec![id];
+        self.dirty = true;
+        id
+    }
+
+    /// Place a picture in the middle of the view, at most 60% of it (and
+    /// never larger than its own pixels at this zoom), and select it.
+    pub fn insert_image(&mut self, file: &str, bytes: Option<Vec<u8>>, width_px: f64, height_px: f64) -> StrokeId {
+        let (w, h) = (width_px.max(1.0), height_px.max(1.0));
+        let view = self.camera.visible_world();
+        let fit = (view.width() * 0.6 / w).min(view.height() * 0.6 / h).min(1.0 / self.camera.zoom.max(1e-9) * 1.0);
+        let fit = if fit > 0.0 && fit.is_finite() { fit } else { 1.0 };
+        let size = Vec2::new(w * fit, h * fit);
+        let c = Vec2::new((view.min.x + view.max.x) / 2.0, (view.min.y + view.max.y) / 2.0);
+        let rect = Rect { min: c - size * 0.5, max: c + size * 0.5 };
+        let id = self.doc.add_image(file, bytes, rect);
+        self.selection = vec![id];
+        self.dirty = true;
+        id
     }
 
     pub fn pan(&mut self, dx: f64, dy: f64) {
@@ -695,12 +873,31 @@ impl Engine {
         }
     }
 
-    /// Mesh of the live stroke including predicted samples.
-    pub fn live_mesh(&self) -> Option<Mesh> {
+    /// The strokes the scribble being drawn would erase if the pen lifted
+    /// now; empty while it is not (yet) a scribble over ink. The app fades
+    /// them, so the erase never comes as a surprise.
+    pub fn scribble_preview(&self) -> &[StrokeId] {
+        &self.preview
+    }
+
+    /// Mesh of the live stroke including predicted samples. Only the part
+    /// near the pen is rebuilt (see [`tessellate::LiveTessellator`]).
+    pub fn live_mesh(&mut self) -> Option<Mesh> {
+        let Some(Active::Drawing { stroke, .. }) = &self.active else { return None };
+        Some(self.live.mesh(stroke, &self.predicted))
+    }
+
+    /// Raw sample the per-frame rebuild of the live stroke starts at (0
+    /// until part of it has settled).
+    pub fn live_window_start(&self) -> usize {
+        self.live.window_start()
+    }
+
+    /// The live mesh rebuilt from the stroke's first sample: what
+    /// [`Engine::live_mesh`] must look like, at a cost that grows with the
+    /// stroke. For tests and measurements.
+    pub fn live_mesh_full(&self) -> Option<Mesh> {
         let s = self.live_stroke()?;
-        if self.predicted.is_empty() {
-            return Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &s.points)));
-        }
         let mut pts = s.points.clone();
         pts.extend_from_slice(&self.predicted);
         Some(tessellate::mesh_for(s, &tessellate::samples_for(s, &pts)))
@@ -745,6 +942,56 @@ mod tests {
         assert_eq!(s.points[20].t, 80.0);
         assert_eq!(s.device, InputDevice::Pen);
         assert!(e.live_stroke().is_none());
+    }
+
+    #[test]
+    fn a_scribble_shows_what_it_will_erase_before_the_pen_lifts() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (140.0, 104.0), 0.0);
+        draw(&mut e, 1, PointerKind::Pen, (400.0, 400.0), (440.0, 400.0), 500.0);
+        let word = e.doc.strokes()[0].id;
+        // Scribble back and forth over the first stroke.
+        e.pointer_down(2, PointerKind::Pen, ScreenSample::new(95.0, 96.0, 0.5, 1000.0));
+        let mut seen_at = None;
+        for i in 1..=120 {
+            let pass = (i - 1) / 10;
+            let f = ((i - 1) % 10) as f64 / 9.0;
+            let x = if pass % 2 == 0 { 95.0 + 50.0 * f } else { 145.0 - 50.0 * f };
+            e.pointer_move(
+                2,
+                PointerKind::Pen,
+                ScreenSample::new(x, 96.0 + i as f64 * 0.1, 0.5, 1000.0 + i as f64 * 4.0),
+            );
+            if seen_at.is_none() && !e.scribble_preview().is_empty() {
+                seen_at = Some(i);
+            }
+            if i < 30 {
+                assert!(e.scribble_preview().is_empty(), "two or three passes are not a scribble yet");
+            }
+        }
+        assert!(seen_at.is_some(), "the preview never appeared");
+        assert_eq!(e.scribble_preview(), &[word], "only the ink under the scribble");
+        assert_eq!(e.doc.len(), 2, "nothing is erased while the pen is down");
+        e.pointer_up(2, PointerKind::Pen, None);
+        assert!(e.scribble_preview().is_empty());
+        assert_eq!(e.doc.len(), 1);
+        assert!(e.doc.strokes().iter().all(|s| s.id != word));
+
+        // Turned off: no preview either.
+        e.undo();
+        e.scribble_erase = false;
+        e.pointer_down(3, PointerKind::Pen, ScreenSample::new(95.0, 96.0, 0.5, 3000.0));
+        for i in 1..=120 {
+            let pass = (i - 1) / 10;
+            let f = ((i - 1) % 10) as f64 / 9.0;
+            let x = if pass % 2 == 0 { 95.0 + 50.0 * f } else { 145.0 - 50.0 * f };
+            e.pointer_move(
+                3,
+                PointerKind::Pen,
+                ScreenSample::new(x, 96.0 + i as f64 * 0.1, 0.5, 3000.0 + i as f64 * 4.0),
+            );
+        }
+        assert!(e.scribble_preview().is_empty());
     }
 
     #[test]
@@ -1167,5 +1414,95 @@ mod tests {
         assert!(!e.needs_render());
         e.pan(5.0, 0.0);
         assert!(e.needs_render());
+    }
+
+    /// Bug guard for pictures: inserted in the middle of the view and
+    /// selected; the lasso takes them with ink; dragging moves both as one
+    /// undo step; the corner handle resizes keeping the shape; delete
+    /// removes them, and undo brings each step back.
+    #[test]
+    fn pictures_insert_select_move_resize_delete_undo() {
+        let mut e = eng();
+        let id = e.insert_image("images/a.png", Some(vec![1, 2, 3]), 400.0, 200.0);
+        let img = e.doc.image(id).unwrap().clone();
+        assert_eq!((img.w, img.h), (400.0, 200.0));
+        assert_eq!((img.x + img.w / 2.0, img.y + img.h / 2.0), (500.0, 400.0));
+        assert_eq!(e.selection(), vec![id]);
+        assert_eq!(e.doc.used_assets(), vec![("images/a.png", &[1u8, 2, 3][..])]);
+
+        // Resize from the bottom-right corner to 600 wide: 300 high.
+        e.tool = Tool::Lasso;
+        e.pointer_down(1, PointerKind::Pen, ScreenSample::new(700.0, 500.0, 0.5, 0.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(900.0, 520.0, 0.5, 4.0));
+        assert_eq!(e.selection_bounds().max, Vec2::new(900.0, 600.0), "the box follows the handle");
+        e.pointer_up(1, PointerKind::Pen, None);
+        let r = e.doc.image(id).unwrap().rect();
+        assert_eq!((r.min, r.max), (Vec2::new(300.0, 300.0), Vec2::new(900.0, 600.0)));
+
+        // A loop around the picture and a stroke takes both; drag them.
+        e.tool = Tool::Draw;
+        draw(&mut e, 2, PointerKind::Pen, (320.0, 650.0), (400.0, 650.0), 100.0);
+        let pts = [(250.0, 250.0), (950.0, 250.0), (950.0, 700.0), (250.0, 700.0), (250.0, 260.0)];
+        e.tool = Tool::Lasso;
+        lasso(&mut e, 3, &pts, 200.0);
+        assert_eq!(e.selection().len(), 2);
+        e.pointer_down(4, PointerKind::Pen, ScreenSample::new(500.0, 400.0, 0.5, 300.0));
+        e.pointer_move(4, PointerKind::Pen, ScreenSample::new(550.0, 410.0, 0.5, 304.0));
+        assert!(e.needs_scene_render(), "the base layer redraws a dragged picture");
+        let placed = e.image_placements()[0].2;
+        assert_eq!(placed.min, Vec2::new(350.0, 310.0));
+        e.pointer_up(4, PointerKind::Pen, None);
+        assert_eq!(e.doc.image(id).unwrap().rect().min, Vec2::new(350.0, 310.0));
+        assert!((e.doc.strokes()[0].points[0].x - 370.0).abs() < 1e-9);
+        assert!(e.selection().contains(&id), "the picture stays selected with its id");
+
+        // Delete both, then undo each step.
+        assert!(e.delete_selection());
+        assert!(e.doc.images().is_empty() && e.doc.is_empty());
+        e.undo();
+        assert_eq!(e.doc.images().len(), 1);
+        assert_eq!(e.doc.len(), 1);
+        e.undo(); // the move
+        assert_eq!(e.doc.image(id).unwrap().rect().min, Vec2::new(300.0, 300.0));
+        assert!((e.doc.strokes()[0].points[0].x - 320.0).abs() < 1e-9);
+        e.undo(); // the stroke
+        e.undo(); // the resize
+        assert_eq!(e.doc.image(id).unwrap().w, 400.0);
+        e.undo(); // the insert
+        assert!(e.doc.images().is_empty());
+        e.redo();
+        assert_eq!(e.doc.images().len(), 1);
+    }
+
+    #[test]
+    fn a_picture_is_never_inserted_larger_than_its_pixels_or_the_view() {
+        let mut e = eng();
+        let id = e.insert_image("images/big.jpg", Some(vec![0]), 4000.0, 1000.0);
+        let r = e.doc.image(id).unwrap().rect();
+        assert!((r.width() - 600.0).abs() < 1e-9 && (r.height() - 150.0).abs() < 1e-9, "{r:?}");
+        e.camera.zoom = 2.0;
+        let id = e.insert_image("images/small.png", Some(vec![0]), 100.0, 50.0);
+        let r = e.doc.image(id).unwrap().rect();
+        assert!((r.width() - 50.0).abs() < 1e-9, "100 px at 200% is 50 world units: {r:?}");
+    }
+
+    #[test]
+    fn lifted_strokes_float_grown_around_their_middle() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (140.0, 120.0), 0.0);
+        let a = e.doc.strokes()[0].id;
+        e.mark_rendered();
+        e.set_lift(&[a], 1.0);
+        assert_eq!(e.floating(), &[a], "left out of the paper layer");
+        assert!(e.needs_scene_render());
+        e.mark_rendered();
+        e.set_lift(&[a], 1.06);
+        assert!(!e.needs_scene_render() && e.needs_live_render(), "growing only redraws the live layer");
+        let (k, c) = e.lift().unwrap();
+        assert_eq!(k, 1.06);
+        let b = e.doc.strokes()[0].bounds();
+        assert_eq!(c, Vec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0));
+        e.set_lift(&[StrokeId(u64::MAX)], 1.0);
+        assert!(e.floating().is_empty() && e.lift().is_none(), "unknown ids lift nothing; the stroke is put back");
     }
 }

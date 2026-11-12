@@ -41,12 +41,50 @@ pub struct RecognizedText {
     pub engine: Option<String>,
 }
 
+/// A picture placed on the page. Its file (`images/<name>` in the note
+/// bundle) is stored once in [`Document::assets`], so copies of one picture
+/// share it. Pictures sit under all ink, in this order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Image {
+    /// Same id space as strokes, so a selection can hold both.
+    pub id: StrokeId,
+    /// Path of the picture inside the bundle, e.g. `images/3f2a….png`.
+    /// Empty for a text box.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file: String,
+    /// A text box (typed or pasted text) instead of a picture file. Its
+    /// lines are `\n` separated and fill the box's height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Top-left corner and size on the page, in world units.
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Image {
+    /// What its pixels are cached under: the file, or the text.
+    pub fn texture_key(&self) -> String {
+        match &self.text {
+            Some(t) => format!("text:{t}"),
+            None => self.file.clone(),
+        }
+    }
+
+    pub fn rect(&self) -> Rect {
+        Rect { min: Vec2::new(self.x, self.y), max: Vec2::new(self.x + self.w, self.y + self.h) }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     /// Strokes removed (index in the old list) and added (index in the new list).
     /// `renamed` pairs (old id, new id) for strokes that were moved: their
     /// recognised text, link and word grouping follow them to the new id.
     Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)>, renamed: Vec<(StrokeId, StrokeId)> },
+    /// The pictures before and after (there are few, so whole lists).
+    Images { before: Vec<Image>, after: Vec<Image> },
 }
 
 /// A link on handwriting: a group of strokes (usually one word) that points
@@ -100,6 +138,11 @@ pub struct Document {
     pub groups: Vec<Vec<StrokeId>>,
     /// Text or maths, as the writer set it (see [`Document::set_kind`]).
     pub kinds: Vec<KindOverride>,
+    /// Pictures on the page, bottom first.
+    images: Vec<Image>,
+    /// Picture files by bundle path. Kept when a picture is removed (undo
+    /// can bring it back); only files a picture uses are saved.
+    pub assets: std::collections::BTreeMap<String, Vec<u8>>,
     /// Unknown top level fields from newer versions, written back unchanged.
     pub extra: serde_json::Map<String, serde_json::Value>,
     undo: Vec<Vec<Op>>,
@@ -140,6 +183,8 @@ impl Document {
             links: Vec::new(),
             groups: Vec::new(),
             kinds: Vec::new(),
+            images: Vec::new(),
+            assets: Default::default(),
             extra: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -157,7 +202,7 @@ impl Document {
     pub fn next_id(&mut self) -> StrokeId {
         loop {
             let id = StrokeId(splitmix64(&mut self.id_state));
-            if id.0 != 0 && self.find(id).is_none() {
+            if id.0 != 0 && self.find(id).is_none() && self.image(id).is_none() {
                 return id;
             }
         }
@@ -185,7 +230,105 @@ impl Document {
     }
 
     pub fn bounds(&self) -> Rect {
-        self.strokes.iter().fold(Rect::EMPTY, |r, s| r.union(&s.bounds()))
+        let ink = self.strokes.iter().fold(Rect::EMPTY, |r, s| r.union(&s.bounds()));
+        self.images.iter().fold(ink, |r, i| r.union(&i.rect()))
+    }
+
+    pub fn images(&self) -> &[Image] {
+        &self.images
+    }
+
+    pub fn image(&self, id: StrokeId) -> Option<&Image> {
+        self.images.iter().find(|i| i.id == id)
+    }
+
+    /// Load pictures without recording history (used when opening a file).
+    pub fn set_images(&mut self, images: Vec<Image>) {
+        self.images = images;
+        self.revision += 1;
+    }
+
+    /// Place a picture on top of the others (under all ink), storing its
+    /// file. One undo step. Returns its id.
+    pub fn add_image(&mut self, file: &str, bytes: Option<Vec<u8>>, rect: Rect) -> StrokeId {
+        if let Some(b) = bytes {
+            self.assets.insert(file.to_string(), b);
+        }
+        let id = self.next_id();
+        let mut after = self.images.clone();
+        after.push(Image {
+            id,
+            file: file.to_string(),
+            text: None,
+            x: rect.min.x,
+            y: rect.min.y,
+            w: rect.width(),
+            h: rect.height(),
+        });
+        self.apply_and_record(Op::Images { before: self.images.clone(), after });
+        id
+    }
+
+    /// Place a text box on top of the pictures (under all ink). One undo
+    /// step. Returns its id.
+    pub fn add_text(&mut self, text: &str, rect: Rect) -> StrokeId {
+        let id = self.next_id();
+        let mut after = self.images.clone();
+        after.push(Image {
+            id,
+            file: String::new(),
+            text: Some(text.to_string()),
+            x: rect.min.x,
+            y: rect.min.y,
+            w: rect.width(),
+            h: rect.height(),
+        });
+        self.apply_and_record(Op::Images { before: self.images.clone(), after });
+        id
+    }
+
+    /// Move a picture to a new place and size. One undo step.
+    pub fn place_image(&mut self, id: StrokeId, rect: Rect) -> bool {
+        let ok = |v: f64| v.is_finite();
+        if !(ok(rect.min.x) && ok(rect.min.y) && ok(rect.max.x) && ok(rect.max.y)) || rect.width() <= 0.0 {
+            return false;
+        }
+        let mut after = self.images.clone();
+        let Some(img) = after.iter_mut().find(|i| i.id == id) else { return false };
+        (img.x, img.y, img.w, img.h) = (rect.min.x, rect.min.y, rect.width(), rect.height());
+        self.apply_and_record(Op::Images { before: self.images.clone(), after });
+        true
+    }
+
+    /// Remove pictures and strokes together, as one undo step.
+    pub fn remove(&mut self, ids: &[StrokeId]) {
+        let mine: HashSet<StrokeId> = ids.iter().copied().collect();
+        let mut ops = Vec::new();
+        if self.images.iter().any(|i| mine.contains(&i.id)) {
+            let after = self.images.iter().filter(|i| !mine.contains(&i.id)).cloned().collect();
+            ops.push(Op::Images { before: self.images.clone(), after });
+        }
+        let removed: Vec<(usize, Stroke)> = self
+            .strokes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| mine.contains(&s.id))
+            .map(|(i, s)| (i, s.clone()))
+            .collect();
+        if !removed.is_empty() {
+            ops.push(Op::Replace { removed, added: vec![], renamed: vec![] });
+        }
+        self.apply_and_record_all(ops);
+    }
+
+    /// The bundle files that pictures on the page use.
+    pub fn used_assets(&self) -> Vec<(&str, &[u8])> {
+        let mut seen = HashSet::new();
+        self.images
+            .iter()
+            .filter(|i| !i.file.is_empty() && seen.insert(i.file.as_str()))
+            .filter_map(|i| self.assets.get(&i.file).map(|b| (i.file.as_str(), b.as_slice())))
+            .collect()
     }
 
     /// Drain pending change events.
@@ -283,12 +426,26 @@ impl Document {
             removed.push((i, old));
             added.push((i, moved));
         }
-        if removed.is_empty() {
+        let mut ops = Vec::new();
+        let moves_images = self.images.iter().any(|i| wanted.contains(&i.id));
+        if moves_images {
+            let mut after = self.images.clone();
+            for i in after.iter_mut().filter(|i| wanted.contains(&i.id)) {
+                i.x += delta.x;
+                i.y += delta.y;
+            }
+            ops.push(Op::Images { before: self.images.clone(), after });
+        }
+        if removed.is_empty() && !moves_images {
             return Vec::new();
         }
-        self.apply_and_record(Op::Replace { removed, added, renamed: renamed.clone() });
+        if !removed.is_empty() {
+            ops.push(Op::Replace { removed, added, renamed: renamed.clone() });
+        }
+        self.apply_and_record_all(ops);
+        // Pictures keep their ids.
         let map: HashMap<StrokeId, StrokeId> = renamed.into_iter().collect();
-        ids.iter().filter_map(|id| map.get(id).copied()).collect()
+        ids.iter().filter_map(|id| map.get(id).copied().or_else(|| self.image(*id).map(|i| i.id))).collect()
     }
 
     /// Make these strokes one word, whatever the automatic word splitting
@@ -364,10 +521,20 @@ impl Document {
     }
 
     fn apply_and_record(&mut self, op: Op) {
-        self.apply(&op, false);
+        self.apply_and_record_all(vec![op]);
+    }
+
+    /// Several ops as one undo step.
+    fn apply_and_record_all(&mut self, ops: Vec<Op>) {
+        if ops.is_empty() {
+            return;
+        }
+        for op in &ops {
+            self.apply(op, false);
+        }
         match &mut self.group {
-            Some(g) => g.push(op),
-            None => self.undo.push(vec![op]),
+            Some(g) => g.extend(ops),
+            None => self.undo.push(ops),
         }
         self.redo.clear();
     }
@@ -388,7 +555,14 @@ impl Document {
     }
 
     fn apply(&mut self, op: &Op, inverse: bool) {
-        let Op::Replace { removed, added, renamed } = op;
+        let (removed, added, renamed) = match op {
+            Op::Replace { removed, added, renamed } => (removed, added, renamed),
+            Op::Images { before, after } => {
+                self.images = if inverse { before.clone() } else { after.clone() };
+                self.revision += 1;
+                return;
+            }
+        };
         let (take, put) = if inverse { (added, removed) } else { (removed, added) };
         if !renamed.is_empty() {
             let map: HashMap<StrokeId, StrokeId> =

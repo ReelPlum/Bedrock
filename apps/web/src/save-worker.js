@@ -5,6 +5,7 @@
 // Messages (each gets one reply with the same `seq`):
 //   { reset: Uint8Array }  replace the copy with a whole note
 //   { ops: { meta, touched, added, index } }  apply changes (see NoteMirror.apply)
+//   { assets: [{ file, bytes }] }  picture files (with a reset or ops; each sent once)
 //   { export: true }  also reply with the .bedrock bytes as `data`
 // Replies carry `hash` (the copy's fingerprint) or `error`.
 import init, { NoteMirror } from '../pkg/bedrock_web.js';
@@ -17,6 +18,7 @@ self.onmessage = async (e) => {
   try {
     await ready;
     if (m.reset) mirror.reset(m.reset);
+    for (const a of m.assets || []) mirror.add_asset(a.file, a.bytes);
     if (m.ops) mirror.apply(m.ops.meta ?? undefined, m.ops.touched, m.ops.added, Uint32Array.from(m.ops.index));
     const out = { seq: m.seq, hash: mirror.content_hash() };
     if (m.export) {

@@ -17,6 +17,7 @@ browser) and every pen stroke as documented JSON (`note.json`). See
   predicted points (`getPredictedEvents`) to hide latency.
 - Vector brushes: pen, pencil (tilt to shade), fountain pen, marker, highlighter (drawn under ink).
 - Eraser for whole strokes or only the part you touch.
+- Scribble over ink to erase it: the ink fades as soon as the stroke is a scribble, and goes when the pen lifts.
 - Palm rejection: while the Pencil is down, touches are ignored.
 - Undo and redo, also with a two-finger double tap (undo) and a three-finger double tap (redo).
 - Solid, dashed and dotted lines, and a stabiliser for shaky hands, set per brush.
@@ -60,7 +61,15 @@ node apps/web/serve.mjs 8080    # open http://localhost:8080
 To try it on an iPad, serve over HTTPS on your network (or deploy `apps/web`
 to any static host) and open it in Safari. "Add to Home Screen" gives a full
 screen app that works offline. Menu → "Show latency" displays the measured
-input-to-frame time.
+input-to-frame time, the frame rate and Bedrock's own drawing time per frame.
+Safari holds pages to 60 frames a second by default, also on 120 Hz iPads:
+Settings → Apps → Safari → Advanced → Feature Flags → turn off "Prefer Page
+Rendering Updates near 60fps" to see whether your iPad gives the page 120.
+
+Menu → "Record a pen trace" saves everything the pen does, as the engine
+receives it, to a JSON file. Put it in `crates/bedrock-core/tests/fixtures/`
+and the replay test (`tests/replay.rs`) can run it: that is how a problem
+with the feel of the ink on a real device becomes a test.
 
 ## Tests
 

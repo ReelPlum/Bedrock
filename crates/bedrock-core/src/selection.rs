@@ -38,7 +38,8 @@ pub fn strokes_in_lasso(doc: &Document, poly: &[Vec2]) -> Vec<StrokeId> {
         r.include(*p);
         r
     });
-    doc.strokes()
+    let mut ids: Vec<StrokeId> = doc
+        .strokes()
         .iter()
         .filter(|s| !s.points.is_empty() && s.bounds().intersects(&hull))
         .filter(|s| {
@@ -46,17 +47,35 @@ pub fn strokes_in_lasso(doc: &Document, poly: &[Vec2]) -> Vec<StrokeId> {
             n as f64 >= s.points.len() as f64 * INSIDE_SHARE
         })
         .map(|s| s.id)
-        .collect()
+        .collect();
+    // Pictures: the same share of a 5×5 grid over them.
+    for img in doc.images() {
+        let r = img.rect();
+        if !r.intersects(&hull) {
+            continue;
+        }
+        let n = (0..25)
+            .filter(|k| {
+                let (u, v) = ((k % 5) as f64 / 4.0, (k / 5) as f64 / 4.0);
+                inside(poly, Vec2::new(r.min.x + u * r.width(), r.min.y + v * r.height()))
+            })
+            .count();
+        if n as f64 >= 25.0 * INSIDE_SHARE {
+            ids.push(img.id);
+        }
+    }
+    ids
 }
 
-/// Ink bounds (without the brush radius) of some strokes.
+/// Ink bounds (without the brush radius) of some strokes, and of pictures.
 pub fn bounds(doc: &Document, ids: &[StrokeId]) -> Rect {
-    doc.strokes().iter().filter(|s| ids.contains(&s.id)).fold(Rect::EMPTY, |mut r, s| {
+    let ink = doc.strokes().iter().filter(|s| ids.contains(&s.id)).fold(Rect::EMPTY, |mut r, s| {
         for p in &s.points {
             r.include(p.pos());
         }
         r
-    })
+    });
+    doc.images().iter().filter(|i| ids.contains(&i.id)).fold(ink, |r, i| r.union(&i.rect()))
 }
 
 #[cfg(test)]

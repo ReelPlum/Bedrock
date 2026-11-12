@@ -148,13 +148,31 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     if !groups.is_empty() {
         root.insert("groups".into(), serde_json::to_value(&groups).expect("groups serialise"));
     }
+    // Pictures and text boxes share one stacking order; each list keeps it.
+    let place = |i: &crate::document::Image, what: (&str, Value)| {
+        serde_json::json!({
+            "id": i.id, what.0: what.1,
+            "x": round(i.x, POSITION_DECIMALS), "y": round(i.y, POSITION_DECIMALS),
+            "w": round(i.w, POSITION_DECIMALS), "h": round(i.h, POSITION_DECIMALS),
+        })
+    };
+    let images: Vec<Value> =
+        doc.images().iter().filter(|i| i.text.is_none()).map(|i| place(i, ("file", i.file.clone().into()))).collect();
+    if !images.is_empty() {
+        root.insert("images".into(), images.into());
+    }
+    let texts: Vec<Value> =
+        doc.images().iter().filter_map(|i| i.text.as_ref().map(|t| place(i, ("text", t.clone().into())))).collect();
+    if !texts.is_empty() {
+        root.insert("texts".into(), texts.into());
+    }
     for (k, v) in &doc.extra {
         root.entry(k.clone()).or_insert_with(|| v.clone());
     }
     serde_json::to_string(&Value::Object(root)).expect("json")
 }
 
-const KNOWN_KEYS: [&str; 14] = [
+const KNOWN_KEYS: [&str; 16] = [
     "format",
     "version",
     "title",
@@ -169,6 +187,8 @@ const KNOWN_KEYS: [&str; 14] = [
     "links",
     "groups",
     "kinds",
+    "images",
+    "texts",
 ];
 
 /// A loaded note plus anything that had to be repaired or skipped.
@@ -306,6 +326,27 @@ pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
             Err(e) => warnings.push(format!("word groups skipped: {e}")),
         }
     }
+    let mut images = Vec::new();
+    for (key, what) in [("images", "picture"), ("texts", "text box")] {
+        for v in obj.get(key).and_then(|v| v.as_array()).into_iter().flatten() {
+            match serde_json::from_value::<crate::document::Image>(v.clone()) {
+                Ok(i)
+                    if (key == "texts") != i.text.is_none()
+                        && (i.text.is_some() || !i.file.is_empty())
+                        && [i.x, i.y, i.w, i.h].iter().all(|n| n.is_finite())
+                        && i.w > 0.0
+                        && i.h > 0.0 =>
+                {
+                    images.push(i)
+                }
+                Ok(_) => warnings.push(format!("a broken {what} was skipped")),
+                Err(e) => warnings.push(format!("a {what} was skipped: {e}")),
+            }
+        }
+    }
+    if !images.is_empty() {
+        doc.set_images(images);
+    }
     for (k, v) in obj {
         if !KNOWN_KEYS.contains(&k.as_str()) {
             doc.extra.insert(k.clone(), v.clone());
@@ -387,6 +428,46 @@ fn svg_with(doc: &Document, embed_data: bool) -> String {
         "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"{}\"/>\n",
         doc.background.to_hex_rgb()
     ));
+    // Pictures sit under all ink. The full export embeds them; the preview
+    // inside a .bedrock refers to the picture files next to it.
+    if !doc.images().is_empty() {
+        out.push_str("<g id=\"images\">\n");
+        for i in doc.images() {
+            if let Some(t) = &i.text {
+                let lines: Vec<&str> = t.split('\n').collect();
+                let line_h = i.h / lines.len().max(1) as f64;
+                out.push_str(&format!(
+                    "<text id=\"i{}\" font-family=\"-apple-system, system-ui, sans-serif\" font-size=\"{}\" fill=\"#1c1c1e\">",
+                    i.id,
+                    fmt_num(line_h / TEXT_LINE_HEIGHT)
+                ));
+                for (k, l) in lines.iter().enumerate() {
+                    out.push_str(&format!(
+                        "<tspan x=\"{}\" y=\"{}\">{}</tspan>",
+                        fmt_num(i.x),
+                        fmt_num(i.y + line_h * (k as f64 + 0.8)),
+                        xml_escape(l)
+                    ));
+                }
+                out.push_str("</text>\n");
+                continue;
+            }
+            let href = match (embed_data, doc.assets.get(&i.file)) {
+                (true, Some(bytes)) => format!("data:{};base64,{}", image_mime(&i.file), base64(bytes)),
+                _ => xml_escape(&i.file),
+            };
+            out.push_str(&format!(
+                "<image id=\"i{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"{}\"/>\n",
+                i.id,
+                fmt_num(i.x),
+                fmt_num(i.y),
+                fmt_num(i.w),
+                fmt_num(i.h),
+                href
+            ));
+        }
+        out.push_str("</g>\n");
+    }
     // Highlighter sits underneath ink, matching the on-screen renderer.
     for (group, highlight) in [("highlights", true), ("ink", false)] {
         out.push_str(&format!("<g id=\"{group}\">\n"));
@@ -408,6 +489,39 @@ fn svg_with(doc: &Document, embed_data: bool) -> String {
         out.push_str("</g>\n");
     }
     out.push_str("</svg>\n");
+    out
+}
+
+/// Line height of text boxes, as a multiple of the font size.
+pub const TEXT_LINE_HEIGHT: f64 = 1.3;
+
+/// The media type of a picture file, from its extension.
+pub fn image_mime(file: &str) -> &'static str {
+    let ext = file.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            if k <= c.len() {
+                out.push(T[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
     out
 }
 
@@ -437,12 +551,15 @@ pub const RECOGNIZED_JSON: &str = "recognized.json";
 pub const PREVIEW_SVG: &str = "preview.svg";
 pub const README_TXT: &str = "README.txt";
 pub const LINKS_MD: &str = "links.md";
+/// Folder of picture files in a `.bedrock`.
+pub const IMAGES_DIR: &str = "images/";
 
 const README: &str = "This is a Bedrock note: an ordinary ZIP archive.\n\n\
 preview.svg      the note as a picture; opens in any web browser\n\
 note.json        every pen stroke with its raw samples (x, y, pressure, tilt, time)\n\
 recognized.json  text recognised from the handwriting, linked to stroke ids\n\
-links.md         the note's links as Markdown ([[Note]] and [text](https://...))\n\n\
+links.md         the note's links as Markdown ([[Note]] and [text](https://...))\n\
+images/          pictures placed on the page, as ordinary image files\n\n\
 The format is documented at https://github.com/ReelPlum/Bedrock/blob/main/docs/note-format.md\n";
 
 /// Recognition output lives in its own file so it can never corrupt ink.
@@ -492,13 +609,15 @@ pub fn to_bedrock(doc: &Document) -> Vec<u8> {
     let rec = recognition_json(doc);
     let preview = to_preview_svg(doc);
     let links = links_markdown(doc);
-    crate::zip::write(&[
+    let mut files: Vec<(&str, &[u8])> = vec![
         (NOTE_JSON, note.as_bytes()),
         (RECOGNIZED_JSON, rec.as_bytes()),
         (LINKS_MD, links.as_bytes()),
         (PREVIEW_SVG, preview.as_bytes()),
         (README_TXT, README.as_bytes()),
-    ])
+    ];
+    files.extend(doc.used_assets());
+    crate::zip::write(&files)
 }
 
 /// Load any supported file: `.bedrock` (ZIP), Bedrock SVG, or note JSON.
@@ -526,6 +645,16 @@ pub fn load_bytes(bytes: &[u8], seed: u64) -> Result<Loaded, FormatError> {
         }
     };
     loaded.warnings.extend(problems);
+    for (name, data) in &files {
+        if let Some(i) = name.find(IMAGES_DIR) {
+            loaded.doc.assets.insert(name[i..].to_string(), data.clone());
+        }
+    }
+    for i in loaded.doc.images().iter().filter(|i| i.text.is_none()) {
+        if !loaded.doc.assets.contains_key(&i.file) {
+            loaded.warnings.push(format!("the picture {} is missing from the note", i.file));
+        }
+    }
     if let Some(d) = find(RECOGNIZED_JSON) {
         let parsed = serde_json::from_slice::<Value>(d)
             .ok()
@@ -825,5 +954,52 @@ mod tests {
             let screen_px = a.pos().distance(b.pos()) * MAX_ZOOM;
             assert!(screen_px < 0.02, "a point moved {screen_px} px at full zoom");
         }
+    }
+
+    #[test]
+    fn pictures_round_trip_in_a_bedrock_file_as_plain_image_files() {
+        let mut d = sample_doc();
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        let r = crate::geom::Rect::new(crate::geom::Vec2::new(10.0, 20.0), crate::geom::Vec2::new(110.0, 70.0));
+        let id = d.add_image("images/abc.png", Some(png.clone()), r);
+        // A file no picture uses any more is not saved.
+        d.assets.insert("images/old.png".into(), vec![9]);
+        let bytes = to_bedrock(&d);
+        let (files, _) = crate::zip::read(&bytes).unwrap();
+        assert!(files.iter().any(|(n, b)| n == "images/abc.png" && *b == png), "stored as is");
+        assert!(!files.iter().any(|(n, _)| n == "images/old.png"));
+        let back = load_bytes(&bytes, 1).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        let img = back.doc.image(id).unwrap();
+        assert_eq!((img.file.as_str(), img.x, img.y, img.w, img.h), ("images/abc.png", 10.0, 20.0, 100.0, 50.0));
+        assert_eq!(back.doc.assets.get("images/abc.png"), Some(&png));
+        // The SVG export embeds it; the preview refers to the file.
+        assert!(to_svg(&d).contains("href=\"data:image/png;base64,iVBORwECAwQ=\""));
+        assert!(to_preview_svg(&d).contains("href=\"images/abc.png\""));
+    }
+
+    #[test]
+    fn a_missing_picture_file_is_reported_and_the_note_still_opens() {
+        let mut d = sample_doc();
+        let r = crate::geom::Rect::new(crate::geom::Vec2::ZERO, crate::geom::Vec2::new(10.0, 10.0));
+        d.add_image("images/x.png", None, r);
+        let back = load_bytes(&to_bedrock(&d), 1).unwrap();
+        assert_eq!(back.doc.images().len(), 1);
+        assert!(back.warnings.iter().any(|w| w.contains("images/x.png")), "{:?}", back.warnings);
+    }
+
+    #[test]
+    fn text_boxes_round_trip_and_export_as_svg_text() {
+        let mut d = sample_doc();
+        let r = crate::geom::Rect::new(crate::geom::Vec2::new(0.0, 0.0), crate::geom::Vec2::new(200.0, 52.0));
+        let id = d.add_text("Hello <you>\nsecond line", r);
+        let json: Value = serde_json::from_str(&to_json(&d)).unwrap();
+        assert_eq!(json["texts"][0]["text"], "Hello <you>\nsecond line");
+        assert!(json.get("images").is_none(), "text boxes are not pictures");
+        let back = load_bytes(&to_bedrock(&d), 1).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.doc.image(id).unwrap().text.as_deref(), Some("Hello <you>\nsecond line"));
+        let svg = to_svg(&d);
+        assert!(svg.contains("font-size=\"20\"") && svg.contains(">Hello &lt;you&gt;</tspan>"), "{svg}");
     }
 }

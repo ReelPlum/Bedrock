@@ -6,14 +6,19 @@
 
 import { LINK_TYPES, linkType } from './links.js';
 
+/** How much a held stroke grows as it lifts, and how long that takes. */
+const LIFT_SCALE = 1.06;
+const LIFT_MS = 160;
+
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
+    this.requestFrame = requestFrame || (() => {});
     this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
     const $ = (id) => el.querySelector(`#${id}`);
@@ -158,9 +163,12 @@ export class WordMenu {
     this.selection = selection;
     const $ = this.$;
     const n = selection?.strokes.length || 0;
+    const pics = selection?.images?.length || 0;
     const maths = word.kind === 'math';
     const drawing = word.kind === 'drawing';
-    $('wm-word').textContent = word.id == null ? `${n} stroke${n === 1 ? '' : 's'} selected`
+    const plural = (k, one) => `${k} ${one}${k === 1 ? '' : 's'}`;
+    const what = [n && plural(n, 'stroke'), pics && plural(pics, 'picture')].filter(Boolean).join(' and ');
+    $('wm-word').textContent = word.id == null ? (pics === 1 && !n ? 'Picture' : `${what} selected`)
       : drawing ? 'Not a word' : maths ? (selection ? 'Selected formula' : 'Formula') : selection ? 'Selected word' : 'Handwritten word';
     const reading = $('wm-reading');
     reading.replaceChildren();
@@ -180,6 +188,14 @@ export class WordMenu {
     $('wm-group').hidden = !selection || (selection.word && selection.grouped) || (selection.word && n === 1);
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
+    // Pictures only: nothing to read or link, just delete (move and resize
+    // them with the lasso).
+    if (selection && !n) {
+      for (const b of ['wm-kind', 'wm-drawing', 'wm-correct', 'wm-group', 'wm-ungroup', 'wm-link']) $(b).hidden = true;
+    } else {
+      $('wm-link').hidden = false;
+      $('wm-kind').hidden = false;
+    }
     const l = word.link;
     const type = l && linkType(l.type);
     $('wm-link-now').hidden = !l;
@@ -192,6 +208,36 @@ export class WordMenu {
     this._show('main');
     this.el.hidden = false;
     this._place();
+    this._lift(selection?.strokes?.length ? selection.strokes : word.strokes || []);
+  }
+
+  /**
+   * The held strokes lift off the paper while their menu is open: they grow
+   * a little around their middle and cast a drop shadow (on the ink layer).
+   */
+  _lift(ids) {
+    cancelAnimationFrame(this._liftFrame);
+    const overlay = document.getElementById('overlay');
+    const paper = document.getElementById('base');
+    if (!ids.length) {
+      paper?.classList.remove('behind-lift');
+      this.canvas.set_lift([], 1);
+      overlay?.classList.remove('lifted');
+      this.requestFrame();
+      return;
+    }
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const t0 = performance.now();
+    const step = () => {
+      const t = still ? 1 : Math.min(1, (performance.now() - t0) / LIFT_MS);
+      const ease = 1 - (1 - t) ** 3;
+      this.canvas.set_lift(ids, 1 + (LIFT_SCALE - 1) * ease);
+      this.requestFrame();
+      if (t < 1) this._liftFrame = requestAnimationFrame(step);
+    };
+    step();
+    overlay?.classList.add('lifted');
+    paper?.classList.add('behind-lift');
   }
 
   /** A stroke that stands for what the menu is open on. */
@@ -200,6 +246,7 @@ export class WordMenu {
   }
 
   close() {
+    if (!this.el.hidden) this._lift([]);
     this.el.hidden = true;
     this.word = null;
     this.selection = null;

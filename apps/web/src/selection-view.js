@@ -1,6 +1,7 @@
 // Lasso tool: draws the loop while it is being drawn and a dashed box around
 // the selection (following it while it is dragged). The core decides what
-// is selected and moves it; this only shows it.
+// is selected and moves it; this only shows it. A lone picture gets a
+// round handle on its corner for resizing.
 
 export class SelectionView {
   constructor(marks, canvas) {
@@ -43,6 +44,16 @@ export class SelectionView {
       g.fillRect(x, y, w, h);
       g.globalAlpha = 1;
       g.strokeRect(x, y, w, h);
+      if (sel.handle) {
+        // A lone picture: drag this corner to resize it.
+        g.setLineDash([]);
+        g.beginPath();
+        g.arc((sel.handle[0] + (dx || 0) - ox) * zoom + pad / 2, (sel.handle[1] + (dy || 0) - oy) * zoom + pad / 2, 8, 0, Math.PI * 2);
+        g.fillStyle = '#fff';
+        g.fill();
+        g.lineWidth = 2;
+        g.stroke();
+      }
     }
     g.setLineDash([]);
     g.setTransform(1, 0, 0, 1, 0, 0);
