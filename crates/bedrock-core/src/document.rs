@@ -448,6 +448,93 @@ impl Document {
         ids.iter().filter_map(|id| map.get(id).copied().or_else(|| self.image(*id).map(|i| i.id))).collect()
     }
 
+    /// Copy strokes and pictures `delta` away from where they are, as one
+    /// undo step. The copies get new ids and go on top: stroke copies above
+    /// all ink, picture copies above all pictures, each in the order the
+    /// originals were stacked. What was said about the originals goes with
+    /// the copies when it is about copied strokes only: recognised text,
+    /// links, word groupings and text/maths overrides. Returns the copies'
+    /// ids, strokes first then pictures, in stacking order (unknown ids are
+    /// skipped).
+    pub fn duplicate(&mut self, ids: &[StrokeId], delta: Vec2) -> Vec<StrokeId> {
+        let wanted: HashSet<StrokeId> = ids.iter().copied().collect();
+        if wanted.is_empty() || !(delta.x.is_finite() && delta.y.is_finite()) {
+            return Vec::new();
+        }
+        let originals: Vec<Stroke> = self.strokes.iter().filter(|s| wanted.contains(&s.id)).cloned().collect();
+        let mut map: HashMap<StrokeId, StrokeId> = HashMap::new();
+        let mut added = Vec::new();
+        for (k, old) in originals.into_iter().enumerate() {
+            let mut copy = old;
+            let new_id = self.next_id();
+            map.insert(copy.id, new_id);
+            copy.id = new_id;
+            for p in &mut copy.points {
+                p.x += delta.x;
+                p.y += delta.y;
+            }
+            copy.recompute_bounds();
+            added.push((self.strokes.len() + k, copy));
+        }
+        let mut new_ids: Vec<StrokeId> = added.iter().map(|(_, s)| s.id).collect();
+        let mut ops = Vec::new();
+        let pictures: Vec<Image> = self.images.iter().filter(|i| wanted.contains(&i.id)).cloned().collect();
+        if !pictures.is_empty() {
+            let mut after = self.images.clone();
+            for mut img in pictures {
+                // Reserve the id against the copies made so far too.
+                let mut id = self.next_id();
+                while after.iter().any(|i| i.id == id) || map.values().any(|v| *v == id) {
+                    id = self.next_id();
+                }
+                img.id = id;
+                img.x += delta.x;
+                img.y += delta.y;
+                new_ids.push(id);
+                after.push(img);
+            }
+            ops.push(Op::Images { before: self.images.clone(), after });
+        }
+        if !added.is_empty() {
+            ops.push(Op::Replace { removed: vec![], added, renamed: vec![] });
+        }
+        if ops.is_empty() {
+            return Vec::new();
+        }
+        self.apply_and_record_all(ops);
+        // Annotations that are wholly about copied strokes follow the copy.
+        let copy_of = |v: &[StrokeId]| -> Option<Vec<StrokeId>> {
+            (!v.is_empty() && v.iter().all(|s| map.contains_key(s))).then(|| v.iter().map(|s| map[s]).collect())
+        };
+        let recognition: Vec<RecognizedText> = self
+            .recognition
+            .iter()
+            .filter_map(|r| {
+                copy_of(&r.strokes).map(|strokes| RecognizedText {
+                    id: format!("{:016x}", crate::words::word_id(&strokes)),
+                    strokes,
+                    ..r.clone()
+                })
+            })
+            .collect();
+        let links: Vec<Link> = self
+            .links
+            .iter()
+            .filter_map(|l| copy_of(&l.strokes).map(|strokes| Link { strokes, ..l.clone() }))
+            .collect();
+        let groups: Vec<Vec<StrokeId>> = self.groups.iter().filter_map(|g| copy_of(g)).collect();
+        let kinds: Vec<KindOverride> = self
+            .kinds
+            .iter()
+            .filter_map(|k| copy_of(&k.strokes).map(|strokes| KindOverride { strokes, kind: k.kind.clone() }))
+            .collect();
+        self.recognition.extend(recognition);
+        self.links.extend(links);
+        self.groups.extend(groups);
+        self.kinds.extend(kinds);
+        new_ids
+    }
+
     /// Make these strokes one word, whatever the automatic word splitting
     /// says. Strokes leave any group they were in. Not an undo step (like
     /// recognised text), but it is saved with the note.
@@ -771,6 +858,74 @@ mod tests {
         assert_eq!(d.live_groups(), vec![vec![ia, ib]]);
         d.redo();
         assert_eq!(d.recognition[0].strokes, new);
+    }
+
+    #[test]
+    fn duplicating_copies_on_top_with_text_link_and_group_and_one_undo() {
+        let mut d = Document::new(1);
+        let a = stroke(&mut d, 0.0);
+        let b = stroke(&mut d, 5.0);
+        let c = stroke(&mut d, 50.0);
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        d.add_stroke(a);
+        d.add_stroke(b);
+        d.add_stroke(c);
+        let pic =
+            d.add_image("images/p.png", Some(vec![9]), Rect { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) });
+        let _other = d.add_text("hi", Rect { min: Vec2::new(100.0, 0.0), max: Vec2::new(110.0, 10.0) });
+        // (Saying what kind ink is drops what was read, so say it first.)
+        d.set_kind(&[ia, ib], "math");
+        d.recognition.push(RecognizedText {
+            id: "w".into(),
+            text: "hi".into(),
+            strokes: vec![ia, ib],
+            alternatives: vec![],
+            confidence: Some(0.9),
+            language: None,
+            engine: None,
+        });
+        d.links.push(Link {
+            strokes: vec![ia, ib],
+            target: "https://example.com".into(),
+            kind: "url".into(),
+            text: None,
+        });
+        // A link that also covers a stroke that is not copied stays put.
+        d.links.push(Link {
+            strokes: vec![ib, ic],
+            target: "https://other.example".into(),
+            kind: "url".into(),
+            text: None,
+        });
+        d.group(&[ia, ib]);
+        d.take_changes();
+
+        let new = d.duplicate(&[ib, pic, ia], Vec2::new(3.0, 4.0));
+        assert_eq!(new.len(), 3, "two strokes, then the picture");
+        let ids: Vec<_> = d.strokes().iter().map(|s| s.id).collect();
+        assert_eq!(&ids[..3], &[ia, ib, ic], "the originals stay");
+        assert_eq!(&ids[3..], &new[..2], "copies go on top, in stacking order");
+        assert_eq!(d.strokes()[3].points[0].pos(), Vec2::new(3.0, 4.0));
+        assert_eq!(d.strokes()[4].points[0].pos(), Vec2::new(8.0, 4.0));
+        let copy = d.images().last().unwrap();
+        assert_eq!(copy.id, new[2]);
+        assert_eq!((copy.x, copy.y, copy.file.as_str()), (3.0, 4.0, "images/p.png"), "it shares the file");
+        assert_eq!(d.used_assets().len(), 1);
+        let copied = vec![new[0], new[1]];
+        assert!(d.recognition.iter().any(|r| r.strokes == copied && r.text == "hi"));
+        assert_eq!(d.links.iter().filter(|l| l.strokes == copied).count(), 1);
+        assert_eq!(d.links.iter().filter(|l| l.target == "https://other.example").count(), 1);
+        assert!(d.live_groups().contains(&copied));
+        assert_eq!(d.kind_of(&copied), Some("math"));
+        assert_eq!(d.take_changes(), vec![Change::Added(new[0]), Change::Added(new[1])]);
+
+        assert!(d.undo());
+        assert_eq!(d.len(), 3);
+        assert_eq!(d.images().len(), 2);
+        assert!(d.redo());
+        assert_eq!(d.len(), 5);
+        assert_eq!(d.images().len(), 3);
+        assert!(d.duplicate(&[StrokeId(12345)], Vec2::new(1.0, 1.0)).is_empty());
     }
 
     #[test]

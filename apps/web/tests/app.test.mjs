@@ -1868,6 +1868,90 @@ test('pictures: drag the corner to resize, drag to move, delete; undo brings eac
   await ctx.close();
 });
 
+test('lasso: duplicate strokes and a picture from the selection menu; the copy is selected and drags away, one undo', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page, errors } = await openApp(env, { context });
+  const r = await page.evaluate(async (make) => {
+    bedrock.minimap.visible = false;
+    const c = bedrock.canvas;
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    await t.line(100, 100, 200, 120);
+    await bedrock.insertPictures([await eval(make)(200, 100, '#2f6bff')]);
+    for (let i = 0; i < 40 && c.missing_images().length; i++) await t.frame();
+    const out = { tool: document.querySelector('[data-tool="lasso"]').getAttribute('aria-checked') };
+    // A loop around everything: the line and the picture.
+    const loop = [[20, 20], [1000, 20], [1000, 740], [20, 740], [22, 24]];
+    t.ev('pointerdown', 2, 'pen', ...loop[0], { pressure: 0.5 });
+    for (const p of loop.slice(1)) t.ev('pointermove', 2, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 2, 'pen', 22, 24, { pressure: 0 });
+    const sel0 = JSON.parse(c.selection_json());
+    out.selected = [sel0.strokes.length, sel0.images.length];
+    const ink0 = JSON.parse(c.export_json()).strokes.map((s) => s.points.slice(0, 2));
+    // Hold on the selection to open its menu, then Duplicate.
+    const pic = JSON.parse(c.images_json())[0];
+    const [ox, oy, zoom] = c.camera();
+    const px = (pic.x + pic.w / 2 - ox) * zoom;
+    const py = (pic.y + pic.h / 2 - oy) * zoom;
+    t.ev('pointerdown', 3, 'pen', px, py, { pressure: 0.5 });
+    await sleep(700);
+    t.ev('pointerup', 3, 'pen', px, py, { pressure: 0 });
+    await t.frame();
+    out.duplicateShown = !$('wm-duplicate').hidden;
+    $('wm-duplicate').click();
+    await t.frame();
+    out.menuClosed = $('word-menu').hidden;
+    const sel1 = JSON.parse(c.selection_json());
+    out.counts = [c.stroke_count(), JSON.parse(c.images_json()).length];
+    out.copySelected = [sel1.strokes.length, sel1.images.length];
+    out.newIds = !sel1.strokes.some((id) => sel0.strokes.includes(id)) && !sel1.images.some((id) => sel0.images.includes(id));
+    out.offset = [sel1.bounds[0] - sel0.bounds[0], sel1.bounds[1] - sel0.bounds[1]].map((v) => Math.round(v * zoom));
+    // Drag the copy 150 px right: the original stays.
+    const cx = ((sel1.bounds[0] + sel1.bounds[2]) / 2 - ox) * zoom;
+    const cy = ((sel1.bounds[1] + sel1.bounds[3]) / 2 - oy) * zoom;
+    await t.line(cx, cy, cx + 150, cy);
+    const sel2 = JSON.parse(c.selection_json());
+    out.dragged = Math.round((sel2.bounds[0] - sel1.bounds[0]) * zoom);
+    const doc = JSON.parse(c.export_json());
+    out.originalStays = JSON.stringify(doc.strokes[0].points.slice(0, 2)) === JSON.stringify(ink0[0]);
+    out.oneFile = c.image_files().length;
+    // Undo the drag and the duplicate.
+    c.undo();
+    c.undo();
+    out.undone = [c.stroke_count(), JSON.parse(c.images_json()).length];
+    // ⌘/Ctrl+D duplicates the selection too.
+    const loop2 = [[20, 20], [1000, 20], [1000, 740], [20, 740], [22, 24]];
+    t.ev('pointerdown', 4, 'pen', ...loop2[0], { pressure: 0.5 });
+    for (const p of loop2.slice(1)) t.ev('pointermove', 4, 'pen', ...p, { pressure: 0.5 });
+    t.ev('pointerup', 4, 'pen', 22, 24, { pressure: 0 });
+    const key = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, cancelable: true });
+    window.dispatchEvent(key);
+    out.shortcut = [c.stroke_count(), JSON.parse(c.images_json()).length, key.defaultPrevented];
+    // Drawing a new loop elsewhere lets go of the copy.
+    t.ev('pointerdown', 5, 'pen', 980, 30, { pressure: 0.5 });
+    t.ev('pointermove', 5, 'pen', 1000, 30, { pressure: 0.5 });
+    t.ev('pointerup', 5, 'pen', 1000, 30, { pressure: 0 });
+    out.letGo = JSON.parse(c.selection_json()).bounds;
+    return out;
+  }, makePicture);
+  assert.equal(r.tool, 'true', 'a new picture is selected with the lasso');
+  assert.deepEqual(r.selected, [1, 1]);
+  assert.ok(r.duplicateShown, 'the selection menu offers Duplicate');
+  assert.ok(r.menuClosed);
+  assert.deepEqual(r.counts, [2, 2]);
+  assert.deepEqual(r.copySelected, [1, 1], 'the copy is the selection');
+  assert.ok(r.newIds);
+  assert.deepEqual(r.offset, [24, 24], 'a little down and to the right');
+  assert.equal(r.dragged, 150, 'the copy drags right away');
+  assert.ok(r.originalStays);
+  assert.equal(r.oneFile, 1, 'the copied picture shares its file');
+  assert.deepEqual(r.undone, [1, 1]);
+  assert.deepEqual(r.shortcut, [2, 2, true]);
+  assert.equal(r.letGo, null);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('paste works as the system does: a picture pastes a picture, text pastes a text box; text fields keep their paste', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async (make) => {

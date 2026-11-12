@@ -252,6 +252,9 @@ async function main() {
   setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     onChange: wordChanged,
+    // The copy is selected: the lasso drags it (a word's menu can be opened
+    // with a pen, which would let go of it).
+    onDuplicate: () => { if (settings.tool !== 'lasso') selectTool('lasso', { noToggle: true }); },
     requestFrame: () => input.requestFrame(),
     onFeedback: (word, info) => wordSharer.checked(word, info).catch(() => {}),
     // What the recogniser made of a word, for the word's menu.
@@ -1399,6 +1402,9 @@ async function main() {
       selectTool('eraser', { noToggle: true });
     } else if (!mod && e.key.toLowerCase() === 'l') {
       selectTool('lasso', { noToggle: true });
+    } else if (mod && e.key.toLowerCase() === 'd' && settings.tool === 'lasso') {
+      e.preventDefault(); // not the browser's bookmark shortcut
+      if (canvas.duplicate_selection()) { wordChanged(); input.requestFrame(); }
     } else if (!mod && (e.key === 'Delete' || e.key === 'Backspace') && settings.tool === 'lasso') {
       if (canvas.delete_selection()) input.requestFrame();
     } else if (e.key === 'Escape' && settings.tool === 'lasso') {
