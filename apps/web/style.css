@@ -188,6 +188,23 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 #note-list .open strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #note-list .open small { color: var(--muted); }
 #note-list .delete { color: var(--muted); padding: 10px; }
+.library-head { flex-wrap: wrap; row-gap: 2px; }
+.library-head .library-up { flex: 1 0 100%; text-align: left; padding: 4px 0; }
+.library-head .library-up[hidden] { display: none; }
+.library-head h2 { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-actions { display: flex; }
+.library-actions .text { padding: 6px; }
+#note-list .rename { color: var(--muted); padding: 10px 4px; }
+#note-list li.folder .open strong::before {
+  content: ''; display: inline-block; width: 18px; height: 14px; margin-right: 8px; vertical-align: -2px;
+  background: currentColor; opacity: 0.55;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 14'%3E%3Cpath d='M1 2a1 1 0 0 1 1-1h4.5l2 2H16a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 14'%3E%3Cpath d='M1 2a1 1 0 0 1 1-1h4.5l2 2H16a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+#note-list li.editing { padding: 6px; }
+#note-list .folder-name { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 8px 10px; border: 1px solid var(--chrome-border); border-radius: 8px; background: transparent; color: inherit; }
+#note-list .move { max-width: 64px; color: var(--muted); font: inherit; font-size: 14px; background: transparent; border: 0; padding: 10px 2px; appearance: none; -webkit-appearance: none; text-align: center; cursor: pointer; }
+#note-list li.empty { padding: 10px; color: var(--muted); }
 
 .hud { position: fixed; left: 12px; top: 70px; font: 12px ui-monospace, Menlo, monospace; background: rgba(0,0,0,.72); color: #fff; padding: 6px 8px; border-radius: 8px; pointer-events: none; white-space: pre; }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 12px; max-width: min(520px, calc(100vw - 32px)); box-shadow: var(--shadow); }

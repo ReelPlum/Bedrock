@@ -8,82 +8,45 @@
 // ZIP), so an index note can be rebuilt from any .bedrock file, including
 // ones written by the web app or edited on another device.
 
-import { readZip, text } from './zip.js';
+import { indexLayout, indexMarkdown, noteOfIndex, readNoteText, sidecarPath } from '../../web/src/sidecar.js';
+
+// The Markdown itself is made by a module shared with the web app, which
+// writes the same sidecars when it exports a library.
+export { indexLayout, indexMarkdown, noteOfIndex, readNoteText, sidecarPath };
 
 export const DEFAULT_INDEX_FOLDER = 'Bedrock index';
 
+const trimSlashes = (folder) => (folder || '').replace(/^\/+|\/+$/g, '');
+
 /** Where the index note of a .bedrock file lives. With no folder it sits
- *  beside the file as `Name.bedrock.md`. */
+ *  beside the file as `Name.bedrock.md` (a sidecar). */
 export function indexPath(notePath, folder = DEFAULT_INDEX_FOLDER) {
-  const f = (folder || '').replace(/^\/+|\/+$/g, '');
-  return f ? `${f}/${notePath.replace(/\.bedrock$/i, '')}.md` : `${notePath}.md`;
+  const f = trimSlashes(folder);
+  return f ? `${f}/${notePath.replace(/\.bedrock$/i, '')}.md` : sidecarPath(notePath);
 }
 
-/** Could this path be an index note (with this folder setting)? */
+/** Could this path be an index note (with this folder setting)? A sidecar
+ *  beside a note (`Name.bedrock.md`, as the web app exports them) always
+ *  counts, whatever the folder setting. */
 export function isIndexPath(path, folder = DEFAULT_INDEX_FOLDER) {
-  const f = (folder || '').replace(/^\/+|\/+$/g, '');
-  return f ? path.startsWith(`${f}/`) && path.endsWith('.md') : path.endsWith('.bedrock.md');
+  const f = trimSlashes(folder);
+  if (path.endsWith('.bedrock.md')) return true;
+  return !!f && path.startsWith(`${f}/`) && path.endsWith('.md');
 }
 
-/** The note an index note belongs to, from its front matter. */
-export function noteOfIndex(markdown) {
-  const m = /^---\n[\s\S]*?^bedrock: "((?:[^"\\]|\\.)*)"$[\s\S]*?^---$/m.exec(markdown);
-  return m ? JSON.parse(`"${m[1]}"`) : null;
-}
+/** The note a sidecar sits beside (`Name.bedrock.md` -> `Name.bedrock`). */
+export const noteBesideSidecar = (path) => (path.endsWith('.bedrock.md') ? path.slice(0, -3) : null);
 
-const escapeText = (s) => s.replace(/([[\]])/g, '\\$1');
-
-/** Recognised text, in reading order as saved, and the links as Markdown.
- *  `items` keeps each piece of text with the strokes it was read from, so
- *  a place in the index note can be traced back to ink. */
-export async function readNoteText(bytes) {
-  const files = await readZip(bytes, ['recognized.json', 'links.md']);
-  let items = [];
-  try {
-    const rec = JSON.parse(text(files.get('recognized.json')) || '{}');
-    items = (Array.isArray(rec.items) ? rec.items : [])
-      .map((i) => ({
-        text: typeof i?.text === 'string' ? i.text.trim() : '',
-        strokes: Array.isArray(i?.strokes) ? i.strokes.filter((s) => typeof s === 'string') : [],
-      }))
-      .filter((i) => i.text);
-  } catch (_) { /* damaged: no text */ }
-  const links = text(files.get('links.md')).split('\n').filter((l) => /^- /.test(l));
-  return { words: items.map((i) => i.text), items, links };
-}
-
-/** The index note's Markdown, and where each piece of text sits in it:
- *  `spans` are `{ start, end, strokes }` with offsets into `markdown`. */
-export function indexLayout(notePath, { words, items, links }) {
-  const name = notePath.split('/').pop().replace(/\.bedrock$/i, '');
-  const head = [
-    '---',
-    `bedrock: ${JSON.stringify(notePath)}`,
-    'tags: [bedrock]',
-    '---',
-    `> Handwritten note: [[${notePath}|${name}]]. This index is written by the Bedrock plugin from the handwriting; changes made here are replaced.`,
-    '',
-    '## Text',
-    '',
-    '',
-  ].join('\n');
-  const pieces = items || (words || []).map((t) => ({ text: t, strokes: [] }));
-  const spans = [];
-  let body = '';
-  for (const p of pieces) {
-    if (body) body += ' ';
-    const t = escapeText(p.text);
-    spans.push({ start: head.length + body.length, end: head.length + body.length + t.length, strokes: p.strokes || [] });
-    body += t;
-  }
-  const lines = [body || '_Nothing read yet._', ''];
-  if (links.length) lines.push('## Links', '', ...links, '');
-  return { markdown: head + lines.join('\n'), spans };
-}
-
-/** The index note's Markdown. */
-export function indexMarkdown(notePath, content) {
-  return indexLayout(notePath, content).markdown;
+/** The note an index note opens: a sidecar opens the note beside it
+ *  (whatever its front matter says, so a folder dropped in anywhere in the
+ *  vault works at once); an index note in the index folder opens the note
+ *  its front matter names. `exists(path)` says whether a note is there.
+ *  Null if neither is. */
+export function noteForIndex(path, markdown, exists) {
+  const beside = noteBesideSidecar(path);
+  if (beside && exists(beside)) return beside;
+  const named = noteOfIndex(markdown);
+  return named && exists(named) ? named : null;
 }
 
 /** The strokes of the text between two offsets of an index note (a search
@@ -145,7 +108,12 @@ export async function strokesForIndexPlace(notePath, noteBytes, markdown, eState
   return out;
 }
 
-/** Keeps index notes in step with the .bedrock files in a vault. */
+/** Keeps index notes in step with the .bedrock files in a vault.
+ *
+ *  A note's index note is its sidecar (`Name.bedrock.md` beside it) when
+ *  one exists, as in a folder exported from the web app, and otherwise the
+ *  note in the index folder setting. So a dropped-in library is used as it
+ *  is, with no second copy in the index folder. */
 export class Indexer {
   /** `vault` is Obsidian's Vault (or a stand-in with the same methods);
    *  `folder()` returns the index folder setting. */
@@ -154,12 +122,23 @@ export class Indexer {
     this.folder = folder;
   }
 
-  pathFor(notePath) { return indexPath(notePath, this.folder()); }
+  /** The index note's path: the sidecar if there is one, else the folder
+   *  setting's place. */
+  pathFor(notePath) {
+    const side = sidecarPath(notePath);
+    return this.vault.getAbstractFileByPath(side) ? side : indexPath(notePath, this.folder());
+  }
+
+  /** The index notes that exist for a note (its sidecar and its note in
+   *  the index folder). */
+  existing(notePath) {
+    const paths = [...new Set([sidecarPath(notePath), indexPath(notePath, this.folder())])];
+    return paths.map((p) => this.vault.getAbstractFileByPath(p)).filter((f) => f && !f.children);
+  }
 
   /** Write the index for a note's bytes. Returns true if it changed. */
-  async update(notePath, bytes) {
+  async update(notePath, bytes, path = this.pathFor(notePath)) {
     const md = indexMarkdown(notePath, await readNoteText(bytes));
-    const path = this.pathFor(notePath);
     const existing = this.vault.getAbstractFileByPath(path);
     if (existing) {
       if ((await this.vault.read(existing)) === md) return false;
@@ -182,24 +161,30 @@ export class Indexer {
     }
   }
 
+  /** A note was renamed or moved. A sidecar stays a sidecar: it moves
+   *  with the note (Obsidian has already moved it if its folder moved). */
   async rename(oldNotePath, newNotePath, bytes) {
-    const old = this.vault.getAbstractFileByPath(this.pathFor(oldNotePath));
-    if (old) await this.vault.delete(old);
-    await this.update(newNotePath, bytes);
+    let sidecar = !!this.vault.getAbstractFileByPath(sidecarPath(newNotePath));
+    for (const f of this.existing(oldNotePath)) {
+      if (f.path === sidecarPath(oldNotePath)) sidecar = true;
+      await this.vault.delete(f);
+    }
+    await this.update(newNotePath, bytes, sidecar ? sidecarPath(newNotePath) : indexPath(newNotePath, this.folder()));
   }
 
   async remove(notePath) {
-    const f = this.vault.getAbstractFileByPath(this.pathFor(notePath));
-    if (f) await this.vault.delete(f);
+    for (const f of this.existing(notePath)) await this.vault.delete(f);
   }
 
-  /** Index every .bedrock file whose index is missing or older. */
+  /** Index every .bedrock file whose index is missing, older than the
+   *  note, or names another path (a folder dropped in from the web app
+   *  somewhere other than the vault's root). */
   async sync() {
     let n = 0;
     for (const f of this.vault.getFiles()) {
       if (f.extension !== 'bedrock') continue;
       const idx = this.vault.getAbstractFileByPath(this.pathFor(f.path));
-      if (idx && idx.stat.mtime >= f.stat.mtime) continue;
+      if (idx && idx.stat.mtime >= f.stat.mtime && noteOfIndex(await this.vault.cachedRead(idx)) === f.path) continue;
       const bytes = await this.vault.readBinary(f);
       if (bytes.byteLength && (await this.update(f.path, bytes))) n++;
     }

@@ -26,8 +26,16 @@ browser) and every pen stroke as documented JSON (`note.json`). See
 - Tap the active tool again to jump back to the previous one (for example pen and eraser).
 - Dot, grid and line paper that stays fixed to the page, like printed paper.
 - Notes are saved on the device automatically within a second (IndexedDB) and reopen where you left off.
-- Save to iCloud Drive through the Files app / share sheet, open from iCloud Drive, export SVG,
-  export all notes as a ZIP. Automatic CloudKit sync is planned, see [docs/icloud.md](docs/icloud.md).
+- Folders in the notes list: make, nest, rename, delete, and move notes between them.
+  They are saved on the device with the notes.
+- Save to iCloud Drive through the Files app / share sheet, open from iCloud Drive, export SVG.
+  Automatic CloudKit sync is planned, see [docs/icloud.md](docs/icloud.md).
+- Export all notes as a ZIP that unzips to your folders, each note with a Markdown sidecar
+  (`Name.bedrock.md`) beside it: drag the folder into an Obsidian vault and search, links and
+  the graph work at once (with the Bedrock plugin, notes open as handwriting).
+
+Notes are kept in the browser's storage (IndexedDB), which the iPad's Files app cannot see.
+The export, or "Save to iCloud Drive / Files" for one note, is how notes leave the website.
 - Dots, grid, lines or plain paper. Works offline when installed to the home screen.
 
 ## Repository layout

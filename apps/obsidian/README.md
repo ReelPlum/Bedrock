@@ -17,6 +17,13 @@ icon or the "New handwritten note" command.
   off or move it beside each note as `Name.bedrock.md`. "Rebuild search index
   of handwritten notes" re-indexes notes edited elsewhere (this also runs at
   start-up).
+- **Notes from the website drop straight in.** The website's "Export all
+  notes" unzips to your folders with each note's index already beside it as
+  `Name.bedrock.md`. Drag that folder anywhere into the vault: a note with a
+  sidecar beside it uses that as its index note whatever the index folder
+  setting is (no second copy in `Bedrock index/`), the sidecar opens the
+  note beside it, moves with the note when it is renamed, and is fixed up
+  once if the folder was not dropped into the vault's root.
 - **Link to a word.** Hold a word and choose "Copy a link to here". Pasted
   into any note, the link (`[[Physics.bedrock#^9f2c4e1a7b3d5f60]]`) opens the
   handwriting at that word.
@@ -73,7 +80,8 @@ Nothing about places is saved. `recognized.json` already lists, for every
 piece of text, the strokes it was read from, and that is enough:
 
 1. The index note is one paragraph of the recognised words (so a phrase is
-   found as a phrase). `indexLayout` in `src/index-note.js` rebuilds it from
+   found as a phrase). `indexLayout` (in `apps/web/src/sidecar.js`, shared
+   with the website, re-exported by `src/index-note.js`) rebuilds it from
    the note file and knows which characters came from which strokes.
 2. Obsidian's search opens a result with `leaf.openFile(file, { eState: {
    match: { content, matches } } })`. The plugin wraps `openFile`: for an

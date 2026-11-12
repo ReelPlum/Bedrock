@@ -118,7 +118,7 @@
     <button role="menuitem" data-action="insert-image">Insert picture…</button>
     <button role="menuitem" data-action="paste">Paste</button>
     <a role="menuitem" class="menu-link" href="train/">Help train handwriting…</a>
-    <button role="menuitem" data-action="export-all">Export all notes (.zip)</button>
+    <button role="menuitem" data-action="export-all">Export all notes (.zip, opens in Obsidian)</button>
     <hr>
     <button role="menuitem" data-action="fit">Show all ink</button>
     <label class="row">Paper
@@ -211,8 +211,12 @@
 
   <aside class="library" id="library" hidden aria-label="Notes">
     <div class="library-head">
-      <h2>Notes</h2>
-      <button class="text" data-action="new">New</button>
+      <button class="text library-up" id="library-up" hidden>‹ Notes</button>
+      <h2 id="library-title">Notes</h2>
+      <div class="library-actions">
+        <button class="text" id="btn-new-folder" title="New folder">New folder</button>
+        <button class="text" data-action="new">New note</button>
+      </div>
     </div>
     <ul id="note-list"></ul>
   </aside>
