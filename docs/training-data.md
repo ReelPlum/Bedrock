@@ -35,7 +35,11 @@ on the device.
 ## How it is sent
 
 `apps/web/src/collect.js`. Samples wait in a queue in IndexedDB and are sent
-five at a time. A sample leaves the queue only when the server has stored
+once a minute, five per request (several requests back to back if more are
+waiting), and at once when the page is hidden or closed, when another note
+is opened, and when a page opens. Five per request keeps each request well
+inside the free plan's CPU limit; it can go up to the backend's 20 once
+that is measured on real Cloudflare. A sample leaves the queue only when the server has stored
 it or has refused it for good, so writing offline works and a lost
 connection loses nothing. The server address must be `https`.
 

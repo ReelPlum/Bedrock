@@ -57,6 +57,7 @@ try {
   await page.goto(`${app}train/handwriting/`);
   await page.waitForFunction(() => window.trainer?.ready);
   await installPointerHelpers(page);
+  await page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
   for (let i = 0; i < 3; i++) {
     await page.evaluate(async () => {
       const box = document.getElementById('stage').getBoundingClientRect();
@@ -69,6 +70,7 @@ try {
   await page.goto(`${app}train/scribble/`);
   await page.waitForFunction(() => window.trainer?.ready);
   await installPointerHelpers(page);
+  await page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
   await page.evaluate(async () => {
     const box = document.getElementById('stage').getBoundingClientRect();
     await t.line(box.left + 300, box.top + 200, box.left + 500, box.top + 220);
@@ -81,6 +83,7 @@ try {
   await page.goto(app);
   await page.waitForFunction(() => window.bedrock?.ready);
   await installPointerHelpers(page);
+  await page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
   const words = () => page.evaluate(() => JSON.parse(bedrock.canvas.words_json()));
   await page.evaluate(async () => {
     bedrock.handwriting.enabled = false;

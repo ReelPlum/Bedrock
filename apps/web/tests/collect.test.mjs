@@ -45,9 +45,12 @@ async function open(ctx, path, ready) {
   return { page, errors };
 }
 const openSetup = (ctx) => open(ctx, 'train/', () => window.setup?.ready);
-async function openTrainer(ctx, path = 'train/handwriting/') {
+/** Samples normally go up once a minute; most tests send at once. */
+const sendAtOnce = (page) => page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
+async function openTrainer(ctx, path = 'train/handwriting/', { wait = false } = {}) {
   const r = await open(ctx, path, () => window.trainer?.ready);
   await installPointerHelpers(r.page);
+  if (!wait) await sendAtOnce(r.page);
   return r;
 }
 
@@ -175,6 +178,30 @@ test('after consent a sample is queued, sent with the code, and taken off the qu
   await ctx.close();
 });
 
+test('samples wait for the next send, once a minute, or go at once when the page is hidden', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page } = await openTrainer(ctx, 'train/handwriting/', { wait: true });
+  await writeOne(page);
+  await writeOne(page);
+  await settle(page, () => /2 waiting to send/.test(document.getElementById('count').textContent));
+  await page.waitForTimeout(500);
+  assert.equal(server.requests.filter((r) => r.path === '/v1/samples').length, 0, 'not sent for every sample');
+  assert.equal(await page.evaluate(async () => (await import('/src/collect.js')).SEND_EVERY_MS), 60_000);
+
+  // The iPad may freeze a hidden page, so hiding it sends what is waiting.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 2);
+  const posts = server.requests.filter((r) => r.path === '/v1/samples');
+  assert.equal(posts.length, 1, 'both in one request');
+  assert.equal(posts[0].body.samples.length, 2);
+  await ctx.close();
+});
+
 test('with no connection samples wait on the device and are sent later, even after a reload', async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
@@ -191,6 +218,7 @@ test('with no connection samples wait on the device and are sent later, even aft
   server.answer = null;
   await page.reload();
   await page.waitForFunction(() => window.trainer?.ready);
+  await sendAtOnce(page);
   await settle(page, async () => { const st = await (await import('/src/collect.js')).status(); return st.waiting === 0 && st.sent === 2; });
   const sent = server.requests.filter((r) => r.path === '/v1/samples').at(-1).body.samples;
   assert.equal(sent.length, 2);
@@ -255,6 +283,7 @@ test('"Delete my contributions" asks the server to delete, empties the queue and
  *  reading as the recogniser would. */
 async function noteWithWord(ctx, reading = 'helo') {
   const { page, errors } = await openApp(env, { context: ctx });
+  await sendAtOnce(page);
   await page.evaluate(async (text) => {
     bedrock.handwriting.enabled = false; // no model downloads in tests
     const box = document.getElementById('stage').getBoundingClientRect();
@@ -363,6 +392,7 @@ const sentSamples = (server) => server.requests.filter((r) => r.path === '/v1/sa
 /** Turns "Send every word" on, then writes one word and gives it a reading. */
 async function newWordWithSettingOn(ctx, reading = 'helo') {
   const { page, errors } = await openApp(env, { context: ctx });
+  await sendAtOnce(page);
   await page.evaluate(() => { bedrock.handwriting.enabled = false; bedrock.wordSharer.settleMs = 0; document.getElementById('share-words').click(); });
   assert.equal(await page.evaluate(() => bedrock.settings.shareWords), true);
   await page.evaluate(async (text) => {

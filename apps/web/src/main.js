@@ -242,6 +242,8 @@ async function main() {
     reading: () => settings.recognize,
   });
   const shareWordsNow = (force = false) => wordSharer.scan({ force }).catch(() => {});
+  // Leaving a note or the app: what it held is sent now, not in a minute.
+  const shareWordsAndSend = () => shareWordsNow(true).then(() => { collect.flush().catch(() => {}); });
   setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     onChange: wordChanged,
@@ -412,7 +414,7 @@ async function main() {
 
   async function openNote(id) {
     if (saveTimer) await saveNow();
-    await shareWordsNow(true);
+    await shareWordsAndSend();
     const rec = store && (await store.get(id));
     if (!rec) return newNote();
     try {
@@ -432,7 +434,7 @@ async function main() {
 
   async function newNote() {
     if (saveTimer) await saveNow();
-    await shareWordsNow(true);
+    await shareWordsAndSend();
     canvas.new_document(...randomSeed());
     note = { id: newNoteId(), created: Date.now() };
     canvas.set_paper('dots');
@@ -1219,9 +1221,9 @@ async function main() {
   // Flush pending saves when the app is backgrounded or closed (iPad
   // suspends hidden tabs without warning).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsNow(true); }
+    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsAndSend(); }
   });
-  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsNow(true); });
+  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsAndSend(); });
 
   // ----- start ---------------------------------------------------------------------
   applyDock();

@@ -18,6 +18,11 @@ const DB_NAME = 'bedrock-collect';
 const STORE = 'queue';
 /** Small batches keep each request well inside the server's time limit. */
 export const BATCH = 5;
+/** Waiting samples are sent at most this often, so the device's radio and
+ *  the server are woken once a minute, not for every word. They are also
+ *  sent at once when the page is hidden or closed (an iPad may freeze a
+ *  hidden page before the minute is up), and when a page opens. */
+export const SEND_EVERY_MS = 60_000;
 const RETRY_MS = [15_000, 60_000, 300_000, 900_000];
 
 // ---- State ---------------------------------------------------------------
@@ -332,11 +337,28 @@ export function flush() {
   return flushing;
 }
 
-/** Keeps a sample and starts sending. Resolves when it is safely queued. */
+let sendEvery = SEND_EVERY_MS;
+let sendTimer = null;
+
+/** How often waiting samples are sent (tests make it short). */
+export function setSendInterval(ms) {
+  sendEvery = ms;
+}
+
+function sendSoon() {
+  if (sendTimer) return;
+  sendTimer = setTimeout(() => {
+    sendTimer = null;
+    flush().catch(() => {});
+  }, sendEvery);
+}
+
+/** Keeps a sample; it is sent with the next batch, within a minute.
+ *  Resolves when it is safely queued. */
 export async function enqueue(s) {
   await queue.put(s);
   await announce();
-  flush().catch(() => {});
+  sendSoon();
 }
 
 /** Deletes everything this contributor sent, and what is still waiting. */
@@ -385,4 +407,7 @@ export function problemText(problem) {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => { retries = 0; flush().catch(() => {}); });
+  // Hidden or closed: send now, before the page may be frozen.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush().catch(() => {}); });
+  window.addEventListener('pagehide', () => { flush().catch(() => {}); });
 }
