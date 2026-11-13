@@ -109,7 +109,7 @@ test('pressure changes the line width', async () => {
 test('pen pressure feel: soft draws light touches wider, is remembered, and redraws old ink', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
-    const size = document.getElementById('size');
+    const size = document.getElementById('pop-size');
     size.value = '20';
     size.dispatchEvent(new Event('input'));
     await t.line(200, 300, 700, 300, { pressure: 0.25 });
@@ -323,7 +323,7 @@ test('a big dot is a true circle, not a polygon', async () => {
   const radii = await page.evaluate(async () => {
     bedrock.canvas.set_paper('plain');
     document.querySelector('[data-brush="marker"]').click();
-    const sz = document.getElementById('size');
+    const sz = document.getElementById('pop-size');
     sz.value = 30;
     sz.dispatchEvent(new Event('input'));
     t.ev('pointerdown', 1, 'pen', 400, 300, { pressure: 0.6 });
@@ -385,11 +385,33 @@ test('tapping the active tool again jumps back to the previous tool', async () =
     steps.push(active());
     eraser.click(); // tap the active tool again
     steps.push(active());
-    document.querySelector('[data-brush="pen"]').click();
+    const hl = document.querySelector('[data-brush="highlighter"]');
+    hl.click();
+    steps.push(active());
+    hl.click();
     steps.push(active());
     return steps;
   });
-  assert.deepEqual(r, ['Pen', 'Eraser', 'Pen', 'Eraser']);
+  assert.deepEqual(r, ['Pen', 'Eraser', 'Pen', 'Highlighter', 'Pen']);
+  await ctx.close();
+});
+
+test('the pen family shares one slot; tapping the active pen shows them all', async () => {
+  const { page, ctx } = await openApp(env);
+  const shown = () => page.evaluate(() => [...document.querySelectorAll('.tool.fam')].filter((b) => b.offsetParent).map((b) => b.dataset.brush));
+  assert.deepEqual(await shown(), ['pen'], 'only the pen shows at first');
+  await page.click('[data-brush="pen"]'); // the active pen: the family opens
+  assert.deepEqual(await shown(), ['pen', 'pencil', 'fountain', 'marker']);
+  await page.click('[data-brush="fountain"]');
+  assert.deepEqual(await shown(), ['fountain'], 'picking one closes it, and that pen takes the slot');
+  await page.click('[data-tool="eraser"]');
+  assert.deepEqual(await shown(), ['fountain'], 'the slot keeps the last pen while another tool is active');
+  await page.click('[data-brush="fountain"]');
+  const r = await page.evaluate(() => ({
+    active: document.querySelector('.tool[aria-checked="true"]').dataset.brush,
+    family: JSON.parse(localStorage.getItem('bedrock.settings.v1')).family,
+  }));
+  assert.deepEqual(r, { active: 'fountain', family: 'fountain' });
   await ctx.close();
 });
 
@@ -409,14 +431,22 @@ test('tool settings: eraser mode lives in the settings of the eraser', async () 
   await ctx.close();
 });
 
-test('three size presets per brush; the slider edits the selected one', async () => {
+test('three size presets per brush; holding one opens the slider, which edits it', async () => {
   const { page, ctx } = await openApp(env);
+  const held = await page.evaluate(async () => {
+    const preset = document.querySelectorAll('#size-presets .preset')[2];
+    preset.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await new Promise((res) => setTimeout(res, 650));
+    preset.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    return { open: !document.getElementById('stroke-pop').hidden, slider: !!document.getElementById('size') };
+  });
+  assert.deepEqual(held, { open: true, slider: false }, 'the size slider lives in tool settings, not the toolbar');
   const r = await page.evaluate(() => {
     const presets = () => [...document.querySelectorAll('#size-presets .preset')];
     const n = presets().length;
     presets()[2].click();
     const picked = JSON.parse(localStorage.getItem('bedrock.settings.v1')).brushes.pen.size;
-    const slider = document.getElementById('size');
+    const slider = document.getElementById('pop-size');
     slider.value = 7.5;
     slider.dispatchEvent(new Event('input'));
     presets()[0].click();
@@ -560,22 +590,24 @@ test('bug: the + stays a circle when the toolbar is full', async () => {
   }
 });
 
-test('the toolbar can be docked to any edge and stays there', async () => {
+test('the toolbar can be docked to any edge, where it is let go, and stays there', async () => {
   const { page, ctx } = await openApp(env);
   const box = () => page.evaluate(() => {
     const r = document.getElementById('toolbar').getBoundingClientRect();
     return { x: r.x, y: r.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
   });
-  const bottom = await box();
-  assert.ok(bottom.y + bottom.h > bottom.vh - 30 && bottom.w > bottom.h);
-  // Drag the grip to the left edge.
+  const left = await box();
+  assert.ok(left.x < 30 && left.h > left.w, `starts on the left: ${JSON.stringify(left)}`);
+  // Drag the grip to the bottom edge, right of the middle.
   const grip = await page.locator('#dock-grip').boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
   await page.mouse.down();
-  await page.mouse.move(20, 380, { steps: 5 });
+  await page.mouse.move(700, 750, { steps: 5 });
   await page.mouse.up();
-  const left = await box();
-  assert.ok(left.x < 30 && left.h > left.w, `docked left: ${JSON.stringify(left)}`);
+  const bottom = await box();
+  assert.ok(bottom.y + bottom.h > bottom.vh - 30 && bottom.w > bottom.h, `docked at the bottom: ${JSON.stringify(bottom)}`);
+  const mid = bottom.x + bottom.w / 2;
+  assert.ok(Math.abs(mid - 700) < 2 || bottom.x + bottom.w >= bottom.vw - 11, `where it was let go: ${mid}`);
   await page.evaluate(() => { const d = document.getElementById('dock'); d.value = 'right'; d.dispatchEvent(new Event('change')); });
   const right = await box();
   assert.ok(right.x + right.w > right.vw - 30 && right.h > right.w);
@@ -2533,5 +2565,123 @@ test('holding a stroke lifts it: it grows around its middle and casts a shadow; 
   assert.ok(r.inkBack && !r.filterBack, 'closing the menu puts it back');
   assert.ok(Math.abs((r.back[1] - r.back[0]) - (r.before[1] - r.before[0])) < 1, `back at its own size: ${r.back}`);
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ----- layout: the toolbar and the minimap go where the hands are ---------------
+
+const boxOf = (page, sel) => page.evaluate((s) => {
+  const r = document.querySelector(s).getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+}, sel);
+
+test('the toolbar starts on the side away from the writing hand, with the title and minimap on the other side', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  await ctx.addInitScript(() => localStorage.setItem('bedrock.collect.v1', JSON.stringify({ handedness: 'left' })));
+  const { page } = await openApp(env, { context: ctx });
+  const bar = await boxOf(page, '#toolbar');
+  const title = await boxOf(page, '#topbar');
+  const map = await boxOf(page, '#minimap');
+  assert.ok(bar.x + bar.w > bar.vw - 30 && bar.h > bar.w, `toolbar on the right for a left hand: ${JSON.stringify(bar)}`);
+  assert.ok(title.x < 30, `title on the left: ${JSON.stringify(title)}`);
+  assert.ok(map.x < 30 && map.y > title.y + title.h, `minimap on the left, under the title: ${JSON.stringify(map)}`);
+  await ctx.close();
+});
+
+test('the minimap moves when dragged by the strip under it, stays there, and steps aside from the toolbar; dragging the map moves the camera', async () => {
+  const { page, ctx } = await openApp(env);
+  const camera = () => page.evaluate(() => Array.from(bedrock.canvas.camera()));
+  const drag = async (sel, x, y) => {
+    const b = await page.locator(sel).boundingBox();
+    await page.mouse.move(b.x + 30, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 6 });
+    await page.mouse.up();
+  };
+  const start = await boxOf(page, '#minimap');
+  assert.ok(start.x + start.w > start.vw - 30, `starts on the right, away from the toolbar: ${JSON.stringify(start)}`);
+  // The strip: the minimap moves, the camera does not. Let go near the bottom edge.
+  const cam = await camera();
+  await drag('#minimap .minimap-bar', 530, 740);
+  const moved = await boxOf(page, '#minimap');
+  assert.ok(Math.abs(moved.y + moved.h - (moved.vh - 10)) < 2, `against the bottom edge: ${JSON.stringify(moved)}`);
+  assert.ok(Math.abs(moved.x - 500) < 4, `where it was let go: ${moved.x}`);
+  assert.deepEqual(await camera(), cam, 'dragging the strip does not move the camera');
+  // A short tap on Fit is still a tap on Fit, and does not move the minimap.
+  await page.click('#btn-fit');
+  assert.deepEqual(await boxOf(page, '#minimap'), moved);
+  // The map: the camera moves, the minimap does not.
+  const before = await camera();
+  await drag('#minimap canvas', 600, 700);
+  assert.notDeepEqual(await camera(), before, 'dragging the map moves the camera');
+  assert.deepEqual(await boxOf(page, '#minimap'), moved);
+  // Remembered.
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock && window.bedrock.ready);
+  assert.deepEqual(await boxOf(page, '#minimap'), moved, 'its place is remembered');
+  // Dropped on the toolbar (left edge): it lands beside it instead.
+  await drag('#minimap .minimap-bar', 40, 380);
+  const bar = await boxOf(page, '#toolbar');
+  const aside = await boxOf(page, '#minimap');
+  assert.ok(aside.x >= bar.x + bar.w, `beside the toolbar, not on it: ${JSON.stringify({ bar, aside })}`);
+  // Reset puts it back.
+  await page.evaluate(() => document.querySelector('[data-action="reset-layout"]').click());
+  const reset = await boxOf(page, '#minimap');
+  assert.ok(Math.abs(reset.x - start.x) < 1 && Math.abs(reset.y - start.y) < 1, `back where it started: ${JSON.stringify(reset)}`);
+  await ctx.close();
+});
+
+test('the toolbar and minimap keep separate places for portrait and landscape', async () => {
+  const { page, ctx } = await openApp(env);
+  const dragGrip = async (x, y) => {
+    const g = await page.locator('#dock-grip').boundingBox();
+    await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.up();
+  };
+  await dragGrip(1015, 300); // landscape: the right edge
+  assert.equal(await page.getAttribute('#toolbar', 'data-dock'), 'right');
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.waitForTimeout(100);
+  assert.equal(await page.getAttribute('#toolbar', 'data-dock'), 'left', 'portrait starts from the default');
+  await dragGrip(400, 1015); // portrait: the bottom edge
+  assert.equal(await page.getAttribute('#toolbar', 'data-dock'), 'bottom');
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.waitForTimeout(100);
+  assert.equal(await page.getAttribute('#toolbar', 'data-dock'), 'right', 'landscape keeps its own place');
+  await ctx.close();
+});
+
+test('a palm on the toolbar while the Pencil is on the glass does nothing', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const eraser = document.querySelector('[data-tool="eraser"]').getBoundingClientRect();
+    const hit = () => document.elementFromPoint(eraser.x + eraser.width / 2, eraser.y + eraser.height / 2)?.closest('[data-tool]')?.dataset.tool || null;
+    const idle = hit();
+    t.ev('pointerdown', 1, 'pen', 500, 400);
+    t.ev('pointermove', 1, 'pen', 520, 410);
+    const writing = hit();
+    t.ev('pointerup', 1, 'pen', 520, 410);
+    const justLifted = hit();
+    await new Promise((res) => setTimeout(res, 500));
+    return { idle, writing, justLifted, later: hit() };
+  });
+  assert.deepEqual(r, { idle: 'eraser', writing: null, justLifted: null, later: 'eraser' });
+  await ctx.close();
+});
+
+test('the minimap fades back while the view is still and comes back when it moves', async () => {
+  const { page, ctx } = await openApp(env);
+  await page.waitForTimeout(3300);
+  const resting = await page.evaluate(() => document.getElementById('minimap').classList.contains('resting'));
+  const r = await page.evaluate(async () => {
+    bedrock.canvas.center_on(400, 300);
+    bedrock.input.requestFrame();
+    await t.frame();
+    return document.getElementById('minimap').classList.contains('resting');
+  });
+  assert.equal(resting, true, 'faded after a few seconds');
+  assert.equal(r, false, 'back as soon as the view moves');
   await ctx.close();
 });

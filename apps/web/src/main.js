@@ -1,6 +1,7 @@
 import init, { Canvas, ZipBuilder, peek_title, import_pdf } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
+import { DOCKS, defaultLayout, loadLayouts, mapRect, orientationOf, placeAlong, snapDock, snapMap, stepAside } from './layout.js';
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
@@ -29,8 +30,11 @@ const DEFAULT_BRUSHES = {
   marker: { color: '#2f6bff', size: 6, presets: [3, 6, 12], preset: 1 },
   highlighter: { color: '#ffe14d', size: 6, presets: [4, 6, 10], preset: 1 },
 };
-const DOCKS = ['bottom', 'top', 'left', 'right'];
+// The pen family shares one toolbar slot; tapping the active one shows them all.
+const FAMILY = ['pen', 'pencil', 'fountain', 'marker'];
 const SETTINGS_KEY = 'bedrock.settings.v1';
+const MINIMAP_REST_MS = 3000; // the minimap fades back after this long without the view moving
+const PALM_GRACE_MS = 400; // the chrome ignores touches until this long after the Pencil lifts
 const AUTOSAVE_MS = 400; // research target: every stroke saved locally within a second
 
 // Pen feel: what each brush does when its tuning is left at "usual"
@@ -73,7 +77,13 @@ function loadSettings() {
       ink: Array.isArray(s.palettes?.ink) && s.palettes.ink.length ? s.palettes.ink : [...PALETTES.ink],
       highlighter: Array.isArray(s.palettes?.highlighter) && s.palettes.highlighter.length ? s.palettes.highlighter : [...PALETTES.highlighter],
     },
-    dock: DOCKS.includes(s.dock) ? s.dock : 'bottom',
+    // Where the toolbar and minimap sit, per orientation (layout.js). `dock`
+    // mirrors the current orientation's edge, as settings saved before
+    // layouts existed had it.
+    layouts: loadLayouts(s, collect.loadState().handedness),
+    dock: DOCKS.includes(s.dock) ? s.dock : defaultLayout(collect.loadState().handedness).dock,
+    // The pen-family member shown in its slot when another tool is active.
+    family: FAMILY.includes(s.family) ? s.family : 'pen',
     prevTool: s.prevTool || null,
     fingerDraw: !!s.fingerDraw,
     showLatency: !!s.showLatency,
@@ -221,6 +231,7 @@ async function main() {
       const inkOnly = canvas.is_drawing() && rev === lastRevision && view === lastView;
       frameStats[inkOnly ? 'inkOnly' : 'full']++;
       if (!inkOnly) {
+        if (view !== lastView) wakeMinimap();
         lastView = view;
         pictures?.update();
         minimap?.update();
@@ -786,10 +797,37 @@ async function main() {
     return settings.tool === 'draw' ? settings.brush : settings.tool;
   }
 
+  const toolbar = $('toolbar');
+  /** Shows every pen of the family in place of the one slot. */
+  function setFamilyOpen(open) {
+    toolbar.classList.toggle('family-open', open);
+    for (const btn of toolButtons) if (FAMILY.includes(btn.dataset.brush)) btn.setAttribute('aria-expanded', String(open));
+    applyDock(); // it grew or shrank: keep it on screen
+  }
+  document.addEventListener('pointerdown', (e) => {
+    if (toolbar.classList.contains('family-open') && !e.target.closest?.('.tool.fam')) setFamilyOpen(false);
+  }, true);
+
+  function wakeMinimap() {
+    const el = $('minimap');
+    el.classList.remove('resting');
+    clearTimeout(wakeMinimap.timer);
+    wakeMinimap.timer = setTimeout(() => el.classList.add('resting'), MINIMAP_REST_MS);
+  }
+
   /** Select a brush or the eraser. Tapping the tool that is already active
-   * jumps back to the previous one (e.g. pen -> eraser -> tap -> pen). */
+   * jumps back to the previous one (e.g. pen -> eraser -> tap -> pen),
+   * except for the pen family, whose active pen shows the whole family. */
   function selectTool(name, { noToggle = false } = {}) {
     const cur = currentTool();
+    const familyOpen = toolbar.classList.contains('family-open');
+    setFamilyOpen(false);
+    // The active pen in the family slot shows the whole family instead.
+    if (name === cur && FAMILY.includes(name) && !noToggle && !familyOpen) {
+      setFamilyOpen(true);
+      return;
+    }
+    if (name === cur && familyOpen) return;
     if (name === cur) {
       if (noToggle || !settings.prevTool || settings.prevTool === cur) return;
       name = settings.prevTool;
@@ -800,6 +838,7 @@ async function main() {
     } else {
       settings.tool = 'draw';
       settings.brush = name;
+      if (FAMILY.includes(name)) settings.family = name;
     }
     setColorEditing(false);
     saveSettings();
@@ -895,18 +934,24 @@ async function main() {
       btn.className = 'preset';
       btn.setAttribute('role', 'radio');
       btn.setAttribute('aria-label', `Size preset ${i + 1}: ${v}`);
-      btn.title = `Size ${v} (select, then use the slider to change it)`;
+      btn.title = `Size ${v} (hold to change it)`;
       btn.setAttribute('aria-checked', String(b.preset === i));
       const dot = document.createElement('span');
       const d = 5 + (13 * v) / max;
       dot.style.width = dot.style.height = `${d}px`;
       dot.style.setProperty('--c', b.color);
       btn.append(dot);
-      btn.onclick = () => {
+      const pickIt = () => {
         b.preset = i;
         b.size = v;
         saveSettings();
         applyTool();
+      };
+      // Hold a size to change it: it is picked and the size slider opens.
+      onLongPress(btn, () => { pickIt(); setStrokePop(true); });
+      btn.onclick = () => {
+        if (btn.dataset.longPressed) { delete btn.dataset.longPressed; return; }
+        pickIt();
       };
       return btn;
     }));
@@ -925,23 +970,72 @@ async function main() {
     applyTool();
   }
 
-  // ----- dock: the toolbar can sit on any edge ----------------------------------
-  const toolbar = $('toolbar');
+  // ----- layout: the toolbar and the minimap can be moved anywhere (layout.js) ---
+  const topbar = $('topbar');
+  const minimapEl = $('minimap');
+  const edge = () => 10; // px kept clear of the screen's edges
+  const orientation = () => orientationOf(window.innerWidth, window.innerHeight);
+  const layout = () => settings.layouts[orientation()];
+  const rectOf = (el) => {
+    if (!el || el.hidden) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  };
   function applyDock() {
-    toolbar.dataset.dock = settings.dock;
-    $('stroke-pop').dataset.dock = settings.dock;
-    $('dock').value = settings.dock;
+    const l = layout();
+    settings.dock = l.dock;
+    document.body.dataset.dock = l.dock;
+    toolbar.dataset.dock = l.dock;
+    $('stroke-pop').dataset.dock = l.dock;
+    $('dock').value = l.dock;
+    // Along its edge, the toolbar sits where it was let go.
+    toolbar.style.left = toolbar.style.top = toolbar.style.transform = '';
+    const r = toolbar.getBoundingClientRect();
+    const side = l.dock === 'left' || l.dock === 'right';
+    if (side) {
+      const top = placeAlong(l.dockAt, window.innerHeight, r.height, edge());
+      toolbar.style.top = `${top}px`;
+      toolbar.style.transform = 'none';
+    } else {
+      const left = placeAlong(l.dockAt, window.innerWidth, r.width, edge());
+      toolbar.style.left = `${left}px`;
+      toolbar.style.transform = 'none';
+    }
+    placeMinimap();
   }
-  function setDock(d) {
+  /** The minimap: where it was put, or under the title on the side away
+   *  from the toolbar; never on top of the toolbar or the title. */
+  function placeMinimap() {
+    if (minimapEl.hidden) return;
+    const W = window.innerWidth, H = window.innerHeight, m = edge();
+    const w = minimapEl.offsetWidth, h = minimapEl.offsetHeight;
+    const l = layout();
+    const bar = rectOf(topbar);
+    let r;
+    if (l.map) r = mapRect(l.map, W, H, w, h, m);
+    else {
+      const left = l.dock === 'right';
+      r = { x: left ? m : W - m - w, y: bar ? bar.y + bar.h + 8 : m, w, h };
+    }
+    r = stepAside(r, [rectOf(toolbar), bar], W, H, m);
+    minimapEl.style.left = `${r.x}px`;
+    minimapEl.style.top = `${r.y}px`;
+  }
+  function setDock(d, at = 0.5) {
     if (!DOCKS.includes(d)) return;
-    settings.dock = d;
+    Object.assign(layout(), { dock: d, dockAt: at });
     saveSettings();
     applyDock();
   }
+  window.addEventListener('resize', applyDock);
   {
+    // Drag the toolbar by its grip: it lands on the nearest edge, where it
+    // was let go. Fingers and the mouse move it; the Pencil does not, so
+    // writing near the grip can't drag it.
     const grip = $('dock-grip');
     let dragging = false;
     grip.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'pen') return;
       dragging = true;
       grip.setPointerCapture(e.pointerId);
       toolbar.classList.add('dragging');
@@ -957,15 +1051,78 @@ async function main() {
       if (!dragging) return;
       dragging = false;
       toolbar.classList.remove('dragging');
-      // Snap to the nearest edge.
-      const w = window.innerWidth, h = window.innerHeight;
-      const d = { left: e.clientX / w, right: 1 - e.clientX / w, top: e.clientY / h, bottom: 1 - e.clientY / h };
-      setDock(Object.entries(d).sort((a, b) => a[1] - b[1])[0][0]);
+      const { dock, dockAt } = snapDock(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
+      setDock(dock, dockAt);
     };
     grip.addEventListener('pointerup', drop);
-    grip.addEventListener('pointercancel', (e) => { dragging = false; toolbar.classList.remove('dragging'); });
+    grip.addEventListener('pointercancel', () => { dragging = false; toolbar.classList.remove('dragging'); });
+  }
+  {
+    // Drag the minimap by the strip under the map (dragging the map itself
+    // moves the camera). A short tap still reaches Fit.
+    const strip = minimapEl.querySelector('.minimap-bar');
+    let drag = null;
+    let noClickUntil = 0;
+    minimapEl.addEventListener('click', (c) => {
+      if (performance.now() < noClickUntil) { c.stopPropagation(); c.preventDefault(); }
+    }, true);
+    const move = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.moving && Math.hypot(dx, dy) < 6) return;
+      drag.moving = true;
+      minimapEl.classList.add('dragging');
+      minimapEl.style.left = `${drag.left + dx}px`;
+      minimapEl.style.top = `${drag.top + dy}px`;
+    };
+    const up = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      const moved = drag.moving;
+      drag = null;
+      minimapEl.classList.remove('dragging');
+      if (!moved) return;
+      const r = rectOf(minimapEl);
+      layout().map = snapMap(r, window.innerWidth, window.innerHeight, edge());
+      saveSettings();
+      placeMinimap();
+      noClickUntil = performance.now() + 400; // the click that ends a drag is not a tap on Fit
+    };
+    strip.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'pen') return;
+      const r = minimapEl.getBoundingClientRect();
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: r.left, top: r.top, moving: false };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);
+    });
   }
   $('dock').addEventListener('change', (e) => setDock(e.target.value));
+
+  // The minimap fades back while the view stays still, and comes back as
+  // soon as the view moves or a finger reaches for it.
+  for (const t of ['pointerenter', 'pointerdown']) minimapEl.addEventListener(t, wakeMinimap);
+
+  // A palm resting on the screen while the Pencil writes can't press the
+  // toolbar, the title bar or the minimap: they ignore touches until a
+  // moment after the Pencil lifts.
+  {
+    let lifted = 0;
+    window.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'pen' || !stage.contains(e.target)) return;
+      clearTimeout(lifted);
+      document.body.classList.add('pen-down');
+    }, true);
+    const lift = (e) => {
+      if (e.pointerType !== 'pen') return;
+      clearTimeout(lifted);
+      lifted = setTimeout(() => document.body.classList.remove('pen-down'), PALM_GRACE_MS);
+    };
+    window.addEventListener('pointerup', lift, true);
+    window.addEventListener('pointercancel', lift, true);
+  }
 
   function applyTool() {
     const erasing = settings.tool === 'eraser';
@@ -976,10 +1133,12 @@ async function main() {
     canvas.set_brush_style(b.style || 'solid', (b.stabilizer || 0) / 100);
     canvas.set_brush_tuning(...TUNE_KEYS.map((t) => (b.tune[t] == null ? -1 : b.tune[t] / 100)));
     canvas.set_eraser_size(settings.eraserSize);
+    const front = FAMILY.includes(settings.brush) ? settings.brush : settings.family;
     for (const btn of toolButtons) {
       const on = settings.tool === 'draw' ? btn.dataset.brush === settings.brush : btn.dataset.tool === settings.tool;
       btn.setAttribute('aria-checked', String(on));
       btn.setAttribute('role', 'radio');
+      if (FAMILY.includes(btn.dataset.brush)) btn.classList.toggle('front', btn.dataset.brush === front);
     }
     $('eraser-mode').textContent = { 'erase-stroke': 'S', 'erase-partial': 'P', 'erase-trim': 'T' }[settings.eraserMode] || 'S';
     const palette = currentPalette();
@@ -1012,14 +1171,8 @@ async function main() {
     $('color-add').hidden = erasing;
     renderPresets(erasing, b);
     $('color-input').value = b.color.slice(0, 7);
-    const size = erasing ? settings.eraserSize : b.size;
-    const slider = $('size');
-    if (erasing) { slider.min = 4; slider.max = 80; slider.step = 1; } else { slider.min = 0.5; slider.max = 30; slider.step = 0.5; }
-    slider.value = size;
-    const dot = $('size-dot');
-    dot.style.setProperty('--d', `${Math.max(3, Math.min(22, size))}px`);
-    dot.style.setProperty('--c', erasing ? '#bbb' : b.color);
     renderStrokePop();
+    applyDock(); // its length changes with the tool: keep it on screen
   }
 
   // ----- line style + stabiliser popover (per brush) ---------------------------
@@ -1105,7 +1258,6 @@ async function main() {
     const name = btn.dataset.tool || btn.dataset.brush;
     btn.addEventListener('click', () => selectTool(name));
   }
-  $('size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
   $('pop-size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
 
   function updateUndo() {
@@ -1226,6 +1378,11 @@ async function main() {
       await saveFile(zip.finish(), `Bedrock notes ${date}.zip`, 'application/zip');
     },
     fit: () => { canvas.fit_content(); input.requestFrame(); saveCamera(); },
+    'reset-layout': () => {
+      settings.layouts = loadLayouts({}, collect.loadState().handedness);
+      saveSettings();
+      applyDock();
+    },
     report: () => window.bedrockErrors?.open({ stage: 'running' }),
   };
   document.querySelectorAll('[data-action]').forEach((el) => {
@@ -1456,6 +1613,7 @@ async function main() {
   $('show-minimap').addEventListener('change', (e) => {
     settings.showMinimap = e.target.checked;
     minimap.visible = settings.showMinimap;
+    placeMinimap();
     saveSettings();
   });
   $('show-latency').checked = settings.showLatency;
