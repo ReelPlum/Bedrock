@@ -96,3 +96,6 @@ must take under 8 ms (half a frame), so pen-to-pixel time stays under the
 ~40 ms people notice.
 
 Project rule: when a bug is found, add a test that reproduces it first.
+
+Project rule: before building something, look for proven open source that
+already does it. See [docs/open-source-first.md](docs/open-source-first.md).
