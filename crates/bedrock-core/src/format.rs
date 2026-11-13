@@ -17,8 +17,11 @@ use crate::document::{Document, RecognizedText};
 use crate::input::InputPoint;
 use crate::stroke::{InputDevice, Stroke, StrokeId};
 use crate::tessellate;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::fmt;
 
@@ -510,28 +513,37 @@ pub fn image_mime(file: &str) -> &'static str {
 }
 
 fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        for k in 0..4 {
-            if k <= c.len() {
-                out.push(T[(n >> (18 - 6 * k) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// An SVG file read as XML, or None if it is not well formed (cut short,
+/// say). DTDs are allowed, as some drawing programs write one.
+fn parse_svg(svg: &str) -> Option<roxmltree::Document<'_>> {
+    let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    roxmltree::Document::parse_with_options(svg, options).ok()
 }
 
 /// Extract the JSON payload from a Bedrock SVG.
-pub fn extract_json(svg: &str) -> Option<&str> {
+pub fn extract_json(svg: &str) -> Option<Cow<'_, str>> {
+    json_in(parse_svg(svg).as_ref(), svg)
+}
+
+/// The note JSON in `<metadata id="bedrock-note">`. Read as XML, so a file
+/// another program re-saved (other quotes, attribute order, escaped text in
+/// place of CDATA) still opens; read as plain text when the file is not
+/// well formed XML, so one cut short still gives its note, which comes
+/// first.
+fn json_in<'a>(xml: Option<&roxmltree::Document<'_>>, svg: &'a str) -> Option<Cow<'a, str>> {
+    if let Some(xml) = xml {
+        let meta = xml.descendants().find(|n| n.has_tag_name("metadata") && n.attribute("id") == Some(FORMAT_NAME))?;
+        let text: String = meta.children().filter_map(|c| c.text()).collect();
+        return Some(Cow::Owned(text.trim().to_string()));
+    }
     let start = svg.find(METADATA_OPEN)? + METADATA_OPEN.len();
     let rest = svg[start..].trim_start();
     let rest = rest.strip_prefix("<![CDATA[")?;
     let end = rest.find("]]>")?;
-    Some(&rest[..end])
+    Some(Cow::Borrowed(&rest[..end]))
 }
 
 /// Load either a Bedrock SVG or bare note JSON.
@@ -540,15 +552,17 @@ pub fn load(text: &str, seed: u64) -> Result<Loaded, FormatError> {
     if t.starts_with('{') {
         from_json(t, seed)
     } else {
-        let mut loaded = from_json(extract_json(t).ok_or(FormatError::NotABedrockNote)?, seed)?;
-        pictures_from_svg(t, &mut loaded);
+        let xml = parse_svg(t);
+        let json = json_in(xml.as_ref(), t).ok_or(FormatError::NotABedrockNote)?;
+        let mut loaded = from_json(&json, seed)?;
+        pictures_from_svg(xml.as_ref(), t, &mut loaded);
         Ok(loaded)
     }
 }
 
 /// The SVG export embeds each picture's file in its `<image>` as a
 /// `data:` URL; give those files back so a re-saved note keeps them.
-fn pictures_from_svg(svg: &str, loaded: &mut Loaded) {
+fn pictures_from_svg(xml: Option<&roxmltree::Document<'_>>, svg: &str, loaded: &mut Loaded) {
     let wanted: Vec<(StrokeId, String)> = loaded
         .doc
         .images()
@@ -556,11 +570,29 @@ fn pictures_from_svg(svg: &str, loaded: &mut Loaded) {
         .filter(|i| i.text.is_none() && !i.file.is_empty() && !loaded.doc.assets.contains_key(&i.file))
         .map(|i| (i.id, i.file.clone()))
         .collect();
+    if wanted.is_empty() {
+        return;
+    }
+    // `href` or `xlink:href`, by the picture's id.
+    let hrefs: HashMap<&str, &str> = match xml {
+        Some(xml) => xml
+            .descendants()
+            .filter(|n| n.has_tag_name("image"))
+            .filter_map(|n| Some((n.attribute("id")?, n.attributes().find(|a| a.name() == "href")?.value())))
+            .collect(),
+        None => HashMap::new(),
+    };
     for (id, file) in wanted {
-        let Some(at) = svg.find(&format!("<image id=\"i{id}\"")) else { continue };
-        let tag = &svg[at..at + svg[at..].find('>').unwrap_or(svg.len() - at)];
-        let Some(data) = tag.split("href=\"data:").nth(1).and_then(|h| h.split('"').next()) else { continue };
-        match data.split_once(";base64,").and_then(|(_, b)| unbase64(b)) {
+        let key = format!("i{id}");
+        let href = match xml {
+            Some(_) => hrefs.get(key.as_str()).copied(),
+            None => svg.find(&format!("<image id=\"{key}\"")).and_then(|at| {
+                let tag = &svg[at..at + svg[at..].find('>').unwrap_or(svg.len() - at)];
+                tag.split("href=\"").nth(1).and_then(|h| h.split('"').next())
+            }),
+        };
+        let Some(data) = href.and_then(|h| h.strip_prefix("data:")) else { continue };
+        match data.split_once(";base64,").and_then(|(_, b)| unbase64(b.trim())) {
             Some(bytes) => {
                 loaded.doc.assets.insert(file, bytes);
             }
@@ -569,30 +601,11 @@ fn pictures_from_svg(svg: &str, loaded: &mut Loaded) {
     }
 }
 
+/// Standard base64, with or without its `=` padding (other tools that
+/// re-save an SVG do not always keep it).
 fn unbase64(text: &str) -> Option<Vec<u8>> {
-    let value = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let digits = text.trim_end_matches('=').as_bytes();
-    if digits.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
-    for chunk in digits.chunks(4) {
-        let mut n = 0u32;
-        for (k, &c) in chunk.iter().enumerate() {
-            n |= value(c)? << (18 - 6 * k);
-        }
-        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
-    }
-    Some(out)
+    use base64::engine::general_purpose::STANDARD_NO_PAD;
+    STANDARD_NO_PAD.decode(text.trim_end_matches('=')).ok()
 }
 
 // ----- .bedrock container ---------------------------------------------------
@@ -685,7 +698,7 @@ pub fn load_bytes(bytes: &[u8], seed: u64) -> Result<Loaded, FormatError> {
             // note.json is damaged: fall back to the data embedded in an SVG, if any.
             let svg = find(PREVIEW_SVG).map(|d| String::from_utf8_lossy(d).into_owned());
             match svg.as_deref().and_then(extract_json) {
-                Some(j) => from_json(j, seed)?,
+                Some(j) => from_json(&j, seed)?,
                 None => {
                     return Err(FormatError::Invalid(format!(
                         "note.json is missing or damaged ({})",
@@ -811,7 +824,7 @@ mod tests {
         let svg = to_svg(&d);
         let json = extract_json(&svg).unwrap();
         assert!(!json.contains("]]>"));
-        assert_eq!(from_json(json, 0).unwrap().doc.title, d.title);
+        assert_eq!(from_json(&json, 0).unwrap().doc.title, d.title);
     }
 
     #[test]
@@ -916,37 +929,37 @@ mod tests {
         assert_eq!(load_bytes(to_json(&d).as_bytes(), 0).unwrap().doc.len(), d.len());
     }
 
-    /// Fuzz-style robustness: flipping or truncating bytes anywhere in a
-    /// saved note must never panic; it either loads (maybe with warnings) or
-    /// returns an error.
+    /// Fuzz-style robustness: flipping, cutting or adding bytes anywhere in
+    /// a saved note must never panic; it either loads (maybe with warnings)
+    /// or returns an error. `proptest` picks the damage, several changes at
+    /// a time, and shrinks a failure to the smallest damage that causes it.
     #[test]
     fn corrupted_files_never_panic() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, TestRunner};
         let d = sample_doc();
         let inputs = [to_bedrock(&d), to_svg(&d).into_bytes(), to_json(&d).into_bytes()];
-        let mut state = 0x1234_5678u64;
-        let mut rnd = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for original in &inputs {
-            for _ in 0..300 {
-                let mut b = original.clone();
-                match rnd() % 3 {
-                    0 => {
-                        let i = (rnd() as usize) % b.len();
-                        b[i] ^= (rnd() % 255 + 1) as u8;
+        // (which change, where as a share of the file, the byte to use)
+        let damage = prop::collection::vec((0..3u8, 0.0f64..1.0, any::<u8>()), 1..4);
+        let mut runner = TestRunner::new(Config { cases: 400, failure_persistence: None, ..Config::default() });
+        runner
+            .run(&(0..inputs.len(), damage), |(which, damage)| {
+                let mut b = inputs[which].clone();
+                for (kind, at, byte) in damage {
+                    if b.is_empty() {
+                        break;
                     }
-                    1 => b.truncate((rnd() as usize) % b.len()),
-                    _ => {
-                        let i = (rnd() as usize) % b.len();
-                        b.insert(i, rnd() as u8);
+                    let i = ((at * b.len() as f64) as usize).min(b.len() - 1);
+                    match kind {
+                        0 => b[i] ^= byte.max(1),
+                        1 => b.truncate(i),
+                        _ => b.insert(i, byte),
                     }
                 }
                 let _ = load_bytes(&b, 0);
-            }
-        }
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// Regression: saving a note that was just opened must not change it
@@ -1052,6 +1065,40 @@ mod tests {
         assert!(!l.doc.assets.contains_key("images/abc.png"));
         assert_eq!(l.doc.assets.get("images/def.jpg"), Some(&jpg));
         assert!(l.warnings.iter().any(|w| w.contains("images/abc.png")), "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn an_svg_resaved_by_another_tool_still_opens() {
+        // Drawing programs that re-save an SVG keep its content but not its
+        // spelling: quotes, attribute order, line breaks, CDATA written out
+        // as escaped text, and `xlink:href` for pictures.
+        let mut d = sample_doc();
+        d.title = "Notes <draft> & \"ideas\"".into();
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4, 5];
+        let r = crate::geom::Rect::new(crate::geom::Vec2::new(10.0, 20.0), crate::geom::Vec2::new(110.0, 70.0));
+        let id = d.add_image("images/abc.png", Some(png.clone()), r);
+        let svg = to_svg(&d);
+        let json = extract_json(&svg).unwrap().to_string();
+        let resaved = svg
+            .replace(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"",
+                "<svg xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns=\"http://www.w3.org/2000/svg\"",
+            )
+            .replace(
+                &format!("{METADATA_OPEN}<![CDATA[{json}]]></metadata>"),
+                &format!("<metadata\n     id='bedrock-note'>{}</metadata>", xml_escape(&json)),
+            )
+            .replace(&format!("<image id=\"i{id}\""), &format!("<image\n  data-x=\"1\" id='i{id}'"))
+            .replace(" href=\"data:", " xlink:href=\"data:");
+        assert_ne!(resaved, svg);
+        let back = load(&resaved, 1).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.doc.title, d.title);
+        assert_eq!(back.doc.strokes().len(), d.strokes().len());
+        assert_eq!(back.doc.assets.get("images/abc.png"), Some(&png), "the picture embedded in the SVG");
+        // A file cut short still gives its note, which comes first.
+        let cut = &svg[..svg.find("<g id=\"ink\">").unwrap()];
+        assert_eq!(load(cut, 1).unwrap().doc.strokes().len(), d.strokes().len());
     }
 
     #[test]
