@@ -69,3 +69,78 @@ fn hundred_thousand_strokes() {
     assert!(diff.added.len() <= 2);
     assert!(incr.as_millis() < 50, "adding a stroke must not stall the next frame");
 }
+
+/// Bug: on notes with 1500+ strokes, scribbling out stuttered as soon as
+/// the scribble was recognised over ink. While the pen is down the strokes
+/// it would erase are worked out again every few samples, and each time
+/// every segment of the scribble was compared with every nearby stroke
+/// (about 3 ms native for a 5 second scribble over a dense page, several
+/// times that on an iPad in the browser), and the faded veil over them was
+/// tessellated again from scratch whenever one more stroke joined (about
+/// 11 ms). Now the scribble's segments sit in an R-tree and each veiled
+/// stroke is tessellated once.
+#[test]
+#[ignore]
+fn scribbling_out_on_a_big_note_stays_smooth() {
+    use bedrock_core::engine::{Engine, PointerKind, ScreenSample};
+    use bedrock_core::scene::Veil;
+    use std::time::Duration;
+
+    let mut e = Engine::new(1);
+    e.resize(1366.0, 1024.0);
+    // A page densely filled with 1600 handwriting strokes of 120 samples.
+    let mut strokes = Vec::new();
+    for i in 0..1600 {
+        let (col, row) = ((i % 40) as f64, (i / 40) as f64);
+        let (x0, y0) = (col * 12.0, row * 18.0);
+        let pts = (0..120)
+            .map(|k| {
+                let u = k as f64 / 119.0;
+                InputPoint::new(x0 + u * 30.0, y0 + (u * 30.0).sin() * 12.0, 0.5).at(k as f64 * 4.0)
+            })
+            .collect();
+        strokes.push(Stroke::new(
+            e.doc.next_id(),
+            Brush::new(BrushKind::Pen, Rgba::BLACK, 2.0),
+            i as f64,
+            InputDevice::Pen,
+            pts,
+        ));
+    }
+    e.doc.set_strokes(strokes);
+
+    // A five second scribble at 240 Hz over a few lines of it, with the
+    // veil kept up to date the way the web app does on each frame.
+    let sample = |i: usize| {
+        let t = i as f64 / 240.0;
+        ScreenSample::new(200.0 + 90.0 * (t * 25.0).sin(), 200.0 + t * 15.0, 0.5, 1000.0 + t * 1000.0)
+    };
+    let mut veil = Veil::default();
+    let (mut worst_move, mut worst_veil, mut veil_total) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    e.pointer_down(1, PointerKind::Pen, sample(0));
+    for i in 1..1200 {
+        let t = Instant::now();
+        e.pointer_move(1, PointerKind::Pen, sample(i));
+        worst_move = worst_move.max(t.elapsed());
+        let t = Instant::now();
+        veil.update(&e.doc, e.scribble_preview(), Rgba::BLACK, 0.7);
+        let d = t.elapsed();
+        worst_veil = worst_veil.max(d);
+        veil_total += d;
+    }
+    let fading = e.scribble_preview().len();
+    println!(
+        "scribble: worst move {worst_move:?}, veil worst {worst_veil:?} total {veil_total:?}, {fading} strokes fading, {} tessellated",
+        veil.tessellated
+    );
+    assert!(fading > 20, "the scribble must be over ink");
+    assert_eq!(veil.tessellated, fading, "each fading stroke tessellated once");
+    assert!(worst_move.as_micros() < 1_500, "a pen sample must fit easily in a 120 Hz frame while scribbling out");
+    assert!(worst_veil.as_micros() < 2_000, "updating the fading ink must not stall a frame");
+    let t = Instant::now();
+    e.pointer_up(1, PointerKind::Pen, None);
+    let up = t.elapsed();
+    println!("lifting the pen (erasing {fading}): {up:?}");
+    assert_eq!(e.doc.len(), 1600 - fading);
+    assert!(up.as_millis() < 5);
+}
