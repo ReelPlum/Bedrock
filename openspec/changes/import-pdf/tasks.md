@@ -11,3 +11,7 @@
 - [x] 2.2 Send every imported word (unchecked, with the PDF's reading); consent text and version 2
 - [x] 2.3 Browser tests, docs
 - [x] 2.4 Scenarios cite their browser tests (`<!-- test-js: … -->`)
+
+## 3. CI
+
+- [x] 3.1 Fix: a notes list redraw threw away a folder name being typed (flaky folder tests in CI); regression test first

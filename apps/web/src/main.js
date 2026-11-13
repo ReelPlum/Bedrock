@@ -514,7 +514,7 @@ async function main() {
       input.setAttribute('aria-label', label);
       input.enterKeyHint = 'done';
       let finished = false;
-      const finish = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const finish = (v) => { if (!finished) { finished = true; input.dataset.done = 'true'; resolve(v); } };
       input.onkeydown = (e) => {
         if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim() || null); }
         if (e.key === 'Escape') { e.preventDefault(); finish(null); }
@@ -651,6 +651,20 @@ async function main() {
       li.append(del);
       return li;
     }));
+    // A folder being named keeps its row, untouched (moving or removing it
+    // would lose the focus and the name being typed); the rest is redrawn
+    // around it.
+    const naming = list.querySelector('.folder-name:not([data-done])')?.closest('li');
+    if (naming) {
+      const id = naming.dataset.folder;
+      const kept = rows.map((r) => (id && r.dataset.folder === id ? naming : r));
+      if (!kept.includes(naming)) kept.unshift(naming);
+      for (const c of [...list.children]) if (c !== naming) c.remove();
+      const at = kept.indexOf(naming);
+      naming.before(...kept.slice(0, at));
+      naming.after(...kept.slice(at + 1));
+      return;
+    }
     list.replaceChildren(...rows);
     if (!rows.length) {
       const li = document.createElement('li');

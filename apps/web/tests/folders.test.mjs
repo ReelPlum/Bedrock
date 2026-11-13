@@ -106,6 +106,30 @@ test('an autosave while a folder is being named keeps the name being typed', asy
   await context.close();
 });
 
+test('the notes list redrawing while a folder is being named keeps the name being typed', async () => {
+  // The list redraws on its own (opening it, a save, another window), and
+  // a redraw that finished just after "New folder" was tapped used to throw
+  // the half-typed name away (seen as flaky CI on slower machines).
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page, errors } = await openApp(env, { context });
+  await openLibrary(page);
+  await newFolder(page, 'Maths');
+  await page.click('#btn-new-folder');
+  await page.fill('#note-list .folder-name', 'Physi');
+  await page.evaluate(() => bedrock.renderLibrary());
+  assert.equal(await page.inputValue('#note-list .folder-name'), 'Physi');
+  assert.equal(await page.locator('#note-list li.folder >> text=Maths').count(), 1, 'the other folders are still listed');
+  // Renaming a folder survives a redraw too, without listing it twice.
+  await page.click('#note-list li.folder[data-folder] .rename');
+  await page.waitForSelector('#note-list li.folder[data-folder] .folder-name');
+  await page.evaluate(() => bedrock.renderLibrary());
+  assert.equal(await page.locator('#note-list .folder-name').count(), 1);
+  await page.press('#note-list .folder-name', 'Escape');
+  await page.waitForSelector('#note-list li.folder >> text=Maths');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('folders: move a note, rename a folder, and deleting a folder deletes what is in it', async () => {
   const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
   const { page, errors } = await openApp(env, { context });
