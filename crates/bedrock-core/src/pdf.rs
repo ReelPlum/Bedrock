@@ -20,12 +20,20 @@
 //! raw pixels (any bit depth, grey, RGB, CMYK or palette, with a soft mask
 //! as transparency) as PNG files.
 //!
-//! Only what is needed is read: the page tree, streams (Flate, with PNG
-//! predictors, or none), form XObjects, pictures, colours, transparency and
-//! text positions. Visible text and inline images are left out and
-//! reported.
+//! The file itself is read by the `hayro-syntax` crate: its objects, the
+//! page tree, and streams with their filters (Flate, LZW, ASCII85 and the
+//! rest, with predictors). What is here is what Bedrock adds: form XObjects,
+//! pictures, colours, transparency and text positions are followed to find
+//! the ink. Visible text and inline images are left out and reported. PNG
+//! files are written by the `png` crate.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::io::Read;
+
+use hayro_syntax::content::UntypedIter;
+use hayro_syntax::object::{Dict, Name, Object, Stream};
+use hayro_syntax::page::Resources;
+use hayro_syntax::{Filter, LoadPdfError, Pdf};
 
 use crate::brush::{Brush, BrushKind};
 use crate::color::Rgba;
@@ -67,8 +75,11 @@ pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, St
     if !is_pdf(bytes) {
         return Err("not a PDF file".into());
     }
-    let file = File::read(bytes);
-    let pages = file.pages();
+    let pdf = Pdf::new(bytes.to_vec()).map_err(|e| match e {
+        LoadPdfError::Decryption(_) => "this PDF is locked with a password".to_string(),
+        LoadPdfError::Invalid => "no pages found in this PDF".to_string(),
+    })?;
+    let pages = pdf.pages();
     if pages.is_empty() {
         return Err("no pages found in this PDF".into());
     }
@@ -77,11 +88,9 @@ pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, St
     let mut pictures = Pictures::new();
     for (i, page) in pages.iter().enumerate() {
         let mut ink = Ink::default();
-        let content = file.page_content(page);
-        let res = page.resources.clone();
-        run(&file, &content, &res, IDENTITY, &mut ink, 0);
+        run(&page_content(page.raw()), page.resources(), IDENTITY, &mut ink, 0);
         let seed = seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut p = build_page(&file, &ink, page.media, seed, &mut t, &mut pictures);
+        let mut p = build_page(&ink, media_box(page.raw()), seed, &mut t, &mut pictures);
         if !p.doc.is_empty() || !p.doc.images().is_empty() {
             p.doc.created = start_ms;
             p.doc.modified = start_ms;
@@ -91,550 +100,20 @@ pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, St
     Ok(out)
 }
 
-// ---- Objects ----------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-enum Obj {
-    Null,
-    Bool(bool),
-    Num(f64),
-    Name(String),
-    Str(Vec<u8>),
-    Arr(Vec<Obj>),
-    Dict(Dict),
-    Ref(u32),
-    /// A bare keyword: an operator in a content stream.
-    Op(String),
-}
-type Dict = HashMap<String, Obj>;
-
-impl Obj {
-    fn num(&self) -> Option<f64> {
-        match self {
-            Obj::Num(n) => Some(*n),
-            _ => None,
+/// The page's media box: its own, or the nearest one up the page tree, or
+/// US Letter. Read here in full precision, so ink lands where it always has.
+fn media_box(page: &Dict<'_>) -> Rect {
+    let mut node = page.clone();
+    for _ in 0..64 {
+        if let Some(v) = node.get::<[f64; 4]>("MediaBox") {
+            return Rect::new(Vec2::new(v[0].min(v[2]), v[1].min(v[3])), Vec2::new(v[0].max(v[2]), v[1].max(v[3])));
+        }
+        match node.get::<Dict<'_>>("Parent") {
+            Some(parent) => node = parent,
+            None => break,
         }
     }
-    fn name(&self) -> Option<&str> {
-        match self {
-            Obj::Name(n) => Some(n),
-            _ => None,
-        }
-    }
-}
-
-fn is_white(c: u8) -> bool {
-    matches!(c, 0 | 9 | 10 | 12 | 13 | 32)
-}
-fn is_delim(c: u8) -> bool {
-    matches!(c, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
-}
-
-/// A tokenizer and parser over a byte slice.
-struct Lexer<'a> {
-    b: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Lexer<'a> {
-    fn new(b: &'a [u8], pos: usize) -> Self {
-        Lexer { b, pos }
-    }
-
-    fn skip(&mut self) {
-        while self.pos < self.b.len() {
-            let c = self.b[self.pos];
-            if is_white(c) {
-                self.pos += 1;
-            } else if c == b'%' {
-                while self.pos < self.b.len() && !matches!(self.b[self.pos], b'\n' | b'\r') {
-                    self.pos += 1;
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn word(&mut self) -> &'a [u8] {
-        let s = self.pos;
-        while self.pos < self.b.len() && !is_white(self.b[self.pos]) && !is_delim(self.b[self.pos]) {
-            self.pos += 1;
-        }
-        &self.b[s..self.pos]
-    }
-
-    /// The next value, or None at the end (or on bytes that make no sense,
-    /// which are skipped).
-    fn next(&mut self, depth: usize) -> Option<Obj> {
-        self.skip();
-        let c = *self.b.get(self.pos)?;
-        if depth > 64 {
-            self.pos += 1;
-            return Some(Obj::Null);
-        }
-        match c {
-            b'/' => {
-                self.pos += 1;
-                let w = self.word();
-                let mut name = Vec::with_capacity(w.len());
-                let mut i = 0;
-                while i < w.len() {
-                    if w[i] == b'#' && i + 2 < w.len() {
-                        if let Ok(v) = u8::from_str_radix(&String::from_utf8_lossy(&w[i + 1..i + 3]), 16) {
-                            name.push(v);
-                            i += 3;
-                            continue;
-                        }
-                    }
-                    name.push(w[i]);
-                    i += 1;
-                }
-                Some(Obj::Name(String::from_utf8_lossy(&name).into_owned()))
-            }
-            b'(' => Some(Obj::Str(self.literal())),
-            b'<' if self.b.get(self.pos + 1) == Some(&b'<') => {
-                self.pos += 2;
-                let mut d = Dict::new();
-                loop {
-                    self.skip();
-                    if self.b.get(self.pos..self.pos + 2) == Some(b">>") {
-                        self.pos += 2;
-                        break;
-                    }
-                    match self.next(depth + 1)? {
-                        Obj::Name(k) => {
-                            let v = self.next(depth + 1)?;
-                            d.insert(k, v);
-                        }
-                        Obj::Op(_) if self.pos >= self.b.len() => return None,
-                        _ => {}
-                    }
-                }
-                Some(Obj::Dict(d))
-            }
-            b'<' => {
-                self.pos += 1;
-                let mut hex = Vec::new();
-                while let Some(&c) = self.b.get(self.pos) {
-                    self.pos += 1;
-                    if c == b'>' {
-                        break;
-                    }
-                    if c.is_ascii_hexdigit() {
-                        hex.push(c);
-                    }
-                }
-                if hex.len() % 2 == 1 {
-                    hex.push(b'0');
-                }
-                Some(Obj::Str(
-                    hex.chunks(2).filter_map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok()).collect(),
-                ))
-            }
-            b'[' => {
-                self.pos += 1;
-                let mut a = Vec::new();
-                loop {
-                    self.skip();
-                    match self.b.get(self.pos) {
-                        None => break,
-                        Some(b']') => {
-                            self.pos += 1;
-                            break;
-                        }
-                        _ => a.push(self.next(depth + 1)?),
-                    }
-                }
-                Some(Obj::Arr(a))
-            }
-            b']' | b'>' | b')' | b'{' | b'}' => {
-                self.pos += 1;
-                Some(Obj::Op(String::from(c as char)))
-            }
-            b'0'..=b'9' | b'+' | b'-' | b'.' => {
-                let w = self.word();
-                let n: f64 = std::str::from_utf8(w).ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                // "12 0 R" is a reference.
-                if w.iter().all(u8::is_ascii_digit) {
-                    let save = self.pos;
-                    self.skip();
-                    let g = self.word();
-                    if !g.is_empty() && g.iter().all(u8::is_ascii_digit) {
-                        self.skip();
-                        if self.b.get(self.pos) == Some(&b'R')
-                            && self.b.get(self.pos + 1).is_none_or(|&c| is_white(c) || is_delim(c))
-                        {
-                            self.pos += 1;
-                            return Some(Obj::Ref(n as u32));
-                        }
-                    }
-                    self.pos = save;
-                }
-                Some(Obj::Num(n))
-            }
-            _ => {
-                let w = self.word();
-                if w.is_empty() {
-                    self.pos += 1;
-                    return Some(Obj::Op(String::from(c as char)));
-                }
-                Some(match w {
-                    b"true" => Obj::Bool(true),
-                    b"false" => Obj::Bool(false),
-                    b"null" => Obj::Null,
-                    _ => Obj::Op(String::from_utf8_lossy(w).into_owned()),
-                })
-            }
-        }
-    }
-
-    fn literal(&mut self) -> Vec<u8> {
-        self.pos += 1;
-        let mut out = Vec::new();
-        let mut depth = 1;
-        while let Some(&c) = self.b.get(self.pos) {
-            self.pos += 1;
-            match c {
-                b'\\' => {
-                    let Some(&e) = self.b.get(self.pos) else { break };
-                    self.pos += 1;
-                    match e {
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
-                        b'b' => out.push(8),
-                        b'f' => out.push(12),
-                        b'0'..=b'7' => {
-                            let mut v = (e - b'0') as u32;
-                            for _ in 0..2 {
-                                match self.b.get(self.pos) {
-                                    Some(&d @ b'0'..=b'7') => {
-                                        v = v * 8 + (d - b'0') as u32;
-                                        self.pos += 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            out.push(v as u8);
-                        }
-                        b'\r' => {
-                            if self.b.get(self.pos) == Some(&b'\n') {
-                                self.pos += 1;
-                            }
-                        }
-                        b'\n' => {}
-                        _ => out.push(e),
-                    }
-                }
-                b'(' => {
-                    depth += 1;
-                    out.push(c);
-                }
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                    out.push(c);
-                }
-                _ => out.push(c),
-            }
-        }
-        out
-    }
-}
-
-/// An object as stored: its value, and its stream data if it has one.
-#[derive(Clone)]
-struct Stored {
-    value: Obj,
-    stream: Option<Vec<u8>>,
-}
-
-struct File {
-    objects: HashMap<u32, Stored>,
-    order: Vec<u32>,
-}
-
-struct Page {
-    contents: Obj,
-    resources: Dict,
-    media: Rect,
-}
-
-impl File {
-    /// Finds every `n g obj` in the file. Damaged cross-reference tables
-    /// (common in exports) do not matter this way; a later copy of an
-    /// object replaces an earlier one, as an incremental update would.
-    fn read(b: &[u8]) -> File {
-        let mut objects = HashMap::new();
-        let mut order = Vec::new();
-        let mut i = 0;
-        while let Some(off) = find(b, b"obj", i) {
-            i = off + 3;
-            if b.get(off + 3).is_some_and(|&c| !is_white(c) && !is_delim(c)) {
-                continue;
-            }
-            let Some(num) = obj_header(b, off) else { continue };
-            let mut lx = Lexer::new(b, off + 3);
-            let Some(value) = lx.next(0) else { continue };
-            lx.skip();
-            let mut stream = None;
-            if b[lx.pos..].starts_with(b"stream") {
-                let mut s = lx.pos + 6;
-                if b.get(s) == Some(&b'\r') {
-                    s += 1;
-                }
-                if b.get(s) == Some(&b'\n') {
-                    s += 1;
-                }
-                let len = match &value {
-                    Obj::Dict(d) => match d.get("Length") {
-                        Some(Obj::Num(n)) => Some(*n as usize),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let end = match len {
-                    Some(n) if s + n <= b.len() && find(b, b"endstream", s + n).is_some_and(|e| e - (s + n) < 4) => {
-                        s + n
-                    }
-                    _ => {
-                        let mut e = find(b, b"endstream", s).unwrap_or(b.len());
-                        while e > s && matches!(b[e - 1], b'\r' | b'\n') {
-                            e -= 1;
-                        }
-                        e
-                    }
-                };
-                stream = Some(b[s..end].to_vec());
-                i = end;
-            } else {
-                i = lx.pos.max(i);
-            }
-            if objects.insert(num, Stored { value, stream }).is_none() {
-                order.push(num);
-            }
-        }
-        let mut f = File { objects, order };
-        f.unpack_object_streams();
-        f
-    }
-
-    /// Objects kept compressed inside object streams.
-    fn unpack_object_streams(&mut self) {
-        let streams: Vec<u32> = self
-            .order
-            .iter()
-            .copied()
-            .filter(|n| match &self.objects[n].value {
-                Obj::Dict(d) => d.get("Type").and_then(Obj::name) == Some("ObjStm"),
-                _ => false,
-            })
-            .collect();
-        for n in streams {
-            let Some(data) = self.decoded(n) else { continue };
-            let Obj::Dict(d) = &self.objects[&n].value else { continue };
-            let count = d.get("N").and_then(Obj::num).unwrap_or(0.0) as usize;
-            let first = d.get("First").and_then(Obj::num).unwrap_or(0.0) as usize;
-            let mut head = Lexer::new(&data, 0);
-            let mut entries = Vec::new();
-            for _ in 0..count.min(100_000) {
-                match (head.next(0), head.next(0)) {
-                    (Some(Obj::Num(a)), Some(Obj::Num(o))) => entries.push((a as u32, first + o as usize)),
-                    _ => break,
-                }
-            }
-            for (num, off) in entries {
-                if self.objects.contains_key(&num) || off >= data.len() {
-                    continue;
-                }
-                if let Some(value) = Lexer::new(&data, off).next(0) {
-                    self.objects.insert(num, Stored { value, stream: None });
-                    self.order.push(num);
-                }
-            }
-        }
-    }
-
-    fn get<'b>(&'b self, o: &'b Obj) -> &'b Obj {
-        let mut o = o;
-        for _ in 0..8 {
-            match o {
-                Obj::Ref(n) => match self.objects.get(n) {
-                    Some(s) => o = &s.value,
-                    None => return &Obj::Null,
-                },
-                _ => return o,
-            }
-        }
-        &Obj::Null
-    }
-
-    fn dict<'b>(&'b self, o: &'b Obj) -> Option<&'b Dict> {
-        match self.get(o) {
-            Obj::Dict(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// A stream's data with its filters undone, or None if a filter is not
-    /// supported.
-    fn decoded(&self, n: u32) -> Option<Vec<u8>> {
-        let s = self.objects.get(&n)?;
-        let (filters, parms) = self.filters(&s.value);
-        self.unfilter(s.stream.as_ref()?.clone(), &filters, &parms)
-    }
-
-    /// A stream's filters in order, each with its parameters.
-    fn filters(&self, value: &Obj) -> (Vec<String>, Vec<Option<Dict>>) {
-        let Obj::Dict(d) = value else { return (Vec::new(), Vec::new()) };
-        let filters: Vec<String> = match d.get("Filter").map(|f| self.get(f)) {
-            Some(Obj::Name(f)) => vec![f.clone()],
-            Some(Obj::Arr(a)) => a.iter().filter_map(|f| self.get(f).name().map(String::from)).collect(),
-            _ => Vec::new(),
-        };
-        let parms: Vec<Option<Dict>> = match d.get("DecodeParms").or(d.get("DP")).map(|p| self.get(p)) {
-            Some(Obj::Arr(a)) => a.iter().map(|p| self.dict(p).cloned()).collect(),
-            Some(Obj::Dict(p)) => vec![Some(p.clone())],
-            _ => Vec::new(),
-        };
-        (filters, parms)
-    }
-
-    fn unfilter(&self, mut data: Vec<u8>, filters: &[String], parms: &[Option<Dict>]) -> Option<Vec<u8>> {
-        for (i, f) in filters.iter().enumerate() {
-            data = match f.as_str() {
-                "FlateDecode" | "Fl" => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_STREAM)
-                    .or_else(|_| miniz_oxide::inflate::decompress_to_vec_with_limit(&data, MAX_STREAM))
-                    .ok()?,
-                _ => return None,
-            };
-            if let Some(Some(p)) = parms.get(i) {
-                data = unpredict(data, p, self)?;
-            }
-        }
-        Some(data)
-    }
-
-    /// Pages in reading order, from the page tree (or, if it is damaged,
-    /// every page object in file order).
-    fn pages(&self) -> Vec<Page> {
-        let mut out = Vec::new();
-        let root = self.order.iter().rev().find_map(|n| match &self.objects[n].value {
-            Obj::Dict(d) if d.get("Type").and_then(Obj::name) == Some("Catalog") => d.get("Pages").cloned(),
-            _ => None,
-        });
-        let mut seen = HashSet::new();
-        if let Some(root) = root {
-            self.walk(&root, &Dict::new(), None, &mut out, &mut seen, 0);
-        }
-        if out.is_empty() {
-            for n in &self.order {
-                let v = Obj::Ref(*n);
-                if self.dict(&v).and_then(|d| d.get("Type")).and_then(Obj::name) == Some("Page") {
-                    self.walk(&v, &Dict::new(), None, &mut out, &mut seen, 0);
-                }
-            }
-        }
-        out
-    }
-
-    fn walk(
-        &self,
-        node: &Obj,
-        res: &Dict,
-        media: Option<Rect>,
-        out: &mut Vec<Page>,
-        seen: &mut HashSet<u32>,
-        depth: usize,
-    ) {
-        if depth > 64 {
-            return;
-        }
-        if let Obj::Ref(n) = node {
-            if !seen.insert(*n) {
-                return;
-            }
-        }
-        let Some(d) = self.dict(node) else { return };
-        let res = d.get("Resources").and_then(|r| self.dict(r)).cloned().unwrap_or_else(|| res.clone());
-        let media = d.get("MediaBox").and_then(|m| self.rect(m)).or(media);
-        if let Some(Obj::Arr(kids)) = d.get("Kids").map(|k| self.get(k)) {
-            for k in kids {
-                self.walk(k, &res, media, out, seen, depth + 1);
-            }
-        } else if d.get("Type").and_then(Obj::name) != Some("Pages") {
-            let media = media.unwrap_or(Rect::new(Vec2::ZERO, Vec2::new(612.0, 792.0)));
-            out.push(Page { contents: d.get("Contents").cloned().unwrap_or(Obj::Null), resources: res, media });
-        }
-    }
-
-    fn rect(&self, o: &Obj) -> Option<Rect> {
-        let Obj::Arr(a) = self.get(o) else { return None };
-        let v: Vec<f64> = a.iter().filter_map(|x| self.get(x).num()).collect();
-        (v.len() == 4)
-            .then(|| Rect::new(Vec2::new(v[0].min(v[2]), v[1].min(v[3])), Vec2::new(v[0].max(v[2]), v[1].max(v[3]))))
-    }
-
-    fn page_content(&self, p: &Page) -> Vec<u8> {
-        let refs: Vec<u32> = match &p.contents {
-            Obj::Ref(n) => match self.get(&p.contents) {
-                Obj::Arr(a) => a.iter().filter_map(|x| if let Obj::Ref(n) = x { Some(*n) } else { None }).collect(),
-                _ => vec![*n],
-            },
-            Obj::Arr(a) => a.iter().filter_map(|x| if let Obj::Ref(n) = x { Some(*n) } else { None }).collect(),
-            _ => Vec::new(),
-        };
-        let mut out = Vec::new();
-        for n in refs {
-            if let Some(d) = self.decoded(n) {
-                out.extend_from_slice(&d);
-                out.push(b'\n');
-            }
-        }
-        out
-    }
-}
-
-fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if from >= hay.len() {
-        return None;
-    }
-    hay[from..].windows(needle.len()).position(|w| w == needle).map(|p| p + from)
-}
-
-/// `12 0 obj`: the object number before `obj` at `off`.
-fn obj_header(b: &[u8], off: usize) -> Option<u32> {
-    let mut i = off;
-    let back_ws = |i: &mut usize| {
-        while *i > 0 && is_white(b[*i - 1]) {
-            *i -= 1;
-        }
-    };
-    let back_digits = |i: &mut usize| -> Option<usize> {
-        let e = *i;
-        while *i > 0 && b[*i - 1].is_ascii_digit() {
-            *i -= 1;
-        }
-        (e > *i).then_some(e)
-    };
-    back_ws(&mut i);
-    if i == off {
-        return None;
-    }
-    back_digits(&mut i)?;
-    let ws = i;
-    back_ws(&mut i);
-    if i == ws {
-        return None;
-    }
-    let e = back_digits(&mut i)?;
-    if i > 0 && !is_white(b[i - 1]) && !is_delim(b[i - 1]) {
-        return None;
-    }
-    std::str::from_utf8(&b[i..e]).ok()?.parse().ok()
+    Rect::new(Vec2::ZERO, Vec2::new(612.0, 792.0))
 }
 
 // ---- Content streams ----------------------------------------------------------
@@ -675,11 +154,11 @@ struct Span {
 }
 
 #[derive(Default)]
-struct Ink {
+struct Ink<'a> {
     paths: Vec<InkPath>,
     spans: Vec<Span>,
-    /// Picture objects drawn, each with the matrix that places it.
-    pictures: Vec<(u32, Matrix)>,
+    /// Pictures drawn, each with the matrix that places it.
+    pictures: Vec<(Stream<'a>, Matrix)>,
     /// Pictures that cannot be brought in (inline images).
     skipped_pictures: usize,
 }
@@ -706,29 +185,33 @@ fn color_of(args: &[f64]) -> Option<[f64; 3]> {
     }
 }
 
-fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, depth: usize) {
+fn run<'a>(content: &[u8], res: &Resources<'a>, ctm: Matrix, ink: &mut Ink<'a>, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
     let mut gs = GState { ctm, fill: [0.0; 3], stroke: [0.0; 3], fill_alpha: 1.0, stroke_alpha: 1.0, line_width: 1.0 };
     let mut stack: Vec<GState> = Vec::new();
-    let mut args: Vec<Obj> = Vec::new();
     let mut path: Vec<Vec<Vec2>> = Vec::new();
     let mut has_rect = false;
     let mut cur = Vec2::ZERO;
     // Text state.
     let (mut tm, mut tlm) = (IDENTITY, IDENTITY);
     let (mut size, mut leading, mut mode) = (1.0, 0.0, 0.0);
-    let mut lx = Lexer::new(content, 0);
-    let nums = |args: &[Obj]| -> Vec<f64> { args.iter().filter_map(Obj::num).collect() };
-    while let Some(tok) = lx.next(0) {
-        let Obj::Op(op) = tok else {
-            args.push(tok);
-            continue;
-        };
-        let n = nums(&args);
+    let mut ops = UntypedIter::new(content);
+    let mut n: Vec<f64> = Vec::new();
+    while let Some(ins) = ops.next() {
+        n.clear();
+        n.extend(ins.operands().filter_map(|a| match a {
+            Object::Number(v) => Some(v.as_f64()),
+            _ => None,
+        }));
         let last = |k: usize| -> Option<&[f64]> { (n.len() >= k).then(|| &n[n.len() - k..]) };
-        match op.as_str() {
+        let name = || match ins.operands().last() {
+            Some(Object::Name(name)) => Some(name),
+            _ => None,
+        };
+        let op = std::str::from_utf8(ins.operator).unwrap_or("");
+        match op {
             "q" => stack.push(gs.clone()),
             "Q" => {
                 if let Some(s) = stack.pop() {
@@ -758,18 +241,15 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
             "cs" => gs.fill = [0.0; 3],
             "CS" => gs.stroke = [0.0; 3],
             "gs" => {
-                if let Some(Obj::Name(name)) = args.last() {
-                    let ext = res.get("ExtGState").and_then(|e| file.dict(e)).and_then(|e| e.get(name.as_str()));
-                    if let Some(d) = ext.and_then(|e| file.dict(e)) {
-                        if let Some(a) = d.get("ca").and_then(|a| file.get(a).num()) {
-                            gs.fill_alpha = a;
-                        }
-                        if let Some(a) = d.get("CA").and_then(|a| file.get(a).num()) {
-                            gs.stroke_alpha = a;
-                        }
-                        if let Some(w) = d.get("LW").and_then(|a| file.get(a).num()) {
-                            gs.line_width = w;
-                        }
+                if let Some(d) = name().and_then(|name| res.get_ext_g_state(name)) {
+                    if let Some(a) = d.get::<f64>("ca") {
+                        gs.fill_alpha = a;
+                    }
+                    if let Some(a) = d.get::<f64>("CA") {
+                        gs.stroke_alpha = a;
+                    }
+                    if let Some(w) = d.get::<f64>("LW") {
+                        gs.line_width = w;
                     }
                 }
             }
@@ -789,7 +269,7 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                 let need = if op == "c" { 6 } else { 4 };
                 if let (Some(p), Some(sub)) = (last(need), path.last_mut()) {
                     let pts: Vec<Vec2> = p.chunks(2).map(|c| apply(&gs.ctm, c[0], c[1])).collect();
-                    let (c1, c2, end) = match op.as_str() {
+                    let (c1, c2, end) = match op {
                         "c" => (pts[0], pts[1], pts[2]),
                         "v" => (cur, pts[0], pts[1]),
                         _ => (pts[0], pts[1], pts[1]),
@@ -831,11 +311,9 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                 path.clear();
                 has_rect = false;
             }
-            "n" | "W" | "W*" => {
-                if op == "n" {
-                    path.clear();
-                    has_rect = false;
-                }
+            "n" => {
+                path.clear();
+                has_rect = false;
             }
             "BT" => {
                 tm = IDENTITY;
@@ -881,13 +359,13 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                     tm = tlm;
                 }
                 let mut bytes = Vec::new();
-                for a in &args {
+                for a in ins.operands() {
                     match a {
-                        Obj::Str(s) => bytes.extend_from_slice(s),
-                        Obj::Arr(items) => {
-                            for i in items {
-                                if let Obj::Str(s) = i {
-                                    bytes.extend_from_slice(s);
+                        Object::String(s) => bytes.extend_from_slice(s.as_bytes()),
+                        Object::Array(items) => {
+                            for i in items.iter::<Object<'_>>() {
+                                if let Object::String(s) = i {
+                                    bytes.extend_from_slice(s.as_bytes());
                                 }
                             }
                         }
@@ -908,49 +386,96 @@ fn run(file: &File, content: &[u8], res: &Dict, ctm: Matrix, ink: &mut Ink, dept
                 }
             }
             "Do" => {
-                if let Some(Obj::Name(name)) = args.last() {
-                    let xo = res.get("XObject").and_then(|x| file.dict(x)).and_then(|x| x.get(name.as_str())).cloned();
-                    if let Some(Obj::Ref(n)) = xo {
-                        if let Some(d) = file.dict(&Obj::Ref(n)) {
-                            match d.get("Subtype").and_then(Obj::name) {
-                                Some("Form") => {
-                                    let m = d
-                                        .get("Matrix")
-                                        .and_then(|m| match file.get(m) {
-                                            Obj::Arr(a) => {
-                                                let v: Vec<f64> = a.iter().filter_map(|x| file.get(x).num()).collect();
-                                                (v.len() == 6).then(|| [v[0], v[1], v[2], v[3], v[4], v[5]])
-                                            }
-                                            _ => None,
-                                        })
-                                        .unwrap_or(IDENTITY);
-                                    let sub_res = d
-                                        .get("Resources")
-                                        .and_then(|r| file.dict(r))
-                                        .cloned()
-                                        .unwrap_or_else(|| res.clone());
-                                    if let Some(data) = file.decoded(n) {
-                                        run(file, &data, &sub_res, mul(&m, &gs.ctm), ink, depth + 1);
-                                    }
-                                }
-                                Some("Image") => ink.pictures.push((n, gs.ctm)),
-                                _ => {}
+                if let Some(xo) = name().and_then(|name| res.get_x_object(name)) {
+                    let d = xo.dict();
+                    let subtype = d.get::<Name<'_>>("Subtype");
+                    match subtype.as_ref().map(|s| s.as_str()) {
+                        Some("Form") => {
+                            let m = d.get::<[f64; 6]>("Matrix").unwrap_or(IDENTITY);
+                            let sub_res =
+                                d.get::<Dict<'_>>("Resources").map(Resources::new).unwrap_or_else(|| res.clone());
+                            if let Some(data) = unpack(&xo) {
+                                run(&data, &sub_res, mul(&m, &gs.ctm), ink, depth + 1);
                             }
                         }
+                        Some("Image") => ink.pictures.push((xo, gs.ctm)),
+                        _ => {}
                     }
                 }
             }
-            "BI" => {
-                // Inline image: skip to EI.
-                if let Some(e) = find(content, b"EI", lx.pos) {
-                    lx.pos = e + 2;
-                }
-                ink.skipped_pictures += 1;
-            }
+            // An inline image: the reader has already stepped over its data.
+            "BI" => ink.skipped_pictures += 1,
             _ => {}
         }
-        args.clear();
     }
+}
+
+/// The page's content streams, unpacked and joined.
+fn page_content(page: &Dict<'_>) -> Vec<u8> {
+    let streams = match page.get::<Object<'_>>("Contents") {
+        Some(Object::Stream(s)) => vec![s],
+        Some(Object::Array(a)) => a.iter::<Stream<'_>>().collect(),
+        _ => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for s in streams {
+        if let Some(data) = unpack(&s) {
+            if out.len() + data.len() > MAX_STREAM {
+                break;
+            }
+            out.extend_from_slice(&data);
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+/// A stream's data with its filters undone, or None if a filter is not
+/// supported or the data would unpack to more than [`MAX_STREAM`] bytes.
+/// `hayro-syntax` sets no limit of its own, so a small crafted file could
+/// otherwise fill the memory.
+fn unpack<'a>(s: &Stream<'a>) -> Option<std::borrow::Cow<'a, [u8]>> {
+    if !unpacks_small(&s.raw_data(), &s.filters()) {
+        return None;
+    }
+    s.decoded_data().ok().filter(|d| d.len() <= MAX_STREAM)
+}
+
+/// True if `raw`, run through `filters`, cannot come to more than
+/// [`MAX_STREAM`] bytes. A first Flate filter is measured without keeping
+/// what it unpacks; later ones are judged by the most any filter can grow
+/// data (predictors and the text filters only shrink it).
+fn unpacks_small(raw: &[u8], filters: &[Filter]) -> bool {
+    let mut most = raw.len() as u128;
+    for (i, f) in filters.iter().enumerate() {
+        most = match f {
+            Filter::FlateDecode if i == 0 => inflated_len(raw).map_or(most * 1032, |n| n as u128),
+            Filter::FlateDecode => most * 1032,
+            Filter::LzwDecode => most * 2731,
+            Filter::RunLengthDecode => most * 128,
+            _ => most,
+        };
+    }
+    most <= MAX_STREAM as u128
+}
+
+/// How long zlib (or raw Deflate) data is once unpacked, counting no further
+/// than [`MAX_STREAM`] + 1. None if neither can be read at all.
+fn inflated_len(raw: &[u8]) -> Option<usize> {
+    fn count(mut r: impl Read) -> Option<usize> {
+        let mut buf = [0u8; 16 * 1024];
+        let mut n = 0;
+        while n <= MAX_STREAM {
+            match r.read(&mut buf) {
+                Ok(0) => return Some(n),
+                Ok(k) => n += k,
+                Err(_) if n > 0 => return Some(n),
+                Err(_) => return None,
+            }
+        }
+        Some(n)
+    }
+    count(flate2::read::ZlibDecoder::new(raw)).or_else(|| count(flate2::read::DeflateDecoder::new(raw)))
 }
 
 // ---- Pictures -----------------------------------------------------------------
@@ -961,61 +486,6 @@ type Pictures = HashMap<(u32, (bool, bool)), Option<(String, Vec<u8>)>>;
 
 /// Largest picture brought in, in pixels.
 const MAX_PIXELS: usize = 16_777_216;
-
-/// Undoes a PNG predictor (`/Predictor` 10 to 15), which stores each row as
-/// a filter byte and the row's differences. Other predictors are refused.
-fn unpredict(data: Vec<u8>, parms: &Dict, file: &File) -> Option<Vec<u8>> {
-    let get = |k: &str, d: f64| parms.get(k).and_then(|v| file.get(v).num()).unwrap_or(d) as usize;
-    let predictor = get("Predictor", 1.0);
-    if predictor <= 1 {
-        return Some(data);
-    }
-    if predictor < 10 {
-        return None; // TIFF predictor: not used by note apps
-    }
-    let (colors, bpc, columns) = (get("Colors", 1.0).max(1), get("BitsPerComponent", 8.0).max(1), get("Columns", 1.0));
-    let row = (colors * bpc * columns).div_ceil(8);
-    let bpp = (colors * bpc).div_ceil(8);
-    if row == 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(data.len() / (row + 1) * row);
-    let mut prev = vec![0u8; row];
-    for chunk in data.chunks(row + 1) {
-        if chunk.len() < row + 1 {
-            break;
-        }
-        let (kind, src) = (chunk[0], &chunk[1..]);
-        let mut cur = vec![0u8; row];
-        for i in 0..row {
-            let a = if i >= bpp { cur[i - bpp] } else { 0 };
-            let b = prev[i];
-            let c = if i >= bpp { prev[i - bpp] } else { 0 };
-            let guess = match kind {
-                0 => 0,
-                1 => a,
-                2 => b,
-                3 => ((a as u16 + b as u16) / 2) as u8,
-                4 => {
-                    let p = a as i16 + b as i16 - c as i16;
-                    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
-                    if pa <= pb && pa <= pc {
-                        a
-                    } else if pb <= pc {
-                        b
-                    } else {
-                        c
-                    }
-                }
-                _ => return None,
-            };
-            cur[i] = src[i].wrapping_add(guess);
-        }
-        out.extend_from_slice(&cur);
-        prev = cur;
-    }
-    Some(out)
-}
 
 /// A picture's colour space.
 #[derive(Debug, Clone)]
@@ -1028,7 +498,7 @@ enum Space {
 }
 
 impl Space {
-    fn of(file: &File, o: &Obj, depth: usize) -> Option<Space> {
+    fn of(o: &Object<'_>, depth: usize) -> Option<Space> {
         if depth > 4 {
             return None;
         }
@@ -1038,39 +508,45 @@ impl Space {
             4 => Some(Space::Cmyk),
             _ => None,
         };
-        match file.get(o) {
-            Obj::Name(n) => match n.as_str() {
+        match o {
+            Object::Name(n) => match n.as_str() {
                 "DeviceGray" | "G" | "CalGray" => Some(Space::Gray),
                 "DeviceRGB" | "RGB" | "CalRGB" => Some(Space::Rgb),
                 "DeviceCMYK" | "CMYK" => Some(Space::Cmyk),
                 _ => None,
             },
-            Obj::Arr(a) => match a.first().and_then(|f| file.get(f).name())? {
-                "ICCBased" => {
-                    let d = file.dict(a.get(1)?)?;
-                    match d.get("N").and_then(|n| file.get(n).num()) {
-                        Some(n) => by_count(n),
-                        None => Space::of(file, d.get("Alternate")?, depth + 1),
-                    }
-                }
-                "CalRGB" => Some(Space::Rgb),
-                "CalGray" => Some(Space::Gray),
-                "Indexed" | "I" => {
-                    let base = Space::of(file, a.get(1)?, depth + 1)?;
-                    if matches!(base, Space::Indexed(..)) {
-                        return None;
-                    }
-                    let table = match a.get(3)? {
-                        Obj::Ref(n) if file.objects.get(n).is_some_and(|s| s.stream.is_some()) => file.decoded(*n)?,
-                        t => match file.get(t) {
-                            Obj::Str(b) => b.clone(),
+            Object::Array(a) => {
+                let items: Vec<Object<'_>> = a.iter::<Object<'_>>().collect();
+                let Object::Name(kind) = items.first()? else { return None };
+                match kind.as_str() {
+                    "ICCBased" => {
+                        let d = match items.get(1)? {
+                            Object::Stream(s) => s.dict().clone(),
+                            Object::Dict(d) => d.clone(),
                             _ => return None,
-                        },
-                    };
-                    Some(Space::Indexed(Box::new(base), table))
+                        };
+                        match d.get::<f64>("N") {
+                            Some(n) => by_count(n),
+                            None => Space::of(&d.get::<Object<'_>>("Alternate")?, depth + 1),
+                        }
+                    }
+                    "CalRGB" => Some(Space::Rgb),
+                    "CalGray" => Some(Space::Gray),
+                    "Indexed" | "I" => {
+                        let base = Space::of(items.get(1)?, depth + 1)?;
+                        if matches!(base, Space::Indexed(..)) {
+                            return None;
+                        }
+                        let table = match items.get(3)? {
+                            Object::Stream(s) => unpack(s)?.into_owned(),
+                            Object::String(b) => b.as_bytes().to_vec(),
+                            _ => return None,
+                        };
+                        Some(Space::Indexed(Box::new(base), table))
+                    }
+                    _ => None,
                 }
-                _ => None,
-            },
+            }
             _ => None,
         }
     }
@@ -1099,36 +575,32 @@ fn to_pixel(space: &Space, v: &[f64], out: &mut Vec<u8>) {
 }
 
 /// The picture's samples as 8 bit grey (1 channel) or RGB (3 channels).
-fn pixels(file: &File, n: u32) -> Option<(usize, usize, usize, Vec<u8>)> {
-    let s = file.objects.get(&n)?;
-    let Obj::Dict(d) = &s.value else { return None };
-    let num = |k: &str| d.get(k).and_then(|v| file.get(v).num());
+fn pixels(s: &Stream<'_>) -> Option<(usize, usize, usize, Vec<u8>)> {
+    let d = s.dict();
+    let num = |k: &str| d.get::<f64>(k);
     let (w, h) = (num("Width")? as usize, num("Height")? as usize);
     if w == 0 || h == 0 || w.checked_mul(h)? > MAX_PIXELS {
         return None;
     }
-    if file.get(d.get("ImageMask").unwrap_or(&Obj::Null)) == &Obj::Bool(true) {
+    if d.get::<bool>("ImageMask") == Some(true) {
         return None; // a stencil, not a picture
     }
     let bpc = num("BitsPerComponent").unwrap_or(8.0) as usize;
     if ![1, 2, 4, 8, 16].contains(&bpc) {
         return None;
     }
-    let space = match d.get("ColorSpace") {
-        Some(c) => Space::of(file, c, 0)?,
+    let space = match d.get::<Object<'_>>("ColorSpace") {
+        Some(c) => Space::of(&c, 0)?,
         None => Space::Gray,
     };
     let comps = space.components();
-    let data = file.decoded(n)?;
+    let data = unpack(s)?;
     let row = (w * comps * bpc).div_ceil(8);
     if data.len() < row * h {
         return None;
     }
     let max = ((1u32 << bpc) - 1) as f64;
-    let decode: Vec<f64> = match d.get("Decode").map(|x| file.get(x)) {
-        Some(Obj::Arr(a)) => a.iter().filter_map(|x| file.get(x).num()).collect(),
-        _ => Vec::new(),
-    };
+    let decode: Vec<f64> = d.get::<Vec<f64>>("Decode").unwrap_or_default();
     let sample = |r: &[u8], i: usize| -> u32 {
         match bpc {
             8 => r[i] as u32,
@@ -1173,33 +645,40 @@ fn pixels(file: &File, n: u32) -> Option<(usize, usize, usize, Vec<u8>)> {
     Some((w, h, channels, px))
 }
 
+/// Zlib data unpacked, up to [`MAX_STREAM`].
+fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(data).take(MAX_STREAM as u64 + 1).read_to_end(&mut out).ok()?;
+    (out.len() <= MAX_STREAM).then_some(out)
+}
+
 /// A picture as a file for the note: the JPEG as stored, or its pixels
 /// (with any soft mask as transparency) as a PNG. `flip` mirrors the pixels
 /// (across, down) when the page draws the picture mirrored.
-fn picture(file: &File, n: u32, flip: (bool, bool)) -> Option<(Vec<u8>, &'static str)> {
-    let s = file.objects.get(&n)?;
-    let (filters, parms) = file.filters(&s.value);
-    if filters.last().is_some_and(|f| f == "DCTDecode" || f == "DCT") {
-        let k = filters.len() - 1;
-        let jpeg = file.unfilter(s.stream.as_ref()?.clone(), &filters[..k], &parms[..k.min(parms.len())])?;
+fn picture(s: &Stream<'_>, flip: (bool, bool)) -> Option<(Vec<u8>, &'static str)> {
+    let filters = s.filters();
+    if let Some((Filter::DctDecode, before)) = filters.split_last() {
+        // The JPEG is kept as it is, so only what wraps it is undone.
+        let jpeg = match before {
+            [] => s.raw_data().into_owned(),
+            [Filter::FlateDecode] => inflate(&s.raw_data())?,
+            _ => return None,
+        };
         return jpeg.starts_with(&[0xFF, 0xD8]).then_some((jpeg, "jpg"));
     }
-    let (w, h, mut channels, mut px) = pixels(file, n)?;
-    let Obj::Dict(d) = &s.value else { return None };
-    if let Some(Obj::Ref(m)) = d.get("SMask") {
-        if let Some((mw, mh, mc, mask)) = pixels(file, *m) {
-            let mut with_alpha = Vec::with_capacity(w * h * (channels + 1));
-            for y in 0..h {
-                for x in 0..w {
-                    let i = (y * w + x) * channels;
-                    with_alpha.extend_from_slice(&px[i..i + channels]);
-                    let (mx, my) = (x * mw / w, y * mh / h);
-                    with_alpha.push(mask[(my * mw + mx) * mc]);
-                }
+    let (w, h, mut channels, mut px) = pixels(s)?;
+    if let Some((mw, mh, mc, mask)) = s.dict().get::<Stream<'_>>("SMask").and_then(|m| pixels(&m)) {
+        let mut with_alpha = Vec::with_capacity(w * h * (channels + 1));
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * channels;
+                with_alpha.extend_from_slice(&px[i..i + channels]);
+                let (mx, my) = (x * mw / w, y * mh / h);
+                with_alpha.push(mask[(my * mw + mx) * mc]);
             }
-            px = with_alpha;
-            channels += 1;
         }
+        px = with_alpha;
+        channels += 1;
     }
     if flip.0 || flip.1 {
         let mut out = Vec::with_capacity(px.len());
@@ -1213,53 +692,40 @@ fn picture(file: &File, n: u32, flip: (bool, bool)) -> Option<(Vec<u8>, &'static
         }
         px = out;
     }
-    Some((png(w, h, channels, &px), "png"))
+    Some((png(w, h, channels, &px)?, "png"))
 }
 
 /// A PNG file of 8 bit pixels: 1 (grey), 2 (grey, alpha), 3 (RGB) or 4
 /// (RGBA) channels.
-fn png(w: usize, h: usize, channels: usize, px: &[u8]) -> Vec<u8> {
-    let color = match channels {
-        1 => 0,
-        2 => 4,
-        3 => 2,
-        _ => 6,
-    };
-    let mut raw = Vec::with_capacity((w * channels + 1) * h);
-    for row in px.chunks(w * channels) {
-        raw.push(0);
-        raw.extend_from_slice(row);
-    }
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
-        out.extend((data.len() as u32).to_be_bytes());
-        let mut body = kind.to_vec();
-        body.extend_from_slice(data);
-        out.extend_from_slice(&body);
-        out.extend(crate::zip::crc32(&body).to_be_bytes());
-    };
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend((w as u32).to_be_bytes());
-    ihdr.extend((h as u32).to_be_bytes());
-    ihdr.extend([8, color, 0, 0, 0]);
-    chunk(b"IHDR", &ihdr);
-    chunk(b"IDAT", &miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6));
-    chunk(b"IEND", &[]);
-    out
+fn png(w: usize, h: usize, channels: usize, px: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+    encoder.set_color(match channels {
+        1 => png::ColorType::Grayscale,
+        2 => png::ColorType::GrayscaleAlpha,
+        3 => png::ColorType::Rgb,
+        _ => png::ColorType::Rgba,
+    });
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_deflate_compression(png::DeflateCompression::Level(9));
+    encoder.set_filter(png::Filter::NoFilter);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(px).ok()?;
+    writer.finish().ok()?;
+    Some(out)
 }
 
 /// Puts the page's pictures on the note, under the ink, where they sit on
 /// the page. Returns how many could not be brought in.
 fn place_pictures(
     doc: &mut Document,
-    file: &File,
-    placed: &[(u32, Matrix)],
+    placed: &[(Stream<'_>, Matrix)],
     to_page: &dyn Fn(Vec2) -> Vec2,
     done: &mut Pictures,
 ) -> usize {
     let mut images = doc.images().to_vec();
     let mut left_out = 0;
-    for (n, m) in placed {
+    for (stream, m) in placed {
         // The picture fills the unit square; its first row is at the top (y = 1).
         let p00 = to_page(apply(m, 0.0, 0.0));
         let p10 = to_page(apply(m, 1.0, 0.0));
@@ -1273,8 +739,8 @@ fn place_pictures(
             continue; // nothing to see
         }
         let flip = (p10.x < p00.x, p01.y > p00.y);
-        let made = done.entry((*n, flip)).or_insert_with(|| {
-            picture(file, *n, flip).map(|(bytes, ext)| {
+        let made = done.entry((stream.obj_id().obj_number, flip)).or_insert_with(|| {
+            picture(stream, flip).map(|(bytes, ext)| {
                 let name =
                     format!("{}{:08x}{:08x}.{ext}", crate::format::IMAGES_DIR, crate::zip::crc32(&bytes), bytes.len());
                 (name, bytes)
@@ -1358,7 +824,7 @@ fn centre_line(pieces: &[Vec<Vec2>]) -> Option<(Vec<Vec2>, f64)> {
     Some((line, w))
 }
 
-fn build_page(file: &File, ink: &Ink, media: Rect, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
+fn build_page(ink: &Ink<'_>, media: Rect, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
     let mut doc = Document::new(seed);
     doc.paper = "plain".into();
     let to_page = |p: Vec2| Vec2::new(p.x - media.min.x, media.max.y - p.y);
@@ -1407,7 +873,7 @@ fn build_page(file: &File, ink: &Ink, media: Rect, seed: u64, t: &mut f64, pictu
     }
     doc.set_strokes(strokes);
     let readings = attach_readings(&mut doc, &ink.spans, &to_page);
-    let left_out = place_pictures(&mut doc, file, &ink.pictures, &to_page, pictures) + ink.skipped_pictures;
+    let left_out = place_pictures(&mut doc, &ink.pictures, &to_page, pictures) + ink.skipped_pictures;
     if left_out > 0 {
         warnings.push(format!("{left_out} picture{} left out", if left_out == 1 { "" } else { "s" }));
     }
@@ -1573,11 +1039,8 @@ mod tests {
         c.push_str("3 Tr q 1 0 0 1 5100 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (h\\151) Tj ET Q\n");
         c.push_str("q 1 0 0 1 5300 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf [(o) -5 (k)] TJ ET Q\n");
         c.push_str("0 Tr BT 12 0 0 12 50 50 Tm /F1 1 Tf (typed) Tj ET\n");
-        let (data, filter) = if compress {
-            (miniz_oxide::deflate::compress_to_vec_zlib(c.as_bytes(), 6), " /Filter /FlateDecode")
-        } else {
-            (c.into_bytes(), "")
-        };
+        let (data, filter) =
+            if compress { (zlib(c.as_bytes()), " /Filter /FlateDecode") } else { (c.into_bytes(), "") };
         let mut pdf = b"%PDF-1.4\n".to_vec();
         pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
         pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 400] >> endobj\n");
@@ -1642,6 +1105,49 @@ mod tests {
         let _ = import(&junk, 0, 0.0);
     }
 
+    /// A page whose content stream is `data` with `filter`.
+    fn one_page(data: &[u8], filter: &str) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >> endobj\n",
+        );
+        pdf.extend_from_slice(format!("4 0 obj << /Length {} /Filter {filter} >>\nstream\n", data.len()).as_bytes());
+        pdf.extend_from_slice(data);
+        pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+
+    #[test]
+    fn pdf_streams_in_any_standard_filter_are_read() {
+        // ASCII hex around Flate: the hand-written reader only knew Flate.
+        let ink = b"0 g 50 50 m 55 60 l 57 60 l 52 50 l h f";
+        let hex: String = zlib(ink).iter().map(|b| format!("{b:02x}")).collect::<String>() + ">";
+        let doc = &import(&one_page(hex.as_bytes(), "[/ASCIIHexDecode /FlateDecode]"), 1, 0.0).unwrap()[0].doc;
+        assert_eq!(doc.len(), 1);
+    }
+
+    #[test]
+    fn pdf_stream_that_unpacks_too_large_is_left_out() {
+        // A few hundred kilobytes that would unpack past the limit: the page
+        // is read as empty instead of filling memory.
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        let block = vec![b' '; 1 << 20];
+        for _ in 0..(MAX_STREAM >> 20) + 1 {
+            std::io::Write::write_all(&mut z, &block).unwrap();
+        }
+        let bomb = z.finish().unwrap();
+        assert!(bomb.len() < 1 << 20, "{}", bomb.len());
+        assert!(import(&one_page(&bomb, "/FlateDecode"), 1, 0.0).unwrap().is_empty());
+        assert!(!unpacks_small(&bomb, &[Filter::FlateDecode]));
+        // Behind another filter it cannot be measured, so it is judged by
+        // how far Flate can grow data at most.
+        assert!(!unpacks_small(&vec![b'0'; 200_000], &[Filter::Ascii85Decode, Filter::FlateDecode]));
+        assert!(unpacks_small(&vec![b'0'; 1_000], &[Filter::Ascii85Decode, Filter::FlateDecode]));
+        assert!(unpacks_small(&zlib(b"0 g"), &[Filter::FlateDecode]));
+    }
+
     #[test]
     fn pdf_stroked_paths_and_form_xobjects_are_read_too() {
         let c = b"q 2 w 0 0 1 RG 10 10 m 20 30 l 30 10 l S Q /Fm1 Do";
@@ -1672,46 +1178,27 @@ mod tests {
         assert!((doc.strokes()[1].points[0].x - 60.0).abs() < 0.01, "the form's matrix moves it");
     }
 
-    /// The pixels of a PNG file, checking its structure: (width, height,
-    /// channels, pixels).
+    /// The pixels of a PNG file: (width, height, channels, pixels).
     fn read_png(b: &[u8]) -> (usize, usize, usize, Vec<u8>) {
-        assert!(b.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG file");
-        let be = |i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
-        let (mut w, mut h, mut channels, mut idat, mut i) = (0, 0, 0, Vec::new(), 8);
-        while i < b.len() {
-            let len = be(i);
-            let (kind, data) = (&b[i + 4..i + 8], &b[i + 8..i + 8 + len]);
-            assert_eq!(crate::zip::crc32(&b[i + 4..i + 8 + len]) as usize, be(i + 8 + len), "chunk CRC");
-            match kind {
-                b"IHDR" => {
-                    (w, h) = (be(i + 8), be(i + 12));
-                    assert_eq!(data[8], 8, "8 bits");
-                    channels = match data[9] {
-                        0 => 1,
-                        4 => 2,
-                        2 => 3,
-                        6 => 4,
-                        c => panic!("colour type {c}"),
-                    };
-                }
-                b"IDAT" => idat.extend_from_slice(data),
-                _ => {}
-            }
-            i += 12 + len;
-        }
-        let raw = miniz_oxide::inflate::decompress_to_vec_zlib(&idat).unwrap();
-        let mut px = Vec::new();
-        for row in raw.chunks(w * channels + 1) {
-            assert_eq!(row[0], 0);
-            px.extend_from_slice(&row[1..]);
-        }
-        assert_eq!(px.len(), w * h * channels);
-        (w, h, channels, px)
+        let mut reader = png::Decoder::new(std::io::Cursor::new(b)).read_info().expect("a PNG file");
+        let mut px = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut px).unwrap();
+        assert_eq!(info.bit_depth, png::BitDepth::Eight, "8 bits");
+        px.truncate(info.buffer_size());
+        (info.width as usize, info.height as usize, info.color_type.samples(), px)
+    }
+
+    /// Data packed with zlib, as a PDF's Flate filter keeps it.
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(data).unwrap();
+        z.finish().unwrap()
     }
 
     #[test]
     fn pdf_pictures_come_across_where_they_sit_on_the_page() {
-        let z = |d: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(d, 6);
+        let z = zlib;
         let jpeg = b"\xFF\xD8\xFF\xE0fake jpeg\xFF\xD9".to_vec();
         // (number, dictionary, stream data)
         let objects: Vec<(u32, String, Vec<u8>)> = vec![

@@ -120,7 +120,14 @@ fn brush() -> impl Strategy<Value = Brush> {
 /// A stroke's samples: it starts anywhere on the canvas and stays within a
 /// hand's reach of where it started, as a real stroke does.
 fn points() -> impl Strategy<Value = Vec<InputPoint>> {
-    let sample = (-150.0f64..150.0, -150.0f64..150.0, 0.0f32..=1.0, 0.0f32..1.57, -3.14f32..3.14, 0.0f64..60_000.0);
+    let sample = (
+        -150.0f64..150.0,
+        -150.0f64..150.0,
+        0.0f32..=1.0,
+        0.0f32..std::f32::consts::FRAC_PI_2,
+        -std::f32::consts::PI..std::f32::consts::PI,
+        0.0f64..60_000.0,
+    );
     (-1.0e6f64..1.0e6, -1.0e6f64..1.0e6, prop::collection::vec(sample, 1..12)).prop_map(|(x0, y0, samples)| {
         samples
             .into_iter()
