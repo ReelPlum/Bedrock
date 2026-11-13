@@ -70,14 +70,21 @@ struct Building {
     bounds: Rect,
     /// Middle band: the y range where most strokes' centres sit.
     centre: f64,
+    /// Letter heights, kept sorted so the median is read without sorting
+    /// (sorting a copy for every stroke against every line made laying out
+    /// a big note quadratic).
     heights: Vec<f64>,
     members: Vec<usize>,
 }
 
 impl Building {
     fn letter_height(&self) -> f64 {
-        let mut h = self.heights.clone();
-        median(&mut h).max(1e-6)
+        self.heights.get(self.heights.len() / 2).copied().unwrap_or(0.0).max(1e-6)
+    }
+
+    fn add_height(&mut self, h: f64) {
+        let at = self.heights.partition_point(|x| x.total_cmp(&h).is_le());
+        self.heights.insert(at, h);
     }
 }
 
@@ -137,7 +144,7 @@ pub fn layout(doc: &Document) -> Layout {
                 l.members.push(i);
                 // Small marks (dots, commas) don't move the line's centre.
                 if r.height() >= page_h * 0.4 {
-                    l.heights.push(h);
+                    l.add_height(h);
                     let n = l.heights.len() as f64;
                     l.centre += (cy - l.centre) / n;
                 }
@@ -149,7 +156,13 @@ pub fn layout(doc: &Document) -> Layout {
     // from the line's middle, so they start lines of their own. Pull ink that
     // lies over or under a bar (within its width, about a letter away) into
     // the bar's line, so the whole fraction becomes one word.
-    let rect_of = |i: usize| writing.iter().find(|w| w.0 == i).unwrap().1;
+    // Each writing stroke's bounds by its index in the note (looking them up
+    // by searching `writing` made laying out a big note quadratic).
+    let mut rects = vec![Rect::EMPTY; strokes.len()];
+    for &(i, r) in &writing {
+        rects[i] = r;
+    }
+    let rect_of = |i: usize| rects[i];
     let mut moves: Vec<(usize, usize, usize)> = Vec::new(); // (from line, member, to line)
     for (bl, l) in lines.iter().enumerate() {
         // A bar on its own has no letters to measure: use the page's.
@@ -194,8 +207,7 @@ pub fn layout(doc: &Document) -> Layout {
     for (li, l) in lines.iter().enumerate() {
         let lh = l.letter_height();
         out.lines.push(Line { bounds: l.bounds, letter_height: lh });
-        let mut members: Vec<(usize, Rect)> =
-            l.members.iter().map(|&i| (i, writing.iter().find(|w| w.0 == i).unwrap().1)).collect();
+        let mut members: Vec<(usize, Rect)> = l.members.iter().map(|&i| (i, rect_of(i))).collect();
         members.sort_by(|a, b| a.1.min.x.total_cmp(&b.1.min.x));
         // Gap that separates words: letters within a word sit closer than
         // about 0.45 letter heights in typical handwriting, word gaps wider.
