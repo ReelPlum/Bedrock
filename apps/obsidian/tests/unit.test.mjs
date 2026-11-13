@@ -412,7 +412,7 @@ test('the web app is unpacked once per version', async () => {
 
 test('the plugin packs the current web app, host adapter and WebAssembly included', async () => {
   const b = await packWebApp();
-  for (const f of ['index.html', 'style.css', 'src/main.js', 'src/host.js', 'src/word-menu.js', 'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm', 'dict/en.txt.gz']) {
+  for (const f of ['index.html', 'style.css', 'src/main.js', 'src/host.js', 'src/word-menu.js', 'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) {
     assert.ok(b.files[f], `${f} is packed`);
   }
   assert.ok(!Object.keys(b.files).some((f) => f.startsWith('tests/')), 'tests are not shipped');

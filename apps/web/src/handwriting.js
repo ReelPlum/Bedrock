@@ -20,6 +20,24 @@ const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
 const LETTER_PX = 40; // letter height in the image sent to the recogniser
 const PAD_PX = 12;
 
+/** The text of the first of `urls` that can be fetched, unzipped if it is
+ *  gzip, or null. Some hosts already undo the gzip (Content-Encoding), so
+ *  the bytes are checked rather than the name. */
+async function fetchText(urls) {
+  for (const url of urls) {
+    const res = await fetch(url).catch(() => null);
+    if (!res || !res.ok) continue;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+      if (typeof DecompressionStream !== 'function') return null;
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+      return await new Response(stream).text();
+    }
+    return new TextDecoder().decode(bytes);
+  }
+  return null;
+}
+
 export class Handwriting {
   constructor(canvas, marks, { onTextChanged, onStatus, onWordStatus } = {}) {
     this.canvas = canvas;
@@ -46,27 +64,14 @@ export class Handwriting {
     this.dpr = 1;
   }
 
-  /** Load the spell-check word list: gzip (decompressed by the browser), or
+  /** Load the spell-check dictionary: a Hunspell `.aff` file of rules and
+   *  a `.dic` file of words, each gzip (decompressed by the browser) or
    *  plain text where a host can't serve .gz files. */
-  async loadDictionary(urls = ['dict/en.txt.gz', 'dict/en.txt']) {
+  async loadDictionary(aff = ['dict/en.aff'], dic = ['dict/en.dic.gz', 'dict/en.dic']) {
     try {
-      let res = null;
-      for (const url of urls) {
-        res = await fetch(url).catch(() => null);
-        if (res && res.ok) break;
-      }
-      if (!res || !res.ok) throw new Error('no word list');
-      // Some hosts already undo the gzip (Content-Encoding): check the magic.
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      let text;
-      if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-        if (typeof DecompressionStream !== 'function') return false;
-        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-        text = await new Response(stream).text();
-      } else {
-        text = new TextDecoder().decode(bytes);
-      }
-      this.dictionaryReady = this.canvas.load_dictionary(text) > 0;
+      const [rules, words] = await Promise.all([fetchText(aff), fetchText(dic)]);
+      if (rules == null || words == null) return false;
+      this.dictionaryReady = this.canvas.load_dictionary(rules, words) > 0;
       this.onTextChanged();
       return this.dictionaryReady;
     } catch (_) {

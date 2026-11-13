@@ -38,8 +38,19 @@ stored with `engine: "user"` and what was read kept in `alternatives`.
 <!-- test: stores_text_marks_misspellings_and_forgets_changed_words -->
 <!-- test: checks_words_with_the_usual_allowances -->
 <!-- test: suggests_close_words_best_first -->
-<!-- test: edit_distance_is_damerau -->
 <!-- test-js: apps/web/tests/app.test.mjs :: handwriting: words are recognised, misspellings get a red wavy underline, text is saved -->
+
+#### Scenario: Names, weekdays, contractions and both spellings (regression)
+- **GIVEN** the English dictionary shipped with the app
+- **WHEN** words like "Tuesday", "Paris", "NASA", "don't", "can’t", "colour" and "color" are checked
+- **THEN** none is underlined, while "tuesday", "paris" and "recieve" are
+<!-- test: the_shipped_dictionary_knows_names_weekdays_and_contractions -->
+
+#### Scenario: Suggestions for common mistakes
+- **GIVEN** the English dictionary shipped with the app
+- **WHEN** suggestions are asked for "recieve", "becuase", "untill" or "hendwriting"
+- **THEN** the word meant comes first, and no suggestion splits the word in two
+<!-- test: the_shipped_dictionary_suggests_the_word_meant -->
 
 #### Scenario: Erasing takes the text away
 - **GIVEN** a word with recognised text
@@ -91,3 +102,15 @@ stored with `engine: "user"` and what was read kept in `alternatives`.
 <!-- test: not_a_word_is_never_read_and_long_links_keep_their_words -->
 <!-- test-js: apps/web/tests/app.test.mjs :: word menu: says when a word is still waiting to be read, and switches a word between text and maths -->
 <!-- test-js: apps/web/tests/app.test.mjs :: a lassoed paragraph becomes one link but stays separate words; "Not a word" is never read; a one-finger double tap toggles the eraser -->
+
+## Open source used
+
+| | spellbook | English Hunspell dictionary (SCOWL) |
+|---|---|---|
+| Version | [0.4](https://crates.io/crates/spellbook) | en_US and en_GB-ise, SCOWL size 60, 2020.12.07, from the npm packages `dictionary-en` 4.0.0 and `dictionary-en-gb` 3.0.0, merged (`apps/web/dict/README.md`) |
+| Used for | Checking words and suggesting corrections (`crates/bedrock-core/src/spell.rs`). | The words and rules for English. |
+| Why this one | Reads Hunspell dictionaries, the format of LibreOffice, Firefox and most spell checkers, so other languages need only a dictionary. Its rules fixed a real bug: the plain word list shipped before had no capitalised words and no apostrophes, so every weekday, month, name and contraction was underlined. Suggestions on common mistakes are as good as our own edit distance search, at about the same speed. Pure Rust and `no_std`, small in WebAssembly. Bedrock keeps a thin layer for handwriting (punctuation, numbers, single letters, hyphenated words) and drops suggestions that split a word in two. | The dictionary the old word list came from, now with its affix rules; both spellings pass, as before. |
+| Why it is mature | Young and called alpha by its author: since 2023, about 380 000 downloads, released June 2026. Trusted because it is a port of Nuspell (the modern rewrite of Hunspell), passes almost all of the Hunspell test corpus that Nuspell tests with, is maintained by a Helix editor maintainer, and is used by `codebook` (Zed's spell checker) and `cargo-spellcheck`. A wrong answer costs a red underline, not data. The version is pinned and the shipped dictionary is tested. | SCOWL is maintained by Kevin Atkinson since 2000 and is the source of the English dictionaries in LibreOffice, Firefox and most Linux systems. |
+| Licence | MPL-2.0: commercial use allowed; changes to spellbook's own files would have to be published (we make none). | SCOWL's permissive licence (`apps/web/dict/LICENSE-en_US.txt`): use, copying and selling allowed with the notice kept. |
+| Considered | `zspell` (also Hunspell, less complete); Hunspell or Nuspell themselves (C and C++, harder to build for WebAssembly); keeping our own word list checker (no rules, so names and contractions failed unless listed one by one). | Keeping the plain SCOWL word list (no capitals or apostrophes in the packaged list). |
+| Not Rust | No. | Data, not code. |
