@@ -14,4 +14,4 @@
 
 ## 3. CI
 
-- [x] 3.1 Fix: a notes list redraw threw away a folder name being typed (flaky folder tests in CI); regression test first
+- [x] 3.1 Fix: a notes list redraw threw away a folder name being typed (its spec is in `openspec/changes/fix-folder-name-redraw`, archived once `library-folders` is a living spec)
