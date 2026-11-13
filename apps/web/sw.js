@@ -2,7 +2,7 @@
 // back to the cached copy when the iPad is offline. Files are always checked
 // with the server (`no-cache`): the host lets browsers keep them for a few
 // minutes, and a page put together from two versions does not start.
-const CACHE = 'bedrock-v28';
+const CACHE = 'bedrock-v29';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg',
   'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/selection-view.js', 'src/images.js', 'src/collect.js', 'src/share-words.js', 'src/host.js', 'src/errors.js', 'src/report-panel.js', 'src/error-report.js', 'src/perf.js', 'src/library.js', 'src/sidecar.js', 'src/zip-read.js', 'train/', 'train/setup.js', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'dict/en.aff', 'dict/en.dic.gz',
