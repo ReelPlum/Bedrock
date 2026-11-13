@@ -40,7 +40,7 @@ frames Bedrock already draws (`input.js`).
 
 | `what` | When |
 |---|---|
-| `latency` | Over one stroke (at least 8 frames), the slowest 5% of frames came over 25 ms after their pen event |
+| `latency` | Over one stroke (at least 8 frames), the slowest 5% of frames came over 3 frame intervals and over 25 ms after their pen event (50 ms at 60 frames a second, 25 ms at 120) |
 | `stutter` | One frame came over 100 ms after the pen or finger moved |
 | `slow_tap` | A tap or key took over 200 ms to answer (Event Timing) |
 | `long_job` | A job over its limit: `save` 2 s, `open` 3 s, `library` 2 s, `recognize` 8 s, `import-pdf` 60 s; in the plugin `read` 2 s, `write` 2 s, `index` 3 s, `unpack` 10 s |
@@ -49,7 +49,9 @@ The same `what` and message within 30 s adds to one entry (count, the
 slowest `ms`, and that moment's snapshot).
 
 **Snapshot**: `running` (up to 10 `{ job, ms, running? }`: jobs running then
-and those that ended in the 2 s before), `doing` (`writing`, `moving`,
+and those that ended in the 2 s before; a `recognize` job is timed from when
+the recogniser starts on that word with its model ready, not while it waits
+for other words or a model download), `doing` (`writing`, `moving`,
 `idle`; `mobile` or `desktop` for the plugin), `tool`, `strokes_bucket`
 (`0-100`, `100-1k`, `1k-5k`, `5k-20k`, `20k+`), `zoom_bucket`
 (`under-half`, `half-1`, `1-2`, `2-4`, `4+`), `recognizer` (`both`, `live`,
@@ -75,6 +77,20 @@ were sent on `day` (UTC), and the time of the newest entry sent.
 - **WHEN** the watcher sees them
 - **THEN** it logs latency, stutter, long_job and slow_tap, each with the running jobs, the tool, the stroke and zoom classes and the recogniser mode, and nothing else the page said
 <!-- test-js: apps/web/tests/perf.test.mjs :: the watcher notices pen lag, stutters, slow taps and long jobs, with what was running -->
+
+#### Scenario: Pen lag at the screen's frame rate (regression)
+A report from iPad Safari logged "The pen lagged" at 32 to 37 ms, marked
+`idle`. A browser normally takes up to 2 frames from a pen event to the frame
+that draws it, which is 33 ms where it draws 60 frames a second (iPad
+Safari), so a fixed 25 ms called every ordinary stroke lag there. Lag now
+means at least one frame more than that: over 3 frame intervals (measured by
+`input.js`; 60 frames a second until known) and over 25 ms. The snapshot was
+taken once the pen had lifted, so it said `idle`; a lagging stroke is logged
+as `writing`.
+- **GIVEN** strokes at 37 ms and 60 ms on a 60 Hz screen, and at 32 ms on a 120 Hz screen
+- **WHEN** each stroke ends
+- **THEN** only the 60 ms and the 120 Hz strokes are lag (limits 50 ms and 25 ms), and both are logged as `writing`
+<!-- test-js: apps/web/tests/perf.test.mjs :: pen lag is judged against the frame rate of the screen, and is logged as writing even though the pen has lifted (regression) -->
 
 #### Scenario: Other people's scripts
 - **GIVEN** a long frame with Bedrock's `onFrame` and a script of another Obsidian plugin

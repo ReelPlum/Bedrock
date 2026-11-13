@@ -212,7 +212,7 @@ async function main() {
   let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
     onFrame: (drew, latency) => {
-      perf.frame({ latency, drawing: canvas.is_drawing(), moving: input.active.size > 0 });
+      perf.frame({ latency, drawing: canvas.is_drawing(), moving: input.active.size > 0, interval: input.frames.interval });
       // While the pen is writing, a frame is only the stroke under it: the
       // page, the camera and everything drawn over them (underlines, the
       // minimap, the selection) are as they were, so none of it is redrawn.
