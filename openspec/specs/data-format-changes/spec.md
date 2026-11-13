@@ -34,7 +34,13 @@ This holds for people and for Claude sessions alike.
 - **WHEN** it is planned
 - **THEN** the owner is asked first with the reason and the plan for old data, and nothing is changed before they agree
 
-### Requirement: Old formats SHALL keep working
+### Requirement: Old formats SHALL keep working, unless they break a security rule
+
+A format that breaks a rule in `docs/security.md` is the one exception: it
+loses support instead of being kept readable. Its spec says plainly that it
+no longer works, and a test shows it is refused with a clear error. No app
+format has been dropped yet; the backend dropped plain SHA-256 code hashes
+(see the backend's `collect-api` spec).
 
 A change SHALL NOT stop data written by an earlier version from being read.
 Readers keep reading every earlier version; writers may write a newer one.
