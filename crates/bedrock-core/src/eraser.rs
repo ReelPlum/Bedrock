@@ -6,6 +6,8 @@
 use crate::geom::{point_segment_distance, segment_segment_distance, Rect, Vec2};
 use crate::input::InputPoint;
 use crate::stroke::{Stroke, StrokeId};
+use rstar::primitives::{GeomWithData, Rectangle};
+use rstar::{RTree, AABB};
 
 fn half_width(s: &Stroke, p: &InputPoint) -> f64 {
     s.brush.footprint(p, 0.0).width as f64 / 2.0
@@ -31,6 +33,57 @@ pub fn touches(stroke: &Stroke, a: Vec2, b: Vec2, radius: f64) -> bool {
         let reach = radius + half_width(stroke, &w[0]).max(half_width(stroke, &w[1]));
         segment_segment_distance(w[0].pos(), w[1].pos(), a, b) <= reach
     })
+}
+
+/// One segment of a [`PathIndex`]: its box, and its two ends.
+type PathSegment = GeomWithData<Rectangle<[f64; 2]>, (Vec2, Vec2)>;
+
+/// The segments of a long path (a scribble) in an R-tree, so "does this
+/// stroke touch the path?" looks only at the path's segments near each of
+/// the stroke's own, instead of at every segment of the path: a scribble
+/// has hundreds of segments and goes over the same ink again and again.
+pub struct PathIndex {
+    tree: RTree<PathSegment>,
+}
+
+impl PathIndex {
+    pub fn new(points: &[Vec2]) -> Self {
+        let segs = points
+            .windows(2)
+            .map(|w| {
+                let r = segment_rect(w[0], w[1], 0.0);
+                GeomWithData::new(Rectangle::from_corners([r.min.x, r.min.y], [r.max.x, r.max.y]), (w[0], w[1]))
+            })
+            .collect();
+        PathIndex { tree: RTree::bulk_load(segs) }
+    }
+
+    /// Exactly [`touches`] for some segment of the path: some segment of
+    /// the path `radius` wide comes within the stroke's ink.
+    pub fn touches(&self, stroke: &Stroke, radius: f64) -> bool {
+        let pts = &stroke.points;
+        // Every pair within reach has overlapping boxes once the stroke's
+        // segment box is grown by the reach, so the query misses nothing.
+        let near = |a: Vec2, b: Vec2, reach: f64| {
+            let r = segment_rect(a, b, reach);
+            let env = AABB::from_corners([r.min.x, r.min.y], [r.max.x, r.max.y]);
+            self.tree.locate_in_envelope_intersecting(env).any(|g| {
+                let (c, d) = g.data;
+                segment_segment_distance(a, b, c, d) <= reach
+            })
+        };
+        match pts.len() {
+            0 => false,
+            1 => {
+                let p = pts[0].pos();
+                near(p, p, radius + half_width(stroke, &pts[0]))
+            }
+            _ => pts.windows(2).any(|w| {
+                let reach = radius + half_width(stroke, &w[0]).max(half_width(stroke, &w[1]));
+                near(w[0].pos(), w[1].pos(), reach)
+            }),
+        }
+    }
 }
 
 /// Ids of all strokes touched by the eraser segment.
