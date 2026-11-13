@@ -1,10 +1,11 @@
 // The "Saving your samples" card on /train: consent, invite code, and
 // "Delete my contributions".
 import * as collect from '../src/collect.js';
-import { CONSENT_HTML, accept } from '../src/consent.js';
+import { agreeHtml, accept } from '../src/consent.js';
 
 const $ = (id) => document.getElementById(id);
-$('consent-text').innerHTML = CONSENT_HTML;
+// The terms live on /terms; the tick box links to them, as the app's gate does.
+$('agree-text').innerHTML = agreeHtml();
 
 async function show() {
   const s = collect.loadState();

@@ -14,7 +14,7 @@ note opened while consent is missing shows the gate over its canvas.
 #### Scenario: At start
 - **GIVEN** no consent
 - **WHEN** Obsidian starts with the plugin
-- **THEN** a window with the gate opens, and closes once the person has agreed, leaving the consent and "Send every word" stored for the notes
+- **THEN** a window with the gate opens, its terms link going to the public website, and closes once the person has agreed, leaving the consent and "Send every word" stored for the notes
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: at start, the plugin asks for the invite code and consent in a window, and closes it once agreed -->
 
 #### Scenario: Already agreed

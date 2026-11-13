@@ -383,7 +383,7 @@ test('at start, the plugin asks for the invite code and consent in a window, and
   await page.waitForSelector('#consent-window iframe');
   const welcome = page.frames().find((f) => f.url().includes('/welcome/index.html') && !f.url().includes('probe'));
   await welcome.waitForFunction(() => document.getElementById('launch-gate')?.open);
-  assert.match(await welcome.textContent('#launch-gate'), /Every handwritten word you write in a note/);
+  assert.equal(await welcome.getAttribute('#launch-gate a', 'href'), 'https://reelplum.github.io/Bedrock/terms/', 'inside Obsidian the terms open on the website');
   await welcome.fill('#gate-code', CODE);
   await welcome.check('#gate-agree');
   await welcome.click('#gate-go');

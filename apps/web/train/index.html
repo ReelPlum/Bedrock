@@ -28,8 +28,7 @@
       <h2 id="setup-title">Saving your samples</h2>
       <p class="state" id="state" aria-live="polite"></p>
       <form id="setup-form" novalidate>
-        <!-- The consent text is apps/web/src/consent.js, shared with the app's launch gate. -->
-        <div class="consent" id="consent-text"></div>
+<p class="consent">Saving sends your handwriting to Bedrock to train its recognition, as the Terms of service say.</p>
         <label class="field">Invite code
           <input id="code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="bedrock-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx">
         </label>
@@ -40,7 +39,7 @@
             <option value="left">Left</option>
           </select>
         </label>
-        <label class="agree"><input type="checkbox" id="agree"> I agree that my handwriting is sent and used as described.</label>
+        <label class="agree"><input type="checkbox" id="agree"> <span id="agree-text"></span></label>
         <p class="error" id="setup-error" hidden></p>
         <div class="actions">
           <button type="submit" class="primary" id="save">Save</button>

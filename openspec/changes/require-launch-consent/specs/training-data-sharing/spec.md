@@ -5,8 +5,9 @@
 ### Requirement: While Bedrock is invite-only, the app SHALL ask for the invite code and consent at launch, and SHALL NOT be usable without them
 
 With `LAUNCH_GATE` on and a safe server address built in, the web app
-SHALL show the gate (a modal dialog with the consent text, the invite code
-and an optional writing hand) as soon as it starts, whenever there is no
+SHALL show the gate (a modal dialog with the invite code, an optional
+writing hand, and a tick box to agree to the Terms of service, linked to
+the website's `/terms` page) as soon as it starts, whenever there is no
 consent to the current version (3) with a code, or the server has turned
 the code down. It SHALL NOT close without agreeing. The code SHALL be
 checked with `GET /v1/stats` first: a code the server turns down is not
@@ -19,7 +20,7 @@ address built in, the app opens without the gate.
 #### Scenario: First launch
 - **GIVEN** a server address built in and no consent
 - **WHEN** the app starts
-- **THEN** the gate is shown over the app, Escape does not close it, no tick or no code is refused without asking the server, a wrong code is refused by the server and nothing is stored, and the right code stores consent 3, the code and the writing hand, and turns "Send every word" on and locks it
+- **THEN** the gate is shown over the app with a link to the terms, Escape does not close it, no tick or no code is refused without asking the server, a wrong code is refused by the server and nothing is stored, and the right code stores consent 3, the code and the writing hand, and turns "Send every word" on and locks it
 <!-- test-js: apps/web/tests/launch-gate.test.mjs :: the app asks for the invite code and consent at once, and cannot be used until both are given -->
 
 #### Scenario: No server yet
@@ -41,11 +42,11 @@ address built in, the app opens without the gate.
 <!-- test-js: apps/web/tests/launch-gate.test.mjs :: consent given to the version 2 text is asked for again, keeping the code and the contributor id -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: consent given to an older consent text is asked for again -->
 
-#### Scenario: One consent text
-- **GIVEN** the gate and `/train`
-- **WHEN** either is shown
-- **THEN** both show the same text, agreeing on `/train` also turns "Send every word" on, and "Stop saving" there brings the gate back
-<!-- test-js: apps/web/tests/launch-gate.test.mjs :: /train shows the same consent text, and agreeing there turns on "Send every word" -->
+#### Scenario: Terms of service
+- **GIVEN** the website's `/terms` page, the gate and `/train`
+- **WHEN** they are shown
+- **THEN** `/terms` says what is sent and why and names the consent version people agree to; the gate and `/train` ask to agree to it with a link instead of showing the text; agreeing on `/train` also turns "Send every word" on, and "Stop saving" there brings the gate back
+<!-- test-js: apps/web/tests/launch-gate.test.mjs :: the Terms of service page says what is sent, and /train agrees to it too, turning on "Send every word" -->
 
 #### Scenario: Several windows
 - **GIVEN** the app open in two windows

@@ -15,7 +15,14 @@ people may never open (`/train`), and "Send every word" is off by default.
   else. It cannot be closed without agreeing, and the app behind it cannot
   be used. The code is checked with the server (`GET /v1/stats`, which
   needs a code and changes nothing) before it is accepted.
-- **Consent version 3.** The consent text now says every handwritten word
+- **Terms of service.** What is sent and why moves to a `/terms` page on
+  the website (`apps/web/terms/`). The gate and `/train` ask people to tick
+  "I agree to the Terms of service", with a link, instead of showing the
+  text (Frederik, 2026-11-13: "Make it a terms of service link instead.
+  And have a /terms page on the website", "have the user agree to the
+  terms of service instead"). Inside Obsidian the link opens the public
+  website.
+- **Consent version 3.** The terms now say every handwritten word
   written in notes is sent, and that sharing is part of using Bedrock for
   now. Agreeing turns on "Send every word I write in notes", and that
   setting cannot be turned off while the gate is on. "Stop saving" on
@@ -48,9 +55,10 @@ What changes:
 - Agreeing writes `shareWords: true` and `shareWordsSince` to the existing
   settings (`bedrock.settings.v1`); both fields already exist.
 
-Why: the consent text changes what is sent (every word in notes, not only
+Why: the terms change what is sent (every word in notes, not only
 when the person turns it on), so consent given to the older text must not
-count for it.
+count for them. `/terms` names its version (`data-consent-version`), and a
+test keeps it equal to `CONSENT_VERSION`.
 
 How old data keeps working:
 
@@ -77,10 +85,10 @@ add nothing these do not.
 
 ## Impact
 
+- `apps/web/terms/` (new), `.github/workflows/pages.yml`.
 - `apps/web/src/collect.js` (`LAUNCH_GATE`, `gateRequired`, `gateNeeded`,
   `checkCode`, `CONSENT_VERSION = 3`), new `apps/web/src/consent.js`,
-  `apps/web/src/main.js`, `apps/web/train/` (the text now comes from
-  `consent.js`), new `apps/web/welcome/`, `apps/web/sw.js` (cache v27).
+  `apps/web/src/main.js`, `apps/web/train/` (links to the terms), new `apps/web/welcome/`, `apps/web/sw.js` (cache v27).
 - `apps/obsidian/src/consent.js` (new), `apps/obsidian/src/main.js`,
   `apps/obsidian/build.mjs`, `apps/obsidian/styles.css`.
 - Docs: `docs/training-data.md`.

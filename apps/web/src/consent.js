@@ -1,8 +1,9 @@
-// The consent text for sending handwriting to Bedrock's training data
-// backend, and the launch gate: while Bedrock is invite-only
+// Consent to send handwriting to Bedrock's training data backend, and the
+// launch gate: while Bedrock is invite-only
 // (`collect.LAUNCH_GATE`), the app and the Obsidian plugin ask for the
 // invite code and this consent as soon as they start, and cannot be used
-// until both are given. The same text is shown on /train.
+// until both are given. What is sent, and why, is on the website's /terms
+// page (terms/index.html); the gate and /train link to it.
 //
 // Agreeing stores the code and consent version (collect.js) and turns on
 // "Send every word I write in notes" (settings `shareWords`), because the
@@ -12,18 +13,20 @@ import * as collect from './collect.js';
 
 const SETTINGS_KEY = 'bedrock.settings.v1';
 
-/** Consent version 3. Changing what it says means raising
- *  `collect.CONSENT_VERSION`, so everyone is asked again. */
-export const CONSENT_HTML = `
-<p><b>Bedrock is invite-only for now, and sharing your handwriting is part of using it.</b> To use the app you agree that what you write is sent to Bedrock's server to train its handwriting recognition.</p>
-<p><b>Words from your notes.</b> Every handwritten word you write in a note from now on is sent: its pen strokes, moved so where on the page it was is not sent, and what the app read it as. When you say a reading is right, correct it, or say it is not a word, that is sent too. Nothing else from the note is sent: no typed text, pictures or titles.</p>
-<p><b>PDFs you import.</b> When you import a PDF of handwritten notes (for example from GoodNotes), each handwritten word in it is sent the same way, with the text the PDF says it reads as, to be checked before it is used.</p>
-<p><b>The training pages.</b> The pen strokes you write there and the word or formula you were asked to write.</p>
-<p><b>With each of these</b> the language, the kind of device (for example "ipad") and whether you used a pen, a finger or a mouse are sent. If you choose to say, whether you are left or right handed.</p>
-<p><b>What is not.</b> No name, no email address and no account. You are a random number made on this device.</p>
-<p><b>What it is for.</b> Training Bedrock's handwriting recognition, and nothing else. The samples are kept private on Cloudflare in the EU and are not shared or sold.</p>
-<p><b>Changing your mind.</b> "Stop saving" on the Train page stops sending at once; the app then asks again before it can be used. "Delete my contributions" there removes everything you sent.</p>
-`;
+/** Where the terms (what is sent, and why) are read: the website's
+ *  /terms page. Inside a host (the Obsidian plugin) the link opens the
+ *  public website, since the app's own files there are not a web page. */
+export const SITE = 'https://reelplum.github.io/Bedrock/';
+export function termsUrl(loc = globalThis.location) {
+  const inHost = new URLSearchParams(loc?.search || '').has('host');
+  return inHost ? `${SITE}terms/` : new URL('../terms/', import.meta.url).href;
+}
+
+/** The line by the tick box, here and on /train. Agreeing to it is
+ *  consent version 3 (`collect.CONSENT_VERSION`). */
+export function agreeHtml() {
+  return `I agree to the <a href="${termsUrl()}" target="_blank" rel="noopener">Terms of service</a>, which say how my handwriting is sent and used.`;
+}
 
 /** Turns on "Send every word I write in notes" in the stored settings,
  *  from now on. Returns `{ shareWords, shareWordsSince }`. */
@@ -45,11 +48,10 @@ export function accept({ code, handedness }, storage = globalThis.localStorage) 
   return { state, sharing };
 }
 
-const GATE_HTML = `
+const gateHtml = () => `
 <form class="gate-card" method="dialog" novalidate>
   <h2 id="gate-title">Welcome to Bedrock</h2>
-  <p class="gate-lead">Enter your invite code and agree to share your handwriting to start.</p>
-  <div class="gate-consent">${CONSENT_HTML}</div>
+  <p class="gate-lead">Bedrock is invite-only for now. Enter your invite code, and agree that your handwriting is sent to Bedrock to train its recognition.</p>
   <label class="gate-field">Invite code
     <input id="gate-code" autofocus autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="bedrock-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx">
   </label>
@@ -60,7 +62,7 @@ const GATE_HTML = `
       <option value="left">Left</option>
     </select>
   </label>
-  <label class="gate-agree"><input type="checkbox" id="gate-agree"> I agree that my handwriting is sent and used as described.</label>
+  <label class="gate-agree"><input type="checkbox" id="gate-agree"> <span>${agreeHtml()}</span></label>
   <p class="gate-error" id="gate-error" role="alert" hidden></p>
   <button type="submit" class="gate-go" id="gate-go">Agree and start</button>
 </form>`;
@@ -79,7 +81,7 @@ export function showGate({ doc = document, onAccepted = () => {}, check = collec
   dialog.id = 'launch-gate';
   dialog.className = 'launch-gate';
   dialog.setAttribute('aria-labelledby', 'gate-title');
-  dialog.innerHTML = GATE_HTML;
+  dialog.innerHTML = gateHtml();
   doc.body.append(dialog);
   const $ = (id) => dialog.querySelector(`#${id}`);
   const s = collect.loadState();
@@ -111,7 +113,7 @@ export function showGate({ doc = document, onAccepted = () => {}, check = collec
   dialog.querySelector('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const code = $('gate-code').value.trim();
-    if (!$('gate-agree').checked) return fail('Tick the box to agree. Bedrock cannot be used without it for now.');
+    if (!$('gate-agree').checked) return fail('Tick the box to agree to the Terms of service. Bedrock cannot be used without it for now.');
     if (!code) return fail('Enter your invite code.');
     fail('');
     $('gate-go').disabled = true;
@@ -146,7 +148,7 @@ export function gateStyles(doc = document) {
 .gate-card { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
 .gate-card h2 { margin: 0; font-size: 20px; }
 .gate-lead { margin: 0; }
-.gate-consent { max-height: 38dvh; overflow: auto; padding: 4px 12px; border: 1px solid #ddd8cc; border-radius: 10px; background: #fff; font-size: 14px; }
+.gate-agree a { color: #2f6bff; }
 .gate-field { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
 .gate-field input, .gate-field select { font: inherit; font-weight: 400; padding: 8px 10px; border: 1px solid #cfc9bb; border-radius: 8px; background: #fff; color: inherit; }
 .gate-agree { display: flex; gap: 8px; align-items: flex-start; }
@@ -155,7 +157,7 @@ export function gateStyles(doc = document) {
 .gate-go:disabled { opacity: .6; }
 @media (prefers-color-scheme: dark) {
   .launch-gate { background: #1f1f22; color: #eee; }
-  .gate-consent, .gate-field input, .gate-field select { background: #2a2a2e; border-color: #444; color: #eee; }
+  .gate-field input, .gate-field select { background: #2a2a2e; border-color: #444; color: #eee; }
   .gate-error { color: #ff8a80; }
 }`;
   doc.head.append(style);

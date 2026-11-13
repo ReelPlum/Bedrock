@@ -69,7 +69,8 @@ test('the app asks for the invite code and consent at once, and cannot be used u
   const { ctx, server } = await context();
   const { page, errors } = await openApp(ctx);
   assert.equal(await gateOpen(page), true, 'shown at launch');
-  assert.match(await page.textContent('#launch-gate'), /Every handwritten word you write in a note/);
+  assert.equal(await page.getAttribute('#launch-gate a', 'href'), `${env.url}terms/`, 'the box agrees to the Terms of service, linked');
+  assert.match(await page.textContent('.gate-agree'), /I agree to the Terms of service/);
   // Escape does not close it, and the app behind cannot be clicked.
   await page.keyboard.press('Escape');
   assert.equal(await gateOpen(page), true, 'Escape does not close it');
@@ -158,13 +159,20 @@ test('consent given to the version 2 text is asked for again, keeping the code a
   await ctx.close();
 });
 
-test('/train shows the same consent text, and agreeing there turns on "Send every word"', async () => {
+test('the Terms of service page says what is sent, and /train agrees to it too, turning on "Send every word"', async () => {
   const { ctx } = await context();
+  const terms = await ctx.newPage();
+  await terms.goto(`${env.url}terms/`);
+  assert.equal(await terms.title(), 'Bedrock terms of service');
+  const version = await terms.evaluate(async () => (await import('/src/collect.js')).CONSENT_VERSION);
+  assert.equal(await terms.getAttribute('#terms', 'data-consent-version'), String(version), 'the terms are the version people agree to');
+  assert.match(await terms.textContent('#terms'), /Every handwritten word you write in a note/);
+  assert.match(await terms.textContent('#terms'), /Delete my contributions/);
+
   const page = await ctx.newPage();
   await page.goto(`${env.url}train/`);
   await page.waitForFunction(() => window.setup?.ready);
-  const texts = await page.evaluate(async () => ({ page: document.getElementById('consent-text').innerHTML, gate: (await import('/src/consent.js')).CONSENT_HTML }));
-  assert.equal(texts.page, texts.gate);
+  assert.equal(await page.getAttribute('#agree-text a', 'href'), `${env.url}terms/`);
   await page.fill('#code', CODE);
   await page.check('#agree');
   await page.click('#save');
