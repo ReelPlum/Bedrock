@@ -33,6 +33,12 @@ pen samples.
 <!-- test: strokes_without_timing_skip_the_modeler -->
 <!-- test: mistakes_are_refused_not_crashes -->
 
+#### Scenario: Imported handwriting keeps its shape
+- **GIVEN** a stroke imported from a PDF, whose points are exact and whose timing is made up from its length
+- **WHEN** it is drawn with the modeler
+- **THEN** small handwriting stays within 0.15 points of the line the PDF drew
+<!-- test: imported_strokes_keep_their_shape_through_the_pens_smoothing -->
+
 ## Open source used
 
 | | Ink Stroke Modeler |
