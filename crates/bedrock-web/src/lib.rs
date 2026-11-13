@@ -300,6 +300,7 @@ impl Canvas {
                     "strokes": w.strokes.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                     "bounds": [w.bounds.min.x, w.bounds.min.y, w.bounds.max.x, w.bounds.max.y],
                     "letterHeight": w.letter_height,
+                    "line": w.line,
                     "kind": w.kind.name(),
                     "text": w.text,
                     "engine": w.engine,

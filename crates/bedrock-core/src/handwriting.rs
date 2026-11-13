@@ -63,6 +63,9 @@ pub struct WordInfo {
     pub strokes: Vec<StrokeId>,
     pub bounds: Rect,
     pub letter_height: f64,
+    /// Which line of handwriting the word is on: an index into this
+    /// layout's lines, top to bottom (it can change when the page changes).
+    pub line: usize,
     pub kind: Kind,
     /// Recognised text for exactly these strokes, if any.
     pub text: Option<String>,
@@ -167,6 +170,7 @@ impl Handwriting {
                     strokes: w.strokes.clone(),
                     bounds: w.bounds,
                     letter_height: lh,
+                    line: w.line,
                     kind: match doc.kind_of(&w.strokes) {
                         Some(k) => Kind::parse(k),
                         None if looks_like_math(doc, w, lh) => Kind::Math,
@@ -320,6 +324,18 @@ mod tests {
         assert_eq!(words.len(), 3);
         let ids: HashSet<StrokeId> = b.strokes().iter().map(|s| s.id).collect();
         assert!(words.iter().all(|w| w.strokes.iter().all(|s| ids.contains(s))));
+    }
+
+    #[test]
+    fn each_word_says_which_line_it_is_on() {
+        let mut doc = Document::new(1);
+        let x = line(&mut doc, 0.0, 100.0, 3);
+        line(&mut doc, x, 100.0, 2);
+        line(&mut doc, 0.0, 300.0, 4);
+        let mut hw = Handwriting::new();
+        let mut got: Vec<(f64, usize)> = hw.words(&doc).iter().map(|w| (w.bounds.min.x, w.line)).collect();
+        got.sort_by(|a, b| (a.1, a.0).partial_cmp(&(b.1, b.0)).unwrap());
+        assert_eq!(got.iter().map(|g| g.1).collect::<Vec<_>>(), vec![0, 0, 1], "two words on the top line, one below");
     }
 
     #[test]
