@@ -47,6 +47,9 @@ export async function installPointerHelpers(page) {
         buttons: type === 'pointerup' ? 0 : (opts.buttons ?? 1), button: opts.button ?? 0,
         isPrimary: true,
       });
+      // Events made in a script all carry about the same time; a real pen
+      // reports one every few milliseconds (`time`, like e.timeStamp).
+      if (opts.time != null) Object.defineProperty(e, 'timeStamp', { value: opts.time });
       if (opts.coalesced) Object.defineProperty(e, 'getCoalescedEvents', { value: () => opts.coalesced });
       if (opts.predicted) Object.defineProperty(e, 'getPredictedEvents', { value: () => opts.predicted });
       stage.dispatchEvent(e);

@@ -1802,12 +1802,13 @@ test('pressure curve: points can be added and dragged, it is remembered, and sof
   await ctx.close();
 });
 
-test('pressure curve and steady hand survive a reload', async () => {
+test('pressure curve, steady hand and line smoothing survive a reload', async () => {
   const { page, ctx } = await openApp(env);
   await page.evaluate(() => {
     const s = JSON.parse(localStorage.getItem('bedrock.settings.v1') || '{}');
     s.pressureCurve = [[0.3, 0.6], [0.7, 0.95]];
     s.smoothing = 60;
+    s.smoother = 'classic';
     localStorage.setItem('bedrock.settings.v1', JSON.stringify(s));
   });
   await page.reload();
@@ -1816,8 +1817,9 @@ test('pressure curve and steady hand survive a reload', async () => {
     pts: Array.from(bedrock.canvas.pressure_points()).map((v) => Math.round(v * 100) / 100),
     smoothing: document.getElementById('smoothing').value,
     label: document.getElementById('smoothing-value').textContent,
+    smoother: document.getElementById('smoother').value,
   }));
-  assert.deepEqual(r, { pts: [0.3, 0.6, 0.7, 0.95], smoothing: '60', label: '60%' });
+  assert.deepEqual(r, { pts: [0.3, 0.6, 0.7, 0.95], smoothing: '60', label: '60%', smoother: 'classic' });
   await ctx.close();
 });
 
@@ -1846,6 +1848,45 @@ test('steady hand smooths a shaky line, old ink included', async () => {
   });
   assert.ok(r.on < r.off * 0.8, `smoothed line wobbles less: ${r.on} vs ${r.off}`);
   assert.equal(r.saved, 100);
+  await ctx.close();
+});
+
+test('line smoothing: the Ink Stroke Modeler smooths timed pen input, Classic brings back the old filters', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    // A shaky line as a real pen reports it: a sample every 8 ms, wobbling
+    // 6 px up and down.
+    const t0 = performance.now() - 1000;
+    t.ev('pointerdown', 1, 'pen', 200, 300, { pressure: 0.5, time: t0 });
+    for (let i = 1; i <= 60; i++) t.ev('pointermove', 1, 'pen', 200 + i * 8, 300 + (i % 2 ? 6 : -6), { pressure: 0.5, time: t0 + i * 8 });
+    t.ev('pointerup', 1, 'pen', 680, 300, { pressure: 0, time: t0 + 61 * 8 });
+    await t.frame();
+    const spread = () => {
+      let lo = Infinity, hi = -Infinity;
+      for (const x of [352, 360, 368, 376, 500, 508]) for (let yy = 285; yy <= 315; yy += 1) {
+        if (bedrock.canvas.pixel_at(x, yy)[0] < 128) { lo = Math.min(lo, yy); hi = Math.max(hi, yy); }
+      }
+      return hi - lo;
+    };
+    // The rightmost column with ink: the line still reaches where the pen lifted.
+    const reach = () => {
+      for (let x = 700; x > 600; x -= 2) for (let yy = 285; yy <= 315; yy += 1) if (bedrock.canvas.pixel_at(x, yy)[0] < 128) return x;
+      return 0;
+    };
+    const natural = { spread: spread(), reach: reach() };
+    const el = document.getElementById('smoother');
+    const usual = el.value;
+    el.value = 'classic';
+    el.dispatchEvent(new Event('change'));
+    await t.frame();
+    const classic = { spread: spread(), reach: reach() };
+    return { usual, natural, classic, saved: JSON.parse(localStorage.getItem('bedrock.settings.v1')).smoother };
+  });
+  assert.equal(r.usual, 'modeler', 'the modeler is the default');
+  assert.ok(r.natural.spread * 3 <= r.classic.spread, `the modeler takes out the wobble: ${r.natural.spread} vs ${r.classic.spread} px`);
+  assert.ok(r.natural.reach >= 676 && r.classic.reach >= 676, `both reach the end: ${r.natural.reach}, ${r.classic.reach}`);
+  assert.equal(r.saved, 'classic');
+  assert.deepEqual(errors, []);
   await ctx.close();
 });
 

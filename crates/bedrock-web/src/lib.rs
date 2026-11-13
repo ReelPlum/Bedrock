@@ -544,6 +544,19 @@ impl Canvas {
         self.retessellate();
     }
 
+    /// How every pen's input is smoothed: `"classic"` for Bedrock's own
+    /// filters, anything else for Google's Ink Stroke Modeler (the default).
+    /// Device-local and rendering only: notes keep the raw samples.
+    pub fn set_smoother(&mut self, name: &str) {
+        use bedrock_core::pen::{self, Smoother};
+        let s = if name == "classic" { Smoother::OneEuro } else { Smoother::Modeler };
+        if pen::smoother() == s {
+            return;
+        }
+        pen::set_smoother(s);
+        self.retessellate();
+    }
+
     /// Re-draw every stroke from its raw samples (after a rendering setting
     /// changed).
     fn retessellate(&mut self) {

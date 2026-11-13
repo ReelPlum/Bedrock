@@ -1495,6 +1495,29 @@ mod tests {
         assert!(s.input_scale < 0.1);
     }
 
+    #[test]
+    fn imported_strokes_keep_their_shape_through_the_pens_smoothing() {
+        // Imported strokes carry made-up timing, so the Ink Stroke Modeler
+        // smooths them like pen input: small handwriting must keep its
+        // shape (the arch from the Apple Notes test, 30 wide).
+        let samples: Vec<(f64, f64, f64)> = (0..=24)
+            .map(|k| {
+                let a = std::f64::consts::PI * k as f64 / 24.0;
+                (35.0 + 15.0 * (1.0 - a.cos()), 40.0 + 16.0 * a.sin(), 0.4 + 1.2 * a.sin())
+            })
+            .collect();
+        let doc = &import(&page_pdf(&apple_notes_stroke(&samples)), 1, 0.0).unwrap()[0].doc;
+        let s = &doc.strokes()[0];
+        let path: Vec<Vec2> = samples.iter().map(|p| Vec2::new(p.0, 100.0 - p.1)).collect();
+        let off = |p: Vec2| {
+            path.windows(2).map(|w| crate::geom::point_segment_distance(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+        };
+        let smoothed = crate::pen::filter_points(&s.points, s.input_scale);
+        for p in &smoothed {
+            assert!(off(p.pos()) < 0.15, "{:?} is {} off the line", p.pos(), off(p.pos()));
+        }
+    }
+
     /// The pixels of a PNG file: (width, height, channels, pixels).
     fn read_png(b: &[u8]) -> (usize, usize, usize, Vec<u8>) {
         let mut reader = png::Decoder::new(std::io::Cursor::new(b)).read_info().expect("a PNG file");
