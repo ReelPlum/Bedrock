@@ -77,6 +77,10 @@ impl Image {
     }
 }
 
+/// Above this many strokes removed and added at once, `Document::apply`
+/// rebuilds the stroke list in one pass instead of one by one.
+const BULK: usize = 16;
+
 #[derive(Debug, Clone)]
 enum Op {
     /// Strokes removed (index in the old list) and added (index in the new list).
@@ -206,6 +210,26 @@ impl Document {
                 return id;
             }
         }
+    }
+
+    /// `n` new ids, the same ones `n` calls of [`Document::next_id`] would
+    /// give while the note does not change. Checks them against a set made
+    /// once: `next_id` looks through the whole note each time, which made
+    /// moving 2000 strokes in a note of 100 000 take most of a second.
+    fn next_ids(&mut self, n: usize) -> Vec<StrokeId> {
+        if n < 8 {
+            return (0..n).map(|_| self.next_id()).collect();
+        }
+        let taken: HashSet<StrokeId> =
+            self.strokes.iter().map(|s| s.id).chain(self.images.iter().map(|i| i.id)).collect();
+        (0..n)
+            .map(|_| loop {
+                let id = StrokeId(splitmix64(&mut self.id_state));
+                if id.0 != 0 && !taken.contains(&id) {
+                    break id;
+                }
+            })
+            .collect()
     }
 
     pub fn strokes(&self) -> &[Stroke] {
@@ -414,9 +438,10 @@ impl Document {
             .filter(|(_, s)| wanted.contains(&s.id))
             .map(|(i, s)| (i, s.clone()))
             .collect();
-        for (i, old) in olds {
+        let new_ids = self.next_ids(olds.len());
+        for ((i, old), id) in olds.into_iter().zip(new_ids) {
             let mut moved = old.clone();
-            moved.id = self.next_id();
+            moved.id = id;
             for p in &mut moved.points {
                 p.x += delta.x;
                 p.y += delta.y;
@@ -464,9 +489,9 @@ impl Document {
         let originals: Vec<Stroke> = self.strokes.iter().filter(|s| wanted.contains(&s.id)).cloned().collect();
         let mut map: HashMap<StrokeId, StrokeId> = HashMap::new();
         let mut added = Vec::new();
-        for (k, old) in originals.into_iter().enumerate() {
+        let fresh = self.next_ids(originals.len());
+        for ((k, old), new_id) in originals.into_iter().enumerate().zip(fresh) {
             let mut copy = old;
-            let new_id = self.next_id();
             map.insert(copy.id, new_id);
             copy.id = new_id;
             for p in &mut copy.points {
@@ -674,14 +699,45 @@ impl Document {
                 rename(&mut k.strokes);
             }
         }
-        for (i, s) in take.iter().rev() {
-            debug_assert_eq!(self.strokes[*i].id, s.id);
-            self.strokes.remove(*i);
-            self.changes.push(Change::Removed(s.id));
-        }
-        for (i, s) in put {
-            self.strokes.insert(*i, s.clone());
-            self.changes.push(Change::Added(s.id));
+        let ascending = |v: &[(usize, Stroke)]| v.windows(2).all(|w| w[0].0 < w[1].0);
+        if take.len() + put.len() > BULK && ascending(take) && ascending(put) {
+            // Many at once (moving or undoing a big selection): rebuild the
+            // list in one pass. Removing and inserting them one by one moved
+            // the rest of the note each time: seconds for 2000 strokes in a
+            // note of 100 000.
+            let old = std::mem::take(&mut self.strokes);
+            let mut rest = Vec::with_capacity(old.len() - take.len());
+            let mut gone = take.iter().peekable();
+            for (i, s) in old.into_iter().enumerate() {
+                if gone.peek().is_some_and(|(at, _)| *at == i) {
+                    let taken = gone.next().map(|(_, g)| g.id);
+                    debug_assert_eq!(taken, Some(s.id));
+                } else {
+                    rest.push(s);
+                }
+            }
+            let mut out = Vec::with_capacity(rest.len() + put.len());
+            let mut rest = rest.into_iter();
+            for (i, s) in put {
+                while out.len() < *i {
+                    out.push(rest.next().expect("insert position past the end of the note"));
+                }
+                out.push(s.clone());
+            }
+            out.extend(rest);
+            self.strokes = out;
+            self.changes.extend(take.iter().rev().map(|(_, s)| Change::Removed(s.id)));
+            self.changes.extend(put.iter().map(|(_, s)| Change::Added(s.id)));
+        } else {
+            for (i, s) in take.iter().rev() {
+                debug_assert_eq!(self.strokes[*i].id, s.id);
+                self.strokes.remove(*i);
+                self.changes.push(Change::Removed(s.id));
+            }
+            for (i, s) in put {
+                self.strokes.insert(*i, s.clone());
+                self.changes.push(Change::Added(s.id));
+            }
         }
         if !take.is_empty() {
             let gone: HashSet<StrokeId> = take.iter().map(|(_, s)| s.id).collect();
@@ -790,6 +846,73 @@ mod tests {
     fn stroke(doc: &mut Document, x: f64) -> Stroke {
         let id = doc.next_id();
         Stroke::new(id, Brush::default(), 0.0, InputDevice::Pen, vec![InputPoint::new(x, 0.0, 0.5)])
+    }
+
+    /// Moving, copying and undoing many strokes at once rebuilds the list
+    /// in one pass (see `BULK`); it must give exactly what doing them one
+    /// by one gives: the same ids, the same places, the same changes.
+    #[test]
+    fn moving_many_strokes_at_once_matches_one_by_one() {
+        let mut d = Document::new(9);
+        for i in 0..200 {
+            let s = stroke(&mut d, i as f64);
+            d.add_stroke(s);
+        }
+        d.take_changes();
+        let before: Vec<StrokeId> = d.strokes().iter().map(|s| s.id).collect();
+        // Every third stroke, given out of order.
+        let mut pick: Vec<StrokeId> = before.iter().copied().step_by(3).collect();
+        pick.reverse();
+        // The ids a copy of the note hands out one by one.
+        let mut twin = Document::new(9);
+        twin.set_strokes(d.strokes().to_vec());
+        twin.id_state = d.id_state;
+        let expected_ids: Vec<StrokeId> = (0..pick.len()).map(|_| twin.next_id()).collect();
+
+        let moved = d.translate(&pick, Vec2::new(0.0, 10.0));
+        let changes = d.take_changes();
+        // New ids in stacking order, then handed back in the order asked.
+        let in_order: Vec<StrokeId> = d.strokes().iter().map(|s| s.id).filter(|id| moved.contains(id)).collect();
+        assert_eq!(in_order, expected_ids);
+        for (k, s) in d.strokes().iter().enumerate() {
+            if k % 3 == 0 {
+                assert!(moved.contains(&s.id));
+                assert_eq!(s.points[0].y, 10.0);
+            } else {
+                assert_eq!(s.id, before[k], "unmoved strokes stay where they were");
+            }
+        }
+        let removed: Vec<StrokeId> =
+            changes.iter().filter_map(|c| if let Change::Removed(id) = c { Some(*id) } else { None }).collect();
+        let added: Vec<StrokeId> =
+            changes.iter().filter_map(|c| if let Change::Added(id) = c { Some(*id) } else { None }).collect();
+        let mut old_moved: Vec<StrokeId> = before.iter().copied().step_by(3).collect();
+        old_moved.reverse();
+        assert_eq!(removed, old_moved, "removed from the top down, as one by one");
+        assert_eq!(added, expected_ids);
+
+        let after: Vec<StrokeId> = d.strokes().iter().map(|s| s.id).collect();
+        assert!(d.undo());
+        assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), before);
+        assert!(d.redo());
+        assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), after);
+
+        // Erasing many at once (scribbling out) too.
+        let gone: Vec<StrokeId> = after.iter().copied().skip(1).step_by(2).collect();
+        d.replace(&gone, vec![]);
+        let left: Vec<StrokeId> = after.iter().copied().step_by(2).collect();
+        assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), left);
+        assert!(d.undo());
+        assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), after);
+
+        // Copies go on top, with the ids handed out one by one.
+        let mut twin = Document::new(9);
+        twin.set_strokes(d.strokes().to_vec());
+        twin.id_state = d.id_state;
+        let expected: Vec<StrokeId> = (0..moved.len()).map(|_| twin.next_id()).collect();
+        let copies = d.duplicate(&moved, Vec2::new(5.0, 0.0));
+        assert_eq!(copies, expected);
+        assert_eq!(&d.strokes().iter().map(|s| s.id).collect::<Vec<_>>()[..after.len()], &after[..]);
     }
 
     #[test]
