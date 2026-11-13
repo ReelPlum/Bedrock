@@ -439,7 +439,7 @@ test('colour presets can be added and deleted, and are remembered', async () => 
     const ci = document.getElementById('color-input');
     ci.value = '#00aa88';
     ci.dispatchEvent(new Event('input'));
-    document.getElementById('color-add').click();
+    ci.dispatchEvent(new Event('change'));
     const added = swatches();
     // Long-press (here: right-click) enters delete mode; tapping a colour removes it.
     document.querySelector('#colors .swatch').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
@@ -452,6 +452,45 @@ test('colour presets can be added and deleted, and are remembered', async () => 
   assert.ok(r.editing);
   assert.equal(r.after, r.before);
   assert.ok(r.saved.includes('#00aa88') && !r.saved.includes('#1c1c1e'), JSON.stringify(r.saved));
+  await ctx.close();
+});
+
+test('the + opens the colour picker and adds the chosen colour; there is no colour wheel', async () => {
+  const { page, ctx } = await openApp(env);
+  // No separate colour wheel: the colour input lives inside the + itself.
+  assert.equal(await page.locator('.color-custom').count(), 0);
+  const inside = await page.evaluate(() => document.getElementById('color-add').contains(document.getElementById('color-input')));
+  assert.ok(inside, 'the colour input is inside the + button');
+  // A tap on the + lands on the colour input, which is what opens the picker.
+  const box = await page.locator('#color-add').boundingBox();
+  const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.id, [box.x + box.width / 2, box.y + box.height / 2]);
+  assert.equal(hit, 'color-input');
+  const r = await page.evaluate(() => {
+    const swatches = () => [...document.querySelectorAll('#colors .swatch')];
+    const before = swatches().length;
+    const ci = document.getElementById('color-input');
+    // Dragging around in the picker previews the colour without adding it.
+    ci.value = '#123456';
+    ci.dispatchEvent(new Event('input'));
+    const whilePicking = swatches().length;
+    ci.value = '#ff8800';
+    ci.dispatchEvent(new Event('input'));
+    ci.dispatchEvent(new Event('change'));
+    const added = swatches();
+    const selected = added.find((s) => s.getAttribute('aria-checked') === 'true')?.getAttribute('aria-label');
+    // Picking a colour already there only selects it.
+    ci.value = '#ff8800';
+    ci.dispatchEvent(new Event('change'));
+    const again = swatches().length;
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+    return { before, whilePicking, added: added.length, selected, again, saved: s.palettes.ink, color: s.brushes[s.brush].color };
+  });
+  assert.equal(r.whilePicking, r.before);
+  assert.equal(r.added, r.before + 1);
+  assert.equal(r.selected, 'Color #ff8800');
+  assert.equal(r.again, r.added);
+  assert.ok(r.saved.includes('#ff8800') && !r.saved.includes('#123456'), JSON.stringify(r.saved));
+  assert.equal(r.color, '#ff8800');
   await ctx.close();
 });
 

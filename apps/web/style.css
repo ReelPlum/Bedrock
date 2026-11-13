@@ -76,9 +76,6 @@ svg circle { fill: currentColor; stroke: none; }
 .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; padding: 0; display: grid; place-items: center; }
 .swatch span { width: 22px; height: 22px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12); }
 .swatch[aria-checked="true"] { border-color: var(--ink); }
-.color-custom { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; display: grid; place-items: center;
-  background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); cursor: pointer; }
-.color-custom input { opacity: 0; width: 100%; height: 100%; cursor: pointer; }
 .size { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
 .size input { width: 110px; accent-color: var(--ink); }
 .size .dot { width: 22px; height: 22px; display: grid; place-items: center; }
@@ -89,7 +86,11 @@ svg circle { fill: currentColor; stroke: none; }
 .preset span { border-radius: 50%; background: var(--c, var(--ink)); display: block; }
 .preset[aria-checked="true"] { background: rgba(0, 0, 0, 0.08); box-shadow: inset 0 0 0 1.5px var(--ink); }
 .swatch.add { color: var(--muted); border: 1.5px dashed rgba(0, 0, 0, 0.25); }
+.swatch.add { position: relative; overflow: hidden; cursor: pointer; }
 .swatch.add svg { width: 16px; height: 16px; }
+.swatch.add[hidden] { display: none; }
+/* The colour input covers the + so a tap opens the system colour picker. */
+.swatch.add input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
 .colors.editing .swatch { position: relative; animation: wiggle 0.25s ease-in-out infinite alternate; }
 .colors.editing .swatch::after { content: "×"; position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%;
   background: #e53935; color: #fff; font: 700 12px/15px system-ui; text-align: center; }
@@ -109,7 +110,7 @@ svg circle { fill: currentColor; stroke: none; }
 .toolbar[data-dock="left"] .size, .toolbar[data-dock="right"] .size { display: none; }
 .toolbar[data-dock="left"], .toolbar[data-dock="right"] { gap: 3px; }
 .toolbar[data-dock="left"] .tool, .toolbar[data-dock="right"] .tool { width: 38px; height: 36px; }
-.toolbar[data-dock="left"] :is(.swatch, .color-custom), .toolbar[data-dock="right"] :is(.swatch, .color-custom) { width: 28px; height: 28px; }
+.toolbar[data-dock="left"] .swatch, .toolbar[data-dock="right"] .swatch { width: 28px; height: 28px; }
 .toolbar[data-dock="left"] .swatch span, .toolbar[data-dock="right"] .swatch span { width: 20px; height: 20px; }
 .toolbar[data-dock="left"] .preset, .toolbar[data-dock="right"] .preset { width: 30px; height: 28px; }
 .toolbar[data-dock="left"] .grip, .toolbar[data-dock="right"] .grip { width: 44px; height: 22px; }
