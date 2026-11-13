@@ -40,8 +40,9 @@ fn full_note() -> Document {
     d.paper = "grid".into();
     for (i, kind) in BrushKind::ALL.into_iter().enumerate() {
         let id = d.next_id();
-        let points =
-            (0..6).map(|k| InputPoint::new(i as f64 * 30.0 + k as f64, k as f64, 0.5).with_tilt(0.9, 1.2).at(k as f64 * 4.0)).collect();
+        let points = (0..6)
+            .map(|k| InputPoint::new(i as f64 * 30.0 + k as f64, k as f64, 0.5).with_tilt(0.9, 1.2).at(k as f64 * 4.0))
+            .collect();
         let style = [LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted][i % 3];
         let brush = Brush::new(kind, Rgba::rgb(10, 20, 200), 3.0).with_style(style).with_stabilizer(0.5);
         let device = if i == 3 { InputDevice::Touch } else { InputDevice::Pen };
@@ -90,10 +91,13 @@ fn notes_written_by_earlier_versions_match_the_schema() {
         let bytes = std::fs::read(&path).unwrap();
         let json = match path.extension().and_then(|e| e.to_str()) {
             Some("json") => String::from_utf8(bytes).unwrap(),
-            Some("svg") => format::extract_json(std::str::from_utf8(&bytes).unwrap()).expect("embedded JSON").to_string(),
+            Some("svg") => {
+                format::extract_json(std::str::from_utf8(&bytes).unwrap()).expect("embedded JSON").to_string()
+            }
             Some("bedrock") => {
                 let (files, _) = bedrock_core::zip::read(&bytes).expect("zip");
-                String::from_utf8(files.into_iter().find(|(n, _)| n == format::NOTE_JSON).expect("note.json").1).unwrap()
+                String::from_utf8(files.into_iter().find(|(n, _)| n == format::NOTE_JSON).expect("note.json").1)
+                    .unwrap()
             }
             _ => continue,
         };
@@ -104,11 +108,13 @@ fn notes_written_by_earlier_versions_match_the_schema() {
 }
 
 fn brush() -> impl Strategy<Value = Brush> {
-    (0..BrushKind::ALL.len(), any::<[u8; 4]>(), 0.5f32..80.0, 0..3usize, 0.0f32..=1.0).prop_map(|(k, c, size, style, stab)| {
-        Brush::new(BrushKind::ALL[k], Rgba { r: c[0], g: c[1], b: c[2], a: c[3] }, size)
-            .with_style([LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted][style])
-            .with_stabilizer(stab)
-    })
+    (0..BrushKind::ALL.len(), any::<[u8; 4]>(), 0.5f32..80.0, 0..3usize, 0.0f32..=1.0).prop_map(
+        |(k, c, size, style, stab)| {
+            Brush::new(BrushKind::ALL[k], Rgba { r: c[0], g: c[1], b: c[2], a: c[3] }, size)
+                .with_style([LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted][style])
+                .with_stabilizer(stab)
+        },
+    )
 }
 
 /// A stroke's samples: it starts anywhere on the canvas and stays within a
@@ -116,7 +122,10 @@ fn brush() -> impl Strategy<Value = Brush> {
 fn points() -> impl Strategy<Value = Vec<InputPoint>> {
     let sample = (-150.0f64..150.0, -150.0f64..150.0, 0.0f32..=1.0, 0.0f32..1.57, -3.14f32..3.14, 0.0f64..60_000.0);
     (-1.0e6f64..1.0e6, -1.0e6f64..1.0e6, prop::collection::vec(sample, 1..12)).prop_map(|(x0, y0, samples)| {
-        samples.into_iter().map(|(x, y, p, alt, az, t)| InputPoint::new(x0 + x, y0 + y, p).with_tilt(alt, az).at(t)).collect()
+        samples
+            .into_iter()
+            .map(|(x, y, p, alt, az, t)| InputPoint::new(x0 + x, y0 + y, p).with_tilt(alt, az).at(t))
+            .collect()
     })
 }
 

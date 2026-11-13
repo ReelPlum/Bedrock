@@ -9,6 +9,10 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 miniz_oxide = "0.9"
+base64 = "0.23"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }

@@ -17,6 +17,7 @@ use crate::document::{Document, RecognizedText};
 use crate::input::InputPoint;
 use crate::stroke::{InputDevice, Stroke, StrokeId};
 use crate::tessellate;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::f32::consts::FRAC_PI_2;
@@ -510,19 +511,7 @@ pub fn image_mime(file: &str) -> &'static str {
 }
 
 fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        for k in 0..4 {
-            if k <= c.len() {
-                out.push(T[(n >> (18 - 6 * k) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// Extract the JSON payload from a Bedrock SVG.
@@ -569,30 +558,11 @@ fn pictures_from_svg(svg: &str, loaded: &mut Loaded) {
     }
 }
 
+/// Standard base64, with or without its `=` padding (other tools that
+/// re-save an SVG do not always keep it).
 fn unbase64(text: &str) -> Option<Vec<u8>> {
-    let value = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let digits = text.trim_end_matches('=').as_bytes();
-    if digits.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
-    for chunk in digits.chunks(4) {
-        let mut n = 0u32;
-        for (k, &c) in chunk.iter().enumerate() {
-            n |= value(c)? << (18 - 6 * k);
-        }
-        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
-    }
-    Some(out)
+    use base64::engine::general_purpose::STANDARD_NO_PAD;
+    STANDARD_NO_PAD.decode(text.trim_end_matches('=')).ok()
 }
 
 // ----- .bedrock container ---------------------------------------------------
