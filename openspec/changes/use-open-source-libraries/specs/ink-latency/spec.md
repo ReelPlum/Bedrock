@@ -14,10 +14,10 @@
 
 None. Kept our own on purpose, with the reason:
 
-| | rstar (considered, not used) |
+| | rstar (considered for the eraser and lasso, not used there) |
 |---|---|
 | Version | [0.14](https://crates.io/crates/rstar) |
 | Would be used for | A spatial index (R-tree) to find the strokes under the eraser or inside a lasso without looking at every stroke. |
-| Why not | Measured first: on 100 000 strokes, checking every stroke's stored bounds takes about 0.7 ms per eraser move and 0.7 ms per lasso (about 0.03 ms on a typical note), well inside a 120 Hz frame. The eraser and lasso must give strokes back in stacking order, and the note keeps strokes in a list in that order, so turning the index's answer back into that order costs as much as the scan; and the index would have to follow every change, undo and redo. Drawing already culls by chunk (0.07 ms per frame). The budget above is now tested, so if notes outgrow it, this is the library to use. |
+| Why not | Measured first: on 100 000 strokes, checking every stroke's stored bounds takes about 0.7 ms per eraser move and 0.7 ms per lasso (about 0.03 ms on a typical note), well inside a 120 Hz frame. The eraser and lasso must give strokes back in stacking order, and the note keeps strokes in a list in that order, so turning the index's answer back into that order costs as much as the scan; and the index would have to follow every change, undo and redo. Drawing already culls by chunk (0.07 ms per frame). The budget above is now tested, so if notes outgrow it, this is the library to use. Scribbling out does use it, for the scribble's own segments (see `erasing`). |
 | Why it is mature | Since 2018, about 56 million downloads, maintained by the GeoRust organisation, released November 2026. |
 | Licence | MIT or Apache-2.0: commercial use allowed. |

@@ -130,9 +130,34 @@ pub fn targets(doc: &Document, scribble: &Stroke) -> Vec<StrokeId> {
     let pts: Vec<Vec2> = scribble.points.iter().map(|p| p.pos()).collect();
     let radius = (scribble.brush.size as f64 * 0.5).max(1.0);
     let area = ink_rect(&pts).inflate(radius * 2.0);
-    // Only ink near the scribble can be hit: one cheap pass over the page,
-    // then the exact test on those few strokes (this also runs while the
-    // scribble is being drawn, see `Engine::scribble_preview`).
+    // Only ink near the scribble can be hit: one cheap pass over the
+    // page's stored bounds (fast even on 100 000 strokes, see the
+    // ink-latency spec), then the cheap "mostly under it" count, and only
+    // then the exact test. The exact test looks up the scribble's segments
+    // near each of the stroke's own in an R-tree: comparing every segment
+    // of a long scribble with every segment of each nearby stroke made big
+    // notes stutter once a scribble was recognised, because this runs over
+    // and over while it is drawn (see `Engine::scribble_preview`).
+    let mut index = None;
+    doc.strokes()
+        .iter()
+        .filter(|s| s.id != scribble.id && s.bounds().intersects(&area))
+        .filter(|s| {
+            let n = s.points.iter().filter(|p| area.contains(p.pos())).count();
+            n as f64 >= s.points.len() as f64 * COVERED_SHARE
+        })
+        .filter(|s| index.get_or_insert_with(|| eraser::PathIndex::new(&pts)).touches(s, radius))
+        .map(|s| s.id)
+        .collect()
+}
+
+/// [`targets`] as it was first written, kept to check the fast one against:
+/// every segment of the scribble against each nearby stroke.
+#[cfg(test)]
+fn targets_by_scan(doc: &Document, scribble: &Stroke) -> Vec<StrokeId> {
+    let pts: Vec<Vec2> = scribble.points.iter().map(|p| p.pos()).collect();
+    let radius = (scribble.brush.size as f64 * 0.5).max(1.0);
+    let area = ink_rect(&pts).inflate(radius * 2.0);
     doc.strokes()
         .iter()
         .filter(|s| s.id != scribble.id && s.bounds().intersects(&area))
@@ -312,5 +337,41 @@ mod tests {
         let s = stroke(&mut d, &zigzag(5.0, 45.0, 5.0, 20.0, 8));
         assert_eq!(targets(&d, &s), vec![w]);
         assert!(!targets(&d, &s).contains(&l) && !targets(&d, &s).contains(&a));
+    }
+
+    /// The R-tree lookup must erase exactly what checking every segment of
+    /// the scribble did: on dense random ink (dots, short marks, long
+    /// lines, thick and thin brushes), over many scribbles.
+    #[test]
+    fn indexed_targets_match_the_full_scan() {
+        let mut seed = 7u64;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut d = Document::new(1);
+        let mut strokes = Vec::new();
+        for _ in 0..600 {
+            let (x, y) = (rnd() * 300.0, rnd() * 300.0);
+            let n = 1 + (rnd() * 30.0) as usize;
+            let step = rnd() * 6.0;
+            let pts: Vec<_> = (0..n).map(|k| (x + k as f64 * step, y + (k as f64 * 0.7).sin() * 5.0)).collect();
+            let mut s = stroke(&mut d, &pts);
+            s.brush.size = 1.0 + rnd() as f32 * 12.0;
+            s.recompute_bounds();
+            strokes.push(s);
+        }
+        d.set_strokes(strokes);
+        let mut hits = 0;
+        for i in 0..60 {
+            let (x, y) = (rnd() * 260.0, rnd() * 260.0);
+            let (w, h) = (10.0 + rnd() * 80.0, 4.0 + rnd() * 40.0);
+            let mut s = stroke(&mut d, &zigzag(x, x + w, y, y + h, 4 + i % 12));
+            s.brush.size = 0.5 + rnd() as f32 * 10.0;
+            let fast = targets(&d, &s);
+            assert_eq!(fast, targets_by_scan(&d, &s), "scribble {i}");
+            hits += fast.len();
+        }
+        assert!(hits > 50, "the scribbles must actually erase something ({hits})");
     }
 }

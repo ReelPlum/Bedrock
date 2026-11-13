@@ -90,8 +90,8 @@ pub struct Canvas {
     /// Geometry of the selection being dragged, built once per drag.
     floating: Option<(Vec<bedrock_core::stroke::StrokeId>, ChunkMesh)>,
     /// A veil in the paper's colour over the ink a scribble is about to
-    /// erase, built once per set of strokes.
-    veil: Option<(Vec<bedrock_core::stroke::StrokeId>, ChunkMesh)>,
+    /// erase (each stroke tessellated once while the scribble lasts).
+    veil: bedrock_core::scene::Veil,
 }
 
 #[wasm_bindgen]
@@ -113,7 +113,7 @@ impl Canvas {
             css: (1.0, 1.0),
             dpr: 1.0,
             floating: None,
-            veil: None,
+            veil: Default::default(),
         })
     }
 
@@ -845,18 +845,20 @@ impl Canvas {
     }
 
     pub fn needs_render(&self) -> bool {
-        self.engine.needs_render() || self.base.is_lost()
+        self.engine.needs_render() || self.base.is_lost() || self.veil.pending()
     }
 
     /// Draw whatever changed. Returns true if anything was drawn.
     pub fn render(&mut self) -> bool {
-        if !self.engine.needs_render() {
+        // A veil still fading in (see `Veil::pending`) draws the live layer.
+        let veil = self.veil.pending();
+        if !self.engine.needs_render() && !veil {
             return false;
         }
         if self.engine.needs_scene_render() {
             self.render_scene();
         }
-        if self.engine.needs_live_render() {
+        if self.engine.needs_live_render() || veil {
             self.render_live();
         }
         self.engine.mark_rendered();
@@ -914,20 +916,18 @@ impl Canvas {
         self.floating = None;
         // Ink the scribble being drawn would erase is faded: its strokes
         // again, in the paper's colour, under the scribble itself.
-        let fading = self.engine.scribble_preview().to_vec();
+        // Each stroke is tessellated once while the scribble lasts (see
+        // `Veil`).
+        let fading = self.engine.scribble_preview();
         if fading.is_empty() {
-            self.veil = None;
-        } else if self.veil.as_ref().is_none_or(|(k, _)| *k != fading) {
-            let mut cm = ChunkMesh::default();
-            let paper = self.engine.doc.background;
-            for s in self.engine.doc.strokes().iter().filter(|s| fading.contains(&s.id)) {
-                cm.append_tinted(&bedrock_core::tessellate::mesh(s), paper, SCRIBBLE_VEIL);
-            }
-            self.veil = Some((fading, cm));
+            self.veil.clear();
+        } else {
+            self.veil.update(&self.engine.doc, fading, self.engine.doc.background, SCRIBBLE_VEIL);
         }
+        let veiled = !fading.is_empty();
         let mesh = match (self.engine.live_mesh(), self.engine.live_stroke()) {
             (Some(m), Some(s)) => {
-                let mut cm = self.veil.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+                let mut cm = if veiled { self.veil.mesh().clone() } else { ChunkMesh::default() };
                 cm.append_mesh(&m, s);
                 Some(cm)
             }

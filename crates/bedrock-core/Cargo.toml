@@ -16,6 +16,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 crc32fast = "1"
 roxmltree = "0.21"
 spellbook = "0.4"
+rstar = "0.14"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }

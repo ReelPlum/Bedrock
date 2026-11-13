@@ -51,6 +51,11 @@ const SPEED: f64 = 0.1;
 const GAP_MS: f64 = 150.0;
 /// A filled piece wider than this is a shape, not ink (points).
 const MAX_INK_WIDTH: f64 = 40.0;
+/// World units per input pixel given to imported strokes (see
+/// [`Stroke::input_scale`]).
+const INPUT_SCALE: f64 = 0.05;
+/// Straight pieces each curve in a path is drawn with.
+const CURVE_STEPS: usize = 6;
 const MAX_STREAM: usize = 128 * 1024 * 1024;
 const MAX_DEPTH: usize = 12;
 
@@ -274,10 +279,15 @@ fn run<'a>(content: &[u8], res: &Resources<'a>, ctm: Matrix, ink: &mut Ink<'a>, 
                         "v" => (cur, pts[0], pts[1]),
                         _ => (pts[0], pts[1], pts[1]),
                     };
-                    // The curve's middle, then its end.
-                    let mid = (cur + c1 * 3.0 + c2 * 3.0 + end) * 0.125;
-                    sub.push(mid);
-                    sub.push(end);
+                    // Points along the curve: enough to follow a pen
+                    // stroke's outline around a bend.
+                    for k in 1..=CURVE_STEPS {
+                        let t = k as f64 / CURVE_STEPS as f64;
+                        let u = 1.0 - t;
+                        sub.push(
+                            cur * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + end * (t * t * t),
+                        );
+                    }
                     cur = end;
                 }
             }
@@ -785,43 +795,227 @@ fn area(poly: &[Vec2]) -> f64 {
     (a * 0.5).abs()
 }
 
-/// The centre line and width of one filled stroke outline, in page space.
-fn centre_line(pieces: &[Vec<Vec2>]) -> Option<(Vec<Vec2>, f64)> {
-    let mut line: Vec<Vec2> = Vec::new();
-    let mut widths = Vec::new();
-    for piece in pieces {
-        if piece.is_empty() {
-            continue;
-        }
-        let start = piece[0];
-        let (k, far) =
-            piece
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (i, p.distance(start)))
-                .fold((0, 0.0), |a, b| if b.1 > a.1 { b } else { a });
-        if far > 1e-9 {
-            widths.push(area(piece) / far);
-        }
-        for &p in &piece[..=k] {
-            if line.last().is_none_or(|l| l.distance(p) > 0.05) {
-                line.push(p);
-            }
-        }
+/// One piece of a filled stroke outline as a short stretch of centre line,
+/// and how wide it is.
+///
+/// Pens draw a stroke as many short overlapping pieces, each a closed
+/// outline around a stretch of the line: GoodNotes as four-cornered pieces
+/// with flat ends, Apple Notes as capsules with round ends drawn with
+/// curves. The piece's long axis (where its points spread the most) finds
+/// its two ends; between them the outline runs along both sides of the
+/// line, and the centre line is halfway between the two sides. A
+/// round-ended piece reaches half its width past the line's end, so its
+/// centre line is shortened by that much at each end.
+struct Stretch {
+    points: Vec<Vec2>,
+    width: f64,
+    /// Round ends: the points run on into them, to be trimmed.
+    round: bool,
+}
+
+/// `n` points spread evenly along a polyline, ends included.
+fn resample(line: &[Vec2], n: usize) -> Vec<Vec2> {
+    let total: f64 = line.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if line.len() < 2 || total < 1e-12 {
+        return vec![line[0]; n];
     }
-    if line.is_empty() {
+    let mut out = Vec::with_capacity(n);
+    let (mut i, mut walked) = (0, 0.0);
+    for k in 0..n {
+        let want = total * k as f64 / (n - 1) as f64;
+        while i + 2 < line.len() && walked + line[i].distance(line[i + 1]) < want {
+            walked += line[i].distance(line[i + 1]);
+            i += 1;
+        }
+        let seg = line[i].distance(line[i + 1]);
+        let t = if seg > 1e-12 { ((want - walked) / seg).clamp(0.0, 1.0) } else { 0.0 };
+        out.push(line[i].lerp(line[i + 1], t));
+    }
+    out
+}
+
+/// A polyline with `start` taken off its start and `end` off its end, but
+/// never all of it: at least its middle point is left.
+fn trim_ends(line: &[Vec2], start: f64, end: f64) -> Vec<Vec2> {
+    let total: f64 = line.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if line.len() < 2 || total < 1e-9 {
+        return line.to_vec();
+    }
+    let keep = (total - start - end).max(0.0);
+    let (start, end) = if keep > 0.0 { (start, end) } else { (total * 0.5, total * 0.5) };
+    let at = |d: f64| -> (usize, Vec2) {
+        let mut walked = 0.0;
+        for i in 0..line.len() - 1 {
+            let seg = line[i].distance(line[i + 1]);
+            if walked + seg >= d {
+                let t = if seg > 1e-12 { (d - walked) / seg } else { 0.0 };
+                return (i, line[i].lerp(line[i + 1], t));
+            }
+            walked += seg;
+        }
+        (line.len() - 2, line[line.len() - 1])
+    };
+    let (i, a) = at(start);
+    let (j, b) = at(total - end);
+    let mut out = vec![a];
+    out.extend_from_slice(&line[i + 1..=j]);
+    out.push(b);
+    out
+}
+
+fn stretch(piece: &[Vec2]) -> Option<Stretch> {
+    let n = piece.len();
+    if n < 3 {
         return None;
     }
-    let mut w = median(&mut widths);
-    if widths.is_empty() {
+    // A dab of the pen (Apple Notes draws one at each pen sample): a
+    // point, as wide as the circle.
+    let mut r = Rect::EMPTY;
+    for p in piece {
+        r.include(*p);
+    }
+    let d = r.width().max(r.height());
+    if n > 4
+        && r.width().min(r.height()) > 0.85 * d
+        && (area(piece) / (std::f64::consts::FRAC_PI_4 * d * d) - 1.0).abs() < 0.15
+    {
+        return Some(Stretch { points: vec![(r.min + r.max) * 0.5], width: d, round: false });
+    }
+    let mean = piece.iter().fold(Vec2::ZERO, |s, p| s + *p) * (1.0 / n as f64);
+    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
+    for p in piece {
+        let d = *p - mean;
+        sxx += d.x * d.x;
+        syy += d.y * d.y;
+        sxy += d.x * d.y;
+    }
+    let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let dir = Vec2::new(angle.cos(), angle.sin());
+    let along = |p: &Vec2| (*p - mean).dot(dir);
+    let pick = |better: fn(f64, f64) -> bool| {
+        (0..n).fold(0, |best, i| if better(along(&piece[i]), along(&piece[best])) { i } else { best })
+    };
+    let (i0, i1) = (pick(|a, b| a < b), pick(|a, b| a > b));
+    if i0 == i1 {
+        return None;
+    }
+    // The outline from one end to the other, one way round and the other.
+    let mut side_a = vec![piece[i0]];
+    let mut i = i0;
+    while i != i1 {
+        i = (i + 1) % n;
+        side_a.push(piece[i]);
+    }
+    let mut side_b = vec![piece[i0]];
+    let mut i = i0;
+    while i != i1 {
+        i = (i + n - 1) % n;
+        side_b.push(piece[i]);
+    }
+    let a_len: f64 = side_a.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let steps = ((a_len / 0.5).ceil() as usize).clamp(2, 48) + 1;
+    // Halfway between each point of one side and the nearest point of the
+    // other: the two sides can be of different lengths where the ends are
+    // of different widths.
+    let nearest = |p: Vec2, line: &[Vec2]| {
+        line.windows(2)
+            .map(|w| {
+                let d = w[1] - w[0];
+                let t = if d.dot(d) > 1e-18 { ((p - w[0]).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
+                w[0] + d * t
+            })
+            .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
+            .unwrap_or(line[0])
+    };
+    let pairs: Vec<(Vec2, Vec2)> = resample(&side_a, steps).into_iter().map(|p| (p, nearest(p, &side_b))).collect();
+    let centre: Vec<Vec2> = pairs.iter().map(|(p, q)| (*p + *q) * 0.5).collect();
+    let length: f64 = centre.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if length < 1e-9 {
+        return None;
+    }
+    // Across the middle, from one side to the other.
+    let (p, q) = pairs[pairs.len() / 2];
+    let width = p.distance(q);
+    // Four corners and straight sides: flat ends. Curves: round ends.
+    let round = n > 4;
+    Some(Stretch { points: centre, width, round })
+}
+
+/// The centre line of one filled stroke outline, in page space, with the
+/// width at each point; and the outline's typical width.
+fn centre_line(pieces: &[Vec<Vec2>]) -> Option<(Vec<(Vec2, f64)>, f64)> {
+    let mut stretches: Vec<Stretch> = pieces.iter().filter_map(|p| stretch(p)).collect();
+    if stretches.is_empty() {
         // A dot: as wide as it is.
         let mut r = Rect::EMPTY;
         for p in pieces.iter().flatten() {
             r.include(*p);
         }
-        w = r.width().max(r.height());
+        if r.is_empty() {
+            return None;
+        }
+        let w = r.width().max(r.height());
+        return Some((vec![((r.min + r.max) * 0.5, w)], w));
     }
-    Some((line, w))
+    // The pieces come in writing order, but each one's own direction is
+    // not known: turn each to start where the one before ended.
+    for i in 0..stretches.len() {
+        let (from, to) = (stretches[i].points[0], *stretches[i].points.last().unwrap());
+        let flip = if i == 0 {
+            stretches.get(1).is_some_and(|next| {
+                let (nf, nt) = (next.points[0], *next.points.last().unwrap());
+                let near = |p: Vec2| p.distance(nf).min(p.distance(nt));
+                near(from) < near(to)
+            })
+        } else {
+            let end = *stretches[i - 1].points.last().unwrap();
+            end.distance(to) < end.distance(from)
+        };
+        if flip {
+            stretches[i].points.reverse();
+        }
+    }
+    // Inside a round end the halfway points bend towards one side, so it
+    // is cut off: half the width at the stroke's own ends (where the pen
+    // stopped at the end's centre), the whole width where pieces meet
+    // (the next piece, or the dab there, carries the line on).
+    let last = stretches.len() - 1;
+    for (i, s) in stretches.iter_mut().enumerate() {
+        if s.round {
+            let (start, end) = (if i == 0 { 0.5 } else { 1.0 }, if i == last { 0.5 } else { 1.0 });
+            s.points = trim_ends(&s.points, s.width * start, s.width * end);
+        }
+    }
+    let mut line: Vec<(Vec2, f64)> = Vec::new();
+    for s in &stretches {
+        for &p in &s.points {
+            if line.last().is_none_or(|l| l.0.distance(p) > 0.05) {
+                line.push((p, s.width));
+            }
+        }
+    }
+    // The pieces' own lines meet with small kinks: one gentle pass of
+    // averaging with the neighbours evens them out, keeping the ends.
+    if line.len() > 2 {
+        let raw = line.clone();
+        for i in 1..raw.len() - 1 {
+            let (a, b, c) = (raw[i - 1], raw[i], raw[i + 1]);
+            line[i] = ((a.0 + b.0 * 2.0 + c.0) * 0.25, (a.1 + b.1 * 2.0 + c.1) * 0.25);
+        }
+    }
+    let mut widths: Vec<f64> = stretches.iter().map(|s| s.width).collect();
+    Some((line, median(&mut widths)))
+}
+
+/// The pressure at which the pen draws a line `width` wide with a brush
+/// of `size` (its width at full pressure): the inverse of the pen's
+/// `size * (0.3 + 0.7 * pressure^0.8)` in [`Brush::footprint`].
+fn pressure_for(width: f64, size: f64) -> f32 {
+    if size <= 0.0 {
+        return 1.0;
+    }
+    let r = ((width / size - 0.3) / 0.7).clamp(0.0, 1.0);
+    r.powf(1.0 / 0.8) as f32
 }
 
 fn build_page(ink: &Ink<'_>, media: Rect, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
@@ -835,28 +1029,35 @@ fn build_page(ink: &Ink<'_>, media: Rect, seed: u64, t: &mut f64, pictures: &mut
         if path.color.iter().all(|c| *c > 0.97) {
             continue; // white: paper or an eraser trace
         }
-        let lines: Vec<(Vec<Vec2>, f64)> = match path.line {
+        // Each line: its points with the width there.
+        let lines: Vec<Vec<(Vec2, f64)>> = match path.line {
             None => match centre_line(&path.pieces) {
-                Some((l, w)) if w <= MAX_INK_WIDTH => vec![(l, w)],
+                Some((l, w)) if w <= MAX_INK_WIDTH => vec![l],
                 _ => {
                     shapes += 1;
                     continue;
                 }
             },
-            Some(w) => path.pieces.iter().filter(|p| !p.is_empty()).map(|p| (p.clone(), w)).collect(),
+            Some(w) => {
+                path.pieces.iter().filter(|p| !p.is_empty()).map(|p| p.iter().map(|q| (*q, w)).collect()).collect()
+            }
         };
-        for (line, w) in lines {
-            let pts: Vec<Vec2> = line.into_iter().map(to_page).collect();
+        for line in lines {
+            // The brush is as wide as the line's widest point; narrower
+            // points press lighter, so the line keeps the widths the PDF
+            // drew (see `pressure_for`).
+            let size = line.iter().map(|p| p.1).fold(0.0, f64::max);
+            let pts: Vec<(Vec2, f64)> = line.into_iter().map(|(p, w)| (to_page(p), w)).collect();
             let mut points = Vec::with_capacity(pts.len());
             let mut along = 0.0;
-            for (i, p) in pts.iter().enumerate() {
+            for (i, (p, w)) in pts.iter().enumerate() {
                 if i > 0 {
-                    along += p.distance(pts[i - 1]);
+                    along += p.distance(pts[i - 1].0);
                 }
                 points.push(InputPoint {
                     x: p.x,
                     y: p.y,
-                    pressure: 0.5,
+                    pressure: pressure_for(*w, size),
                     altitude: std::f32::consts::FRAC_PI_2,
                     azimuth: 0.0,
                     t: (along / SPEED).round(),
@@ -864,10 +1065,28 @@ fn build_page(ink: &Ink<'_>, media: Rect, seed: u64, t: &mut f64, pictures: &mut
             }
             let c = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
             let kind = if path.alpha < 0.95 { BrushKind::Highlighter } else { BrushKind::Pen };
-            let brush = Brush::new(kind, Rgba::rgb(c(path.color[0]), c(path.color[1]), c(path.color[2])), w as f32);
+            let brush = Brush {
+                // The PDF holds the line as drawn, thin ends and all: draw
+                // exactly those widths, with no taper or speed of our own.
+                pressure: Some(1.0),
+                speed: Some(0.0),
+                taper_start: Some(0.0),
+                taper_end: Some(0.0),
+                // A highlighter draws four times its size.
+                ..Brush::new(
+                    kind,
+                    Rgba::rgb(c(path.color[0]), c(path.color[1]), c(path.color[2])),
+                    if kind == BrushKind::Highlighter { size / 4.0 } else { size } as f32,
+                )
+            };
             let id = doc.next_id();
             let duration = along / SPEED;
-            strokes.push(Stroke::new(id, brush, t.round(), InputDevice::Pen, points));
+            let mut stroke = Stroke::new(id, brush, t.round(), InputDevice::Pen, points);
+            // The PDF's points are exact, not whole screen pixels: smooth
+            // them only as much as a pen drawn at high zoom, so small
+            // handwriting keeps its shape.
+            stroke.input_scale = INPUT_SCALE;
+            strokes.push(stroke);
             *t += duration + GAP_MS;
         }
     }
@@ -1176,6 +1395,104 @@ mod tests {
         assert_eq!(s.brush.size, 2.0);
         assert_eq!(s.brush.color, Rgba::rgb(0, 0, 255));
         assert!((doc.strokes()[1].points[0].x - 60.0).abs() < 0.01, "the form's matrix moves it");
+    }
+
+    /// A one page PDF (100 by 100) with `content` as its page.
+    fn page_pdf(content: &str) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.3\n".to_vec();
+        pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >> endobj\n",
+        );
+        pdf.extend_from_slice(format!("4 0 obj << /Length {} >>\nstream\n", content.len()).as_bytes());
+        pdf.extend_from_slice(content.as_bytes());
+        pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+
+    /// One stroke the way Apple Notes writes it to a PDF: a fill of short
+    /// overlapping capsules (round ends drawn with curves), one between
+    /// each two pen samples, with a round dab at every sample, each piece's
+    /// outline starting at an arbitrary side. `samples` are (x, y, width).
+    fn apple_notes_stroke(samples: &[(f64, f64, f64)]) -> String {
+        const K: f64 = 0.552_284_8; // a quarter circle as a cubic
+        let mut c = String::from("0.1 0.1 0.1 sc\n");
+        // Quarter circles around `centre` through the directions `turns`.
+        let arc = |c: &mut String, centre: Vec2, r: f64, turns: &[Vec2]| {
+            for t in turns.windows(2) {
+                let (a, b) = (t[0], t[1]);
+                let (c1, c2, end) = (centre + (a + b * K) * r, centre + (b + a * K) * r, centre + b * r);
+                c.push_str(&format!("{:.4} {:.4} {:.4} {:.4} {:.4} {:.4} c ", c1.x, c1.y, c2.x, c2.y, end.x, end.y));
+            }
+        };
+        for (i, w) in samples.windows(2).enumerate() {
+            let (p, q) = (Vec2::new(w[0].0, w[0].1), Vec2::new(w[1].0, w[1].1));
+            let (rp, rq) = (w[0].2 / 2.0, w[1].2 / 2.0);
+            let n = (q - p).normalized().perp();
+            let (dab, dab_r) = (q, rq);
+            // Start on one side or the other, at one end or the other.
+            let (p, q, rp, rq, n) = if i % 2 == 0 { (p, q, rp, rq, n) } else { (q, p, rq, rp, n * -1.0) };
+            let a = p + n * rp;
+            c.push_str(&format!("{:.4} {:.4} m ", a.x, a.y));
+            let b = q + n * rq;
+            c.push_str(&format!("{:.4} {:.4} l ", b.x, b.y));
+            let d = (q - p).normalized();
+            arc(&mut c, q, rq, &[n, d, n * -1.0]);
+            let e = p - n * rp;
+            c.push_str(&format!("{:.4} {:.4} l ", e.x, e.y));
+            arc(&mut c, p, rp, &[n * -1.0, d * -1.0, n]);
+            c.push_str("h ");
+            // A dab at the sample.
+            let f = dab + Vec2::new(dab_r, 0.0);
+            c.push_str(&format!("{:.4} {:.4} m ", f.x, f.y));
+            let (x, y) = (Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+            arc(&mut c, dab, dab_r, &[x, y, x * -1.0, y * -1.0, x]);
+            c.push_str("h\n");
+        }
+        c.push_str("f\n");
+        c
+    }
+
+    #[test]
+    fn pdf_strokes_drawn_as_round_pieces_keep_their_line_and_widths() {
+        // Bug: Apple Notes PDFs came in with every stroke zigzagging from
+        // one side of its outline to the other, all lines thinner than
+        // drawn, and small writing smoothed out of shape.
+        // An arch 30 wide and 16 tall, as small handwriting, thin at the
+        // ends and 1.6 wide at the top.
+        let samples: Vec<(f64, f64, f64)> = (0..=24)
+            .map(|k| {
+                let t = k as f64 / 24.0;
+                let a = std::f64::consts::PI * t;
+                (35.0 + 15.0 * (1.0 - a.cos()), 40.0 + 16.0 * a.sin(), 0.4 + 1.2 * a.sin())
+            })
+            .collect();
+        let doc = &import(&page_pdf(&apple_notes_stroke(&samples)), 1, 0.0).unwrap()[0].doc;
+        assert_eq!(doc.len(), 1, "one stroke");
+        let s = &doc.strokes()[0];
+        // The line through the pen's samples, in note space (y down).
+        let path: Vec<Vec2> = samples.iter().map(|p| Vec2::new(p.0, 100.0 - p.1)).collect();
+        let off = |p: Vec2| {
+            path.windows(2).map(|w| crate::geom::point_segment_distance(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+        };
+        for p in &s.points {
+            assert!(off(p.pos()) < 0.15, "{:?} is {} off the line", p.pos(), off(p.pos()));
+        }
+        // It runs the whole way, start to end.
+        assert!(s.points.first().unwrap().pos().distance(path[0]) < 0.5);
+        assert!(s.points.last().unwrap().pos().distance(path[24]) < 0.5);
+        // As wide as drawn: the brush is the widest point, and narrow
+        // points press lighter so the pen draws them as narrow.
+        assert!((s.brush.size - 1.6).abs() < 0.15, "size {}", s.brush.size);
+        let top = s.points.iter().min_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+        let end = s.points.first().unwrap();
+        let drawn = |p: &InputPoint| s.brush.footprint(p, 0.0).width as f64;
+        assert!((drawn(top) - 1.6).abs() < 0.2, "top {}", drawn(top));
+        assert!(drawn(end) < 0.8, "end {}", drawn(end));
+        assert_eq!((s.brush.taper_start, s.brush.taper_end, s.brush.speed), (Some(0.0), Some(0.0), Some(0.0)));
+        // Exact points: not smoothed like whole screen pixels.
+        assert!(s.input_scale < 0.1);
     }
 
     /// The pixels of a PNG file: (width, height, channels, pixels).

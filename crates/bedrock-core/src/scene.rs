@@ -103,6 +103,89 @@ impl ChunkMesh {
     }
 }
 
+/// Most stroke samples the veil tessellates in one update (about 1 ms
+/// native): when a scribble is first recognised dozens of strokes can join
+/// at once, and they fade in over a few frames instead of stalling one.
+pub const VEIL_SAMPLES_PER_UPDATE: usize = 600;
+
+/// The veil over ink a scribble is about to erase: the strokes again, in
+/// one colour. The set grows a stroke or two at a time while the scribble
+/// is drawn, so each stroke is tessellated once and kept; re-tessellating
+/// all of them whenever one joined made big scribbles stutter.
+#[derive(Debug, Default)]
+pub struct Veil {
+    ids: Vec<StrokeId>,
+    meshes: HashMap<StrokeId, tessellate::Mesh>,
+    mesh: ChunkMesh,
+    /// Some strokes are not in the mesh yet (see [`VEIL_SAMPLES_PER_UPDATE`]).
+    pending: bool,
+    /// The note's revision the kept meshes were made at.
+    revision: u64,
+    /// Strokes tessellated so far (for tests).
+    pub tessellated: usize,
+}
+
+impl Veil {
+    /// The veil over `ids` (in stacking order), `alpha` times as opaque as
+    /// `color`. Call [`Veil::clear`] when the scribble ends, and update
+    /// again next frame while [`Veil::pending`].
+    pub fn update(&mut self, doc: &Document, ids: &[StrokeId], color: crate::color::Rgba, alpha: f32) -> &ChunkMesh {
+        if self.revision != doc.revision() {
+            // The note changed under the scribble (e.g. synced in): start over.
+            self.clear();
+            self.revision = doc.revision();
+        }
+        if self.ids != ids || self.pending {
+            self.meshes.retain(|id, _| ids.contains(id));
+            let mut budget = VEIL_SAMPLES_PER_UPDATE;
+            let mut mesh = ChunkMesh::default();
+            self.pending = false;
+            for id in ids {
+                let m = match self.meshes.entry(*id) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => match doc.find(*id) {
+                        Some(s) if budget > 0 => {
+                            budget = budget.saturating_sub(s.points.len());
+                            self.tessellated += 1;
+                            e.insert(tessellate::mesh(s))
+                        }
+                        Some(_) => {
+                            self.pending = true;
+                            continue;
+                        }
+                        None => continue,
+                    },
+                };
+                mesh.append_tinted(m, color, alpha);
+            }
+            self.ids = ids.to_vec();
+            self.mesh = mesh;
+        }
+        &self.mesh
+    }
+
+    /// The veil as last updated.
+    pub fn mesh(&self) -> &ChunkMesh {
+        &self.mesh
+    }
+
+    /// Strokes are still waiting to be added: update again next frame.
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
+
+    pub fn clear(&mut self) {
+        self.ids.clear();
+        self.meshes.clear();
+        self.mesh = ChunkMesh::default();
+        self.pending = false;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkInfo {
     pub key: u64,
@@ -406,5 +489,60 @@ mod tests {
         assert_eq!(visible_strokes(&d, &view).count(), 1);
         let vis: Vec<_> = sc.visible(&view).collect();
         assert_eq!(vis.iter().map(|c| c.stroke_count).sum::<usize>(), 1, "far stroke is in another chunk");
+    }
+
+    /// Bug: the veil over ink a scribble is about to erase was tessellated
+    /// again, every stroke of it, each time one more stroke joined, which
+    /// made big notes stutter once a scribble was recognised.
+    #[test]
+    fn veil_tessellates_each_stroke_once_while_it_grows() {
+        let mut d = Document::new(1);
+        let ids: Vec<StrokeId> = (0..40)
+            .map(|i| {
+                let id = d.next_id();
+                let pts = (0..30).map(|k| InputPoint::new(i as f64 * 40.0 + k as f64, 0.0, 0.5)).collect();
+                d.add_stroke(Stroke::new(id, Brush::default(), 0.0, InputDevice::Pen, pts));
+                id
+            })
+            .collect();
+        let mut v = Veil::default();
+        for n in 1..=ids.len() {
+            let segs = v.update(&d, &ids[..n], Rgba::BLACK, 0.7).segment_count();
+            assert!(segs > 0);
+            assert_eq!(v.mesh().strokes as usize, n);
+        }
+        assert_eq!(v.tessellated, ids.len(), "each stroke once, not once per update");
+        assert!(!v.pending());
+        // The same set again costs nothing; a stroke leaving drops it.
+        v.update(&d, &ids, Rgba::BLACK, 0.7);
+        v.update(&d, &ids[1..], Rgba::BLACK, 0.7);
+        assert_eq!(v.tessellated, ids.len());
+        assert_eq!(v.mesh().strokes as usize, ids.len() - 1);
+        // A change to the note starts over.
+        d.remove(&ids[..1]);
+        while {
+            v.update(&d, &ids[1..], Rgba::BLACK, 0.7);
+            v.pending()
+        } {}
+        assert_eq!(v.tessellated, ids.len() + ids.len() - 1);
+        v.clear();
+        assert!(v.is_empty());
+
+        // Many joining at once fade in over a few updates, each one cheap.
+        let mut v = Veil::default();
+        let per_update = VEIL_SAMPLES_PER_UPDATE.div_ceil(30);
+        let mut updates = 0;
+        loop {
+            let before = v.tessellated;
+            v.update(&d, &ids[1..], Rgba::BLACK, 0.7);
+            assert!(v.tessellated - before <= per_update);
+            updates += 1;
+            if !v.pending() {
+                break;
+            }
+        }
+        assert_eq!(v.tessellated, ids.len() - 1);
+        assert_eq!(v.mesh().strokes as usize, ids.len() - 1);
+        assert!(updates > 1);
     }
 }
