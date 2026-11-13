@@ -20,6 +20,10 @@ of projects. Frederik asked for the survey's suggestions to be put in place
   program still opens.
 - `rstar` was considered for the eraser and lasso and turned down after
   measuring; their speed on a 100 000 stroke note is now tested.
+- Spell checking uses `spellbook` with a Hunspell English dictionary (SCOWL
+  en_US and en_GB merged) in place of a plain word list. Fix: the word list
+  had no capitalised words or apostrophes, so weekdays, months, names and
+  contractions were all underlined.
 - The PDF importer reads the file with `hayro-syntax` and writes PNG files
   with `png`. Bedrock's own part (turning pen paths into strokes, the hidden
   text layer, placing pictures) stays.
@@ -29,7 +33,9 @@ of projects. Frederik asked for the survey's suggestions to be put in place
 Each library is recorded with why it was chosen, why it is mature, its
 licence and what was turned down, in the "Open source used" section of the
 spec it belongs to: `note-format` (zip, crc32fast, base64, roxmltree, jsonschema,
-proptest) and `import-pdf` (hayro-syntax, png).
+proptest), `import-pdf` (hayro-syntax, png), `handwriting-recognition`
+(spellbook, the dictionary) and `ink-latency` (rstar, considered and not
+used).
 
 ## Data formats
 
@@ -42,7 +48,10 @@ a little smaller.
 
 ## Impact
 
-- `crates/bedrock-core`: `zip.rs`, `format.rs`, `pdf.rs`, `Cargo.toml`, new
-  `tests/schema.rs`.
+- `crates/bedrock-core`: `zip.rs`, `format.rs`, `pdf.rs`, `spell.rs`,
+  `Cargo.toml`, new `tests/schema.rs`; `crates/bedrock-web` (`load_dictionary`
+  takes the `.aff` and `.dic` files).
+- `apps/web/dict`: `en.aff` and `en.dic.gz` replace `en.txt.gz`; the service
+  worker and the Obsidian build ship them.
 - The WebAssembly build grows by about 270 KB before compression (mostly the
   `zip` crate).

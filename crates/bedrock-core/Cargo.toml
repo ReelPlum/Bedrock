@@ -15,6 +15,7 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 crc32fast = "1"
 roxmltree = "0.21"
+spellbook = "0.4"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }

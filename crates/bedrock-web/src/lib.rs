@@ -307,12 +307,17 @@ impl Canvas {
 
     // ----- handwriting ------------------------------------------------------
 
-    /// Load the spell-check word list (one word per line).
-    pub fn load_dictionary(&mut self, words: &str) -> usize {
-        let d = bedrock_core::spell::Dictionary::from_list(words);
-        let n = d.len();
-        self.hw.set_dictionary(d);
-        n
+    /// Load a Hunspell spell-check dictionary from its `.aff` and `.dic`
+    /// files. Returns how many entries it has (0 if it could not be read).
+    pub fn load_dictionary(&mut self, aff: &str, dic: &str) -> usize {
+        match bedrock_core::spell::Dictionary::from_hunspell(aff, dic) {
+            Ok(d) => {
+                let n = d.len();
+                self.hw.set_dictionary(d);
+                n
+            }
+            Err(_) => 0,
+        }
     }
 
     /// The words on the page as JSON: `[{id, strokes, bounds: [x0, y0, x1,

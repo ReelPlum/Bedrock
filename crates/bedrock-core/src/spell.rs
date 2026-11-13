@@ -1,24 +1,29 @@
 //! Spell checking for recognised handwriting.
 //!
-//! A plain word list (one word per line, any case), checked case-insensitively
-//! with the usual allowances: numbers, a leading capital at the start of a
-//! sentence, possessive 's, hyphenated compounds and surrounding punctuation.
-//! Suggestions are words one or two edits away (Damerau-Levenshtein), most
-//! common first when the list is in frequency order, otherwise shortest edit.
+//! Words are checked and corrections suggested by the `spellbook` crate,
+//! which reads Hunspell dictionaries (an `.aff` file of rules and a `.dic`
+//! file of words), the format used by LibreOffice, Firefox and most spell
+//! checkers, so any language with a Hunspell dictionary works. The rules
+//! know names and weekdays (which keep their capitals), contractions,
+//! plurals and other word endings, and ordinals like 21st.
 //!
-//! The English list shipped with the web app is SCOWL size 60 (American and
-//! British), by Kevin Atkinson; see apps/web/dict/README.
+//! Around it, Bedrock adds what handwriting needs: punctuation and quotes
+//! around a word are ignored, numbers, units and single letters are never
+//! flagged, and each part of a hyphenated word is checked on its own.
+//!
+//! The English dictionary shipped with the web app is SCOWL's en_US and
+//! en_GB merged, so both spellings pass; see apps/web/dict/README.md.
 
-use std::collections::HashMap;
-
-#[derive(Debug, Default, Clone)]
+/// A spell-check dictionary.
 pub struct Dictionary {
-    /// Lower-cased word -> rank in the list (lower is listed earlier).
-    words: HashMap<String, u32>,
-    /// Words that must keep their capitals (proper nouns, acronyms).
-    exact: HashMap<String, u32>,
-    /// Lower-cased forms of `exact`, to accept them written in all capitals.
-    exact_lower: HashMap<String, u32>,
+    inner: spellbook::Dictionary,
+    words: usize,
+}
+
+impl std::fmt::Debug for Dictionary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Dictionary").field("words", &self.words).finish()
+    }
 }
 
 /// Characters stripped from the ends of a word before checking: punctuation
@@ -28,45 +33,31 @@ fn is_edge_punct(c: char) -> bool {
 }
 
 impl Dictionary {
+    /// A Hunspell dictionary from its `.aff` and `.dic` files.
+    pub fn from_hunspell(aff: &str, dic: &str) -> Result<Self, String> {
+        let inner = spellbook::Dictionary::new(aff, dic).map_err(|e| e.to_string())?;
+        let words = dic.lines().skip(1).filter(|l| !l.trim().is_empty()).count();
+        Ok(Dictionary { inner, words })
+    }
+
+    /// A dictionary from a plain word list, one word per line. Words with
+    /// capitals must be written that way; others pass in any case.
     pub fn from_list(text: &str) -> Self {
-        let mut d = Dictionary::default();
-        for (rank, w) in text.lines().map(str::trim).filter(|w| !w.is_empty()).enumerate() {
-            let rank = rank as u32;
-            let lower = w.to_lowercase();
-            if w.chars().any(char::is_uppercase) {
-                d.exact.entry(w.to_string()).or_insert(rank);
-                d.exact_lower.entry(lower).or_insert(rank);
-            } else {
-                d.words.entry(lower).or_insert(rank);
-            }
-        }
+        let words: Vec<&str> = text.lines().map(str::trim).filter(|w| !w.is_empty() && !w.contains('/')).collect();
+        let dic = format!("{}\n{}\n", words.len(), words.join("\n"));
+        let mut d =
+            Self::from_hunspell("SET UTF-8\nICONV 1\nICONV ’ '\n", &dic).expect("a plain word list always reads");
+        d.words = words.len();
         d
     }
 
+    /// How many entries the dictionary has (words or word stems).
     pub fn len(&self) -> usize {
-        self.words.len() + self.exact.len()
+        self.words
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    fn known(&self, w: &str) -> bool {
-        if w.is_empty() {
-            return true;
-        }
-        if self.exact.contains_key(w) {
-            return true;
-        }
-        let lower = w.to_lowercase();
-        if self.words.contains_key(&lower) {
-            return true;
-        }
-        // "Paris" written "PARIS", or a capitalised word at sentence start.
-        if self.exact_lower.contains_key(&lower) && w.chars().all(|c| !c.is_lowercase()) {
-            return true;
-        }
-        false
     }
 
     /// True if `word` (as written, possibly with punctuation) is spelled
@@ -84,12 +75,13 @@ impl Dictionary {
         if core.chars().count() == 1 {
             return true;
         }
-        if self.known(core) {
+        if self.inner.check(core) {
             return true;
         }
-        for suffix in ["'s", "’s", "'"] {
+        // A possessive the dictionary does not list ("Bedrock's").
+        for suffix in ["'s", "’s", "'", "’"] {
             if let Some(stem) = core.strip_suffix(suffix) {
-                if self.known(stem) {
+                if !stem.is_empty() && self.inner.check(stem) {
                     return true;
                 }
             }
@@ -102,67 +94,21 @@ impl Dictionary {
 
     /// Up to `max` corrections for a misspelled word, best first.
     pub fn suggest(&self, word: &str, max: usize) -> Vec<String> {
-        let core = word.trim_matches(is_edge_punct).to_lowercase();
-        let n = core.chars().count();
-        if n == 0 {
+        let core = word.trim_matches(is_edge_punct);
+        if core.is_empty() {
             return Vec::new();
         }
-        let target: Vec<char> = core.chars().collect();
-        let mut found: Vec<(usize, u32, &str)> = self
-            .words
-            .iter()
-            .filter(|(w, _)| w.chars().count().abs_diff(n) <= 2)
-            .filter_map(|(w, &rank)| {
-                let d = edit_distance(&target, &w.chars().collect::<Vec<_>>(), 2)?;
-                Some((d, rank, w.as_str()))
-            })
-            .collect();
-        found.sort();
-        let capital = word.trim_matches(is_edge_punct).chars().next().is_some_and(char::is_uppercase);
+        let mut found = Vec::new();
+        self.inner.suggest(core, &mut found);
+        // Splitting one handwritten word in two ("until l") is rarely what
+        // was meant; keep those only when the word already had a break.
+        let split = |w: &str| w.contains([' ', '-']);
+        if !split(core) {
+            found.retain(|w| !split(w));
+        }
+        found.truncate(max);
         found
-            .into_iter()
-            .take(max)
-            .map(|(_, _, w)| {
-                if capital {
-                    let mut c = w.chars();
-                    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
-                } else {
-                    w.to_string()
-                }
-            })
-            .collect()
     }
-}
-
-/// Damerau-Levenshtein (optimal string alignment) distance, or None if it
-/// exceeds `limit`.
-fn edit_distance(a: &[char], b: &[char], limit: usize) -> Option<usize> {
-    let (n, m) = (a.len(), b.len());
-    if n.abs_diff(m) > limit {
-        return None;
-    }
-    let mut prev2 = vec![0usize; m + 1];
-    let mut prev: Vec<usize> = (0..=m).collect();
-    let mut cur = vec![0usize; m + 1];
-    for i in 1..=n {
-        cur[0] = i;
-        let mut row_min = cur[0];
-        for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut v = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                v = v.min(prev2[j - 2] + 1);
-            }
-            cur[j] = v;
-            row_min = row_min.min(v);
-        }
-        if row_min > limit {
-            return None;
-        }
-        std::mem::swap(&mut prev2, &mut prev);
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    (prev[m] <= limit).then_some(prev[m])
 }
 
 #[cfg(test)]
@@ -212,12 +158,52 @@ mod tests {
         assert!(d.suggest("zzzzzzzz", 3).is_empty());
     }
 
+    /// A file from the web app's `dict` folder, unzipped if it is gzip.
+    fn shipped(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dict").join(name);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let mut text = String::new();
+        if bytes.starts_with(&[0x1f, 0x8b]) {
+            std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text).unwrap();
+        } else {
+            text = String::from_utf8(bytes).unwrap();
+        }
+        text
+    }
+
     #[test]
-    fn edit_distance_is_damerau() {
-        let c = |s: &str| s.chars().collect::<Vec<_>>();
-        assert_eq!(edit_distance(&c("abc"), &c("abc"), 2), Some(0));
-        assert_eq!(edit_distance(&c("abc"), &c("acb"), 2), Some(1));
-        assert_eq!(edit_distance(&c("abc"), &c("xyz"), 2), None);
-        assert_eq!(edit_distance(&c("kitten"), &c("sitting"), 3), Some(3));
+    fn the_shipped_dictionary_knows_names_weekdays_and_contractions() {
+        // Regression: the word list shipped before had no capitalised words
+        // and no apostrophes, so all of these were underlined.
+        let d = Dictionary::from_hunspell(&shipped("en.aff"), &shipped("en.dic.gz")).unwrap();
+        for ok in ["Tuesday", "January", "Paris", "PARIS", "NASA", "I'm", "don't", "can’t", "it's", "Einstein"] {
+            assert!(d.check(ok), "{ok} should pass");
+        }
+        // British and American spellings both pass; real mistakes do not.
+        for ok in ["colour", "color", "organise", "organize", "theatre", "theater", "running", "unhappiness"] {
+            assert!(d.check(ok), "{ok} should pass");
+        }
+        for bad in ["teh", "recieve", "tuesday", "paris", "nasa", "seperate"] {
+            assert!(!d.check(bad), "{bad} should be flagged");
+        }
+    }
+
+    #[test]
+    fn the_shipped_dictionary_suggests_the_word_meant() {
+        let d = Dictionary::from_hunspell(&shipped("en.aff"), &shipped("en.dic.gz")).unwrap();
+        for (bad, meant) in [
+            ("recieve", "receive"),
+            ("becuase", "because"),
+            ("tomorow", "tomorrow"),
+            ("untill", "until"),
+            ("goverment", "government"),
+            ("Qiuck", "Quick"),
+            ("hendwriting", "handwriting"),
+        ] {
+            let s = d.suggest(bad, 5);
+            assert_eq!(s.first().map(String::as_str), Some(meant), "{bad}: {s:?}");
+            assert!(s.iter().all(|w| !w.contains(' ')), "no word split in two: {s:?}");
+        }
+        assert!(d.suggest("teh", 3).contains(&"the".to_string()));
     }
 }
