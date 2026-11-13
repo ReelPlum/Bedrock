@@ -18,6 +18,8 @@ async function fakeBackend(ctx) {
   const sent = [];
   await ctx.addInitScript((api) => {
     try { localStorage.setItem('bedrock.collect.v1', JSON.stringify({ api })); } catch (_) { /* ignore */ }
+    // Not about the launch gate (launch-gate.test.mjs): keep it out of the way.
+    window.bedrockNoLaunchGate = true;
   }, API);
   await ctx.route(`${API}/v1/reports`, async (route) => {
     const body = JSON.parse(route.request().postData());
@@ -115,6 +117,25 @@ test('a startup failure offers Reload and Share, and the report holds the error 
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0], { ...shown, comment: 'It happened right after the update.' }, 'exactly what was shown is sent');
   assert.equal(await page.evaluate(() => window.bedrockErrors.entries().length), 0, 'the log starts afresh');
+  await ctx.close();
+});
+
+test('after a startup failure the half-started app does not try to save', async () => {
+  // Bug: a save scheduled before the failure ran afterwards and failed
+  // ("Cannot access 'saver' before initialization"), adding a second
+  // error to the log, sometimes after the report about the first was sent.
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  await fakeBackend(ctx);
+  const real = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const old = real.replace(/\s*<button[^>]*id="wm-duplicate"[^>]*>[^<]*<\/button>/, '');
+  await ctx.route((u) => u.pathname === '/' || u.pathname === '/index.html', (r) => r.fulfill({ contentType: 'text/html', body: old }));
+  const page = await ctx.newPage();
+  await page.goto(env.url);
+  await page.waitForFunction(() => document.querySelector('#fatal .bx-share'), null, { timeout: 20000 });
+  // Longer than the autosave delay and the first scheduled jobs.
+  await page.waitForTimeout(5000);
+  const log = await page.evaluate(() => window.bedrockErrors.entries().map((e) => e.message));
+  assert.deepEqual(log.filter((m) => /save/i.test(m)), [], JSON.stringify(log));
   await ctx.close();
 });
 

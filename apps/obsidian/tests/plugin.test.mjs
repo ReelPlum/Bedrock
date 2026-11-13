@@ -77,6 +77,9 @@ test('registers the .bedrock view, commands and settings, and unpacks the web ap
   assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/index.html'), 'web app unpacked');
   assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/src/host.js'));
   assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/pkg/bedrock_web_bg.wasm'));
+  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/welcome/index.html'), 'the launch gate page');
+  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/welcome/welcome.js'));
+  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/src/consent.js'));
 });
 
 test('new notes are empty .bedrock files next to the open file, never overwriting one', async () => {

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fbfaf6">
+  <title>Bedrock terms of service</title>
+  <link rel="icon" href="../icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../train/train.css">
+  <style>
+    .terms { max-width: 640px; margin: 8px auto 48px; }
+    .terms h2 { font-size: 18px; margin: 24px 0 6px; }
+    .terms p { margin: 0 0 10px; }
+    .terms .version { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <a class="back" href="../">← Bedrock</a>
+    <h1>Terms of Service</h1>
+  </header>
+  <!-- What people agree to in the app's launch gate and on /train
+       (src/consent.js). Changing what is sent or why means raising
+       CONSENT_VERSION in src/collect.js, so everyone is asked again. -->
+  <main class="terms" id="terms" data-consent-version="3">
+    <p class="version">Version 3, 13 November 2026.</p>
+
+    <h2>Sharing your handwriting</h2>
+    <p>Bedrock is invite-only for now, and sharing your handwriting is part of using it. To use the app you agree that what you write is sent to Bedrock's server to train its handwriting recognition.</p>
+
+    <h2>Words from your notes</h2>
+    <p>Every handwritten word you write in a note from when you agree is sent: its pen strokes, moved so where on the page it was is not sent, and what the app read it as. When you say a reading is right, correct it, or say it is not a word, that is sent too. Nothing else from the note is sent: no typed text, pictures or titles.</p>
+
+    <h2>PDFs you import</h2>
+    <p>When you import a PDF of handwritten notes (for example from GoodNotes), each handwritten word in it is sent the same way, with the text the PDF says it reads as, to be checked before it is used.</p>
+
+    <h2>The training pages</h2>
+    <p>The pen strokes you write there and the word or formula you were asked to write.</p>
+
+    <h2>With each of these</h2>
+    <p>The language, the kind of device (for example "ipad") and whether you used a pen, a finger or a mouse. If you choose to say, whether you are left or right handed.</p>
+
+    <h2>What is not sent</h2>
+    <p>No name, no email address and no account. You are a random number made on your device.</p>
+
+    <h2>What it is for</h2>
+    <p>Training Bedrock's handwriting recognition, and nothing else. The samples are kept private on Cloudflare in the EU and are not shared or sold.</p>
+
+    <h2>Changing your mind</h2>
+    <p>"Stop saving" on the <a href="../train/">Train page</a> stops sending at once; the app then asks again before it can be used. "Delete my contributions" there removes everything you sent.</p>
+
+    <h2>Your notes</h2>
+    <p>Your notes stay yours. They are kept on your device (or in your Obsidian vault) in an open format, and the app works without the server apart from sending samples.</p>
+  </main>
+</body>
+</html>

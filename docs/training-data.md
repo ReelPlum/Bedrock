@@ -4,6 +4,26 @@ Bedrock can send handwriting samples to a private training data backend, so
 its handwriting recognition can learn from real writing. Nothing is sent
 unless the writer agrees.
 
+## Asked at launch, while Bedrock is invite-only
+
+While Bedrock is a small invite-only test, sharing handwriting is part of
+using it. When the web app starts, and when Obsidian starts with the
+plugin, a window asks for the invite code and consent before anything
+else, and cannot be closed without agreeing. The code is checked with the
+server first; with no connection it is kept and checked when samples are
+next sent, and a code the server turns down brings the window back.
+Agreeing turns on "Send every word I write in notes", which then cannot be
+turned off in the settings: "Stop saving" on `/train` stops sending at
+once, and the app asks again before it can be used.
+
+This is one switch, `LAUNCH_GATE` in `apps/web/src/collect.js`. It only
+takes effect once a server address is built in. Consent that is a condition
+of using an app is not "freely given" under GDPR article 7(4), so before a
+public release the switch should be turned off (sharing is then optional,
+as in the table below) or the legal basis reviewed. What is sent and why
+is the website's Terms of Service (`/terms`, `apps/web/terms/index.html`);
+the launch window and `/train` ask people to agree to it with a link.
+
 ## When something is sent
 
 | Where | What | When |
@@ -72,9 +92,11 @@ connection loses nothing. The server address must be `https`.
 "Delete my contributions" on `/train` removes everything the writer sent
 and everything still waiting. "Stop saving" withdraws consent on the device.
 
-The consent text has a version (`CONSENT_VERSION` in `collect.js`). It is 2
-since imported PDFs were added to what is sent; consent given to an older
-text is asked for again.
+The consent text has a version (`CONSENT_VERSION` in `collect.js`). It was
+2 when imported PDFs were added to what is sent, and is 3 since every word
+written in notes is sent and agreeing is asked at launch; consent given to
+an older text is asked for again, with the code filled in and the same
+contributor id.
 
 ## The server address
 

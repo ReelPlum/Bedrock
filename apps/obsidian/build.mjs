@@ -19,7 +19,7 @@ const WEB = resolve(HERE, '../web');
 const DIST = join(HERE, 'dist');
 
 // What the web app needs at runtime (no tests, service worker or manifest).
-const WEB_FILES = ['index.html', 'style.css', 'src', 'pkg', 'dict/en.aff', 'dict/en.dic.gz', 'icons/icon.svg'];
+const WEB_FILES = ['index.html', 'style.css', 'src', 'welcome', 'pkg', 'dict/en.aff', 'dict/en.dic.gz', 'icons/icon.svg'];
 
 async function walk(path) {
   const s = await stat(path);

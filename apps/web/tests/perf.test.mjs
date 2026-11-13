@@ -15,6 +15,8 @@ async function fakeBackend(ctx) {
   const sent = [];
   await ctx.addInitScript((api) => {
     try { localStorage.setItem('bedrock.collect.v1', JSON.stringify({ api })); } catch (_) { /* ignore */ }
+    // Not about the launch gate (launch-gate.test.mjs): keep it out of the way.
+    window.bedrockNoLaunchGate = true;
   }, API);
   await ctx.route(`${API}/v1/reports`, async (route) => {
     const body = JSON.parse(route.request().postData());
