@@ -16,6 +16,10 @@ before(async () => {
   // Like GitHub Pages: files may be kept for 10 minutes.
   server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://x').pathname;
+    if (path === '/page/') {
+      res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'max-age=600' });
+      return res.end(`<!doctype html><title>v${version}</title><p id="v">${version}</p>`);
+    }
     if (path === '/changing.js') {
       res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'max-age=600' });
       return res.end(`export const version = ${version};\n`);
@@ -49,5 +53,29 @@ test('the service worker checks files with the server instead of using a copy th
   assert.equal(await get(), 'export const version = 1;');
   version = 2; // an update goes live
   assert.equal(await get(), 'export const version = 2;');
+  await ctx.close();
+});
+
+// The bug: the page (index.html) came from the browser's copy while its
+// scripts came fresh from the server, so a new main.js looked for a button
+// the old page did not have ("$('wm-duplicate') is null") and Bedrock
+// failed to start after the Duplicate update.
+test('after an update the page itself comes from the server too, so it never mixes with newer scripts', async () => {
+  version = 1;
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto(url + 'icons/');
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+  });
+  await page.reload();
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await page.goto(url + 'page/');
+  assert.equal(await page.textContent('#v'), '1');
+  version = 2; // an update goes live
+  await page.goto(url + 'icons/');
+  await page.goto(url + 'page/');
+  assert.equal(await page.textContent('#v'), '2', 'the new page, not the one the browser kept');
   await ctx.close();
 });
