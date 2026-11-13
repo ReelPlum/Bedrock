@@ -154,6 +154,10 @@ function askAtLaunch() {
   collect.onStatus(() => { if (collect.gateNeeded()) showGate({ onAccepted }); });
 }
 
+/** Set when start-up failed: the half-started app must not save (its
+ *  note may be incomplete, and parts it needs may not exist yet). */
+let startFailed = false;
+
 async function main() {
   askAtLaunch();
   await init();
@@ -408,7 +412,7 @@ async function main() {
   async function saveNow() {
     clearTimeout(saveTimer);
     saveTimer = null;
-    if (!store) return;
+    if (startFailed || !store) return;
     if (canvas.is_drawing()) return scheduleSave();
     const rev = canvas.revision();
     const now = Date.now();
@@ -1557,6 +1561,7 @@ const RELOADED = 'bedrock-start-reloaded';
 main().then(() => {
   try { sessionStorage.removeItem(RELOADED); } catch { /* private mode */ }
 }).catch((e) => {
+  startFailed = true;
   console.error(e);
   let again = false;
   try {
