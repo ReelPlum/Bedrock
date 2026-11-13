@@ -19,6 +19,10 @@ const IDLE_MS = 700; // recognise once the pen has rested this long
 const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
 const LETTER_PX = 40; // letter height in the image sent to the recogniser
 const PAD_PX = 12;
+// A recogniser that has said nothing for this long (no answer, no download
+// progress) while a word waits is stuck: it is stopped and a fresh one
+// takes the next word.
+const HANG_MS = 60_000;
 
 /** The text of the first of `urls` that can be fetched, unzipped if it is
  *  gzip, or null. Some hosts already undo the gzip (Content-Encoding), so
@@ -62,6 +66,13 @@ export class Handwriting {
     this.seq = 0;
     this.dictionaryReady = false;
     this.dpr = 1;
+    this.lock = Promise.resolve(); // one word at a time goes to the recogniser
+    this.live = null; // the running live pass
+    this.liveAgain = false; // words changed during it: read the list again
+    this.seen = new Set(); // word ids already seen by a live pass
+    this.timing = null; // the `recognize` job of the word being read
+    this.watchdog = null;
+    this.hangMs = HANG_MS;
   }
 
   /** Load the spell-check dictionary: a Hunspell `.aff` file of rules and
@@ -91,13 +102,39 @@ export class Handwriting {
 
   _tries(quality, id) { return this.failed.get(`${quality}:${id}`) || 0; }
 
-  /** Live: recognise every word that has no text yet, with the fast model. */
-  async run() {
-    if (!this.enabled || this.mode === 'careful') return;
-    if (this.canvas.is_drawing()) return this.schedule();
-    const words = JSON.parse(this.canvas.words_json());
-    const todo = words.filter((w) => w.kind !== 'drawing' && w.text == null && !this.inFlight.has(w.id) && this._tries('fast', w.id) < 2);
-    await Promise.all(todo.map((w) => this._recognise(w, 'fast')));
+  /** Live: recognise every word that has no text yet, with the fast model,
+   *  one word at a time. Words just written go first, so the word under the
+   *  pen is not kept waiting behind a page of others (after a lasso move or
+   *  opening a note), and the pass stops when the pen writes again. */
+  run() {
+    if (!this.enabled || this.mode === 'careful') return Promise.resolve();
+    if (this.canvas.is_drawing()) { this.schedule(); return Promise.resolve(); }
+    if (this.live) { this.liveAgain = true; return this.live; }
+    this.live = this._livePass().finally(() => { this.live = null; });
+    return this.live;
+  }
+
+  async _livePass() {
+    do {
+      this.liveAgain = false;
+      const words = JSON.parse(this.canvas.words_json());
+      const todo = words.filter((w) => w.kind !== 'drawing' && w.text == null && !this.inFlight.has(w.id) && this._tries('fast', w.id) < 2);
+      const old = (w) => (this.seen.has(w.id) ? 1 : 0);
+      todo.sort((a, b) => old(a) - old(b));
+      for (const w of words) this.seen.add(w.id);
+      for (const w of todo) {
+        if (!this.enabled || this.mode === 'careful' || this.liveAgain) break;
+        if (this.canvas.is_drawing()) { this.schedule(); return; }
+        await this._recognise(w, 'fast');
+      }
+    } while (this.liveAgain && this.enabled && this.mode !== 'careful');
+  }
+
+  /** Runs `fn` once every recognition before it has finished. */
+  _exclusive(fn) {
+    const next = this.lock.then(fn, fn);
+    this.lock = next.catch(() => {});
+    return next;
   }
 
   /** True if the careful model already read this word (formulas have one
@@ -129,7 +166,18 @@ export class Handwriting {
     try {
       const image = await this.render(word);
       if (!image) return;
-      const { text, engine } = await perf.job('recognize', () => this._engine()({ kind: word.kind, image, word, quality }));
+      // Timed from when the recogniser starts on this word, not while it
+      // waits for the words before it.
+      const { text, engine } = await this._exclusive(async () => {
+        const end = perf.start('recognize');
+        this.timing = end;
+        try {
+          return await this._engine()({ kind: word.kind, image, word, quality });
+        } finally {
+          this.timing = null;
+          end();
+        }
+      });
       if (typeof text === 'string' && this.canvas.set_word_text(word.id, text, word.kind, engine || 'unknown', -1)) {
         this.status.delete(word.id);
         this.onTextChanged();
@@ -162,15 +210,24 @@ export class Handwriting {
     w = new Worker(new URL('./recognizer-worker.js', import.meta.url), { type: 'module' });
     w.onmessage = (e) => {
       const m = e.data;
-      if (m.status) return this.onStatus(m);
+      this._watch();
+      if (m.status) {
+        // A model download is not the word's own work: time the word from
+        // when its model is ready.
+        if (m.status === 'ready') this.timing?.restart?.();
+        return this.onStatus(m);
+      }
       const p = this.pending.get(m.id);
       if (!p) return;
       this.pending.delete(m.id);
       if (m.error) {
-        // Out of memory leaves the worker's heap unusable: start afresh.
-        if (/memory/i.test(m.error)) this.dropWorker('all');
+        // This word's own error first, so the person is told the real
+        // reason rather than "recogniser stopped".
         p.reject(new Error(m.error));
+        // Out of memory leaves the worker's heap unusable: start afresh.
+        if (/memory/i.test(m.error)) this.dropWorker('all', 'recogniser stopped: out of memory');
       } else p.resolve(m);
+      this._watch();
     };
     w.onerror = (e) => {
       this.onStatus({ error: e.message || 'recogniser failed to start' });
@@ -187,14 +244,25 @@ export class Handwriting {
   }
 
   /** Stop the worker and free all its memory. */
-  dropWorker(slot = 'all') {
+  dropWorker(slot = 'all', why = 'recogniser stopped') {
     const w = this.workers.get(slot);
     if (!w) return;
     w.terminate();
     this.workers.delete(slot);
     for (const [id, p] of this.pending) {
-      if (p.slot === slot) { this.pending.delete(id); p.reject(new Error('recogniser stopped')); }
+      if (p.slot === slot) { this.pending.delete(id); p.reject(new Error(why)); }
     }
+    this._watch();
+  }
+
+  /** While a word waits on the worker, a worker that stays silent for
+   *  `hangMs` is stopped, so a stuck recogniser can't hold every word after
+   *  it (and its memory) for ever. */
+  _watch() {
+    clearTimeout(this.watchdog);
+    this.watchdog = null;
+    if (!this.pending.size) return;
+    this.watchdog = setTimeout(() => this.dropWorker('all', 'recogniser did not answer'), this.hangMs);
   }
 
   _engine() {
@@ -203,6 +271,7 @@ export class Handwriting {
       const id = ++this.seq;
       this.pending.set(id, { resolve, reject, slot: 'all' });
       this._worker().postMessage({ id, kind, image, quality });
+      this._watch();
     });
   }
 

@@ -1161,6 +1161,186 @@ test('all recognition models share one worker (one WebAssembly runtime); out of 
   await ctx.close();
 });
 
+test('recognition reads one word at a time, newest words first, and times each word from when the recogniser starts on it (regression)', async () => {
+  // A report from iPad Safari: up to 10 "recognize" jobs ran at once for
+  // 37 s to 92 s. Every unread word was sent at the same moment, and each
+  // was timed while it waited for the others.
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    bedrock.minimap.visible = false;
+    const { perf } = await import('/src/perf.js');
+    let now = 0;
+    let most = 0;
+    const order = [];
+    const runningRecognize = [];
+    hw.engine = async ({ word }) => {
+      now++;
+      most = Math.max(most, now);
+      order.push(Math.round(word.bounds[1]));
+      runningRecognize.push(perf.snapshot().running.filter((j) => j.job === 'recognize' && j.running).length);
+      await new Promise((res) => setTimeout(res, 20));
+      now--;
+      return { text: 'word', engine: 'fake' };
+    };
+    const word = async (x0, y) => {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, y, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, y - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, y, { pressure: 0 });
+      }
+      await t.frame();
+    };
+    // A page of words not read yet, already seen by an earlier pass (as
+    // after a lasso move), and one word just written below them.
+    await word(150, 300);
+    await word(350, 300);
+    await word(550, 300);
+    for (const w of JSON.parse(bedrock.canvas.words_json())) hw.seen.add(w.id);
+    await word(150, 500);
+    // Two passes asked for at once (the pen rested twice): one runs.
+    const a = hw.run();
+    const b = hw.run();
+    await Promise.all([a, b]);
+    const texts = JSON.parse(bedrock.canvas.words_json()).map((w) => w.text);
+    return { most, order, runningRecognize, texts };
+  });
+  assert.equal(r.most, 1, 'one word at a time');
+  assert.ok(r.runningRecognize.every((n) => n === 1), `only the word being read is timed: ${r.runningRecognize}`);
+  assert.equal(r.order.length, 4, `each word read once: ${r.order}`);
+  assert.ok(r.order[0] > 400, `the word just written is read first: ${r.order}`);
+  assert.deepEqual(r.texts, ['word', 'word', 'word', 'word']);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the recogniser worker runs one request at a time, and a release waits its turn (regression)', async () => {
+  // Its message handler was async, so every request ran at once in one
+  // WebAssembly runtime: each as slow as all together, and out of memory
+  // on iPad ("recogniser stopped").
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const before = window.onmessage;
+    const { serialHandler } = await import('/src/recognizer-worker.js');
+    const log = [];
+    let now = 0;
+    let most = 0;
+    const posted = [];
+    const handle = serialHandler({
+      read: async (kind, image, quality) => {
+        now++;
+        most = Math.max(most, now);
+        log.push(`start ${image}`);
+        await new Promise((res) => setTimeout(res, 15));
+        log.push(`end ${image}`);
+        now--;
+        if (image === 'bad') throw new Error('Out of memory');
+        return `${kind}/${quality}`;
+      },
+      release: async (slot) => { log.push(`release ${slot}`); },
+      post: (m) => posted.push(m),
+    });
+    handle({ data: { id: 1, kind: 'text', image: 'a', quality: 'fast' } });
+    handle({ data: { release: 'text-careful' } });
+    handle({ data: { id: 2, kind: 'text', image: 'bad', quality: 'careful' } });
+    await handle({ data: { id: 3, kind: 'math', image: 'c' } });
+    return { most, log, posted, untouched: window.onmessage === before };
+  });
+  assert.equal(r.most, 1, 'one request at a time');
+  assert.deepEqual(r.log, ['start a', 'end a', 'release text-careful', 'start bad', 'end bad', 'start c', 'end c']);
+  assert.deepEqual(r.posted.map((m) => m.id), [1, 2, 3], 'answers in order');
+  assert.match(r.posted[1].error, /trocr-base-handwritten.*: Out of memory/);
+  assert.ok(r.untouched, 'importing it into a page does not take over the page\'s messages');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a recogniser that stops answering is restarted, the real reason for a stop is shown, and a model download is not timed as the word (regression)', async () => {
+  // A report from iPad Safari: one "recognize" job ran for 298 s, and the
+  // person was told only "recogniser stopped".
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    bedrock.minimap.visible = false;
+    const { perf, JOB_LIMITS } = await import('/src/perf.js');
+    const made = [];
+    const Real = window.Worker;
+    let behaviour = 'silent';
+    window.Worker = class {
+      constructor() { this.terminated = false; made.push(this); }
+      postMessage(m) {
+        if (m.release) return;
+        const reply = (data, ms = 0) => setTimeout(() => { if (!this.terminated) this.onmessage({ data }); }, ms);
+        if (behaviour === 'silent') return; // stuck for ever
+        if (behaviour === 'oom') {
+          if (m.id % 2) reply({ id: m.id, error: 'microsoft/trocr: RangeError: Out of memory' });
+          return; // the other request waits behind it
+        }
+        if (behaviour === 'download') {
+          reply({ status: 'loading', kind: 'text', progress: 50 }, 10);
+          reply({ status: 'ready', kind: 'text' }, 150);
+          reply({ id: m.id, text: 'hello', engine: 'fake' }, 160);
+          return;
+        }
+        reply({ id: m.id, text: 'ok', engine: 'fake' });
+      }
+      terminate() { this.terminated = true; }
+    };
+    const image = new Blob(['x'], { type: 'image/png' });
+    hw.engine = null;
+    hw.hangMs = 50;
+    const run = hw._engine();
+    const out = {};
+    // Stuck: stopped after the silence, and the next word gets a new worker.
+    out.stuck = await run({ kind: 'text', image, quality: 'fast' }).then(() => 'answered', (e) => e.message);
+    out.stuckTerminated = made[0].terminated;
+    behaviour = 'ok';
+    out.next = (await run({ kind: 'text', image, quality: 'fast' })).text;
+    out.workers = made.length;
+    // Out of memory: the word that ran out is told first, with the reason.
+    behaviour = 'oom';
+    hw.dropWorker('all');
+    hw.seq = 0;
+    const settled = [];
+    const p1 = run({ kind: 'text', image, quality: 'fast' }).catch((e) => settled.push(e.message));
+    const p2 = run({ kind: 'text', image, quality: 'fast' }).catch((e) => settled.push(e.message));
+    await Promise.all([p1, p2]);
+    out.oomOrder = settled;
+    // A model download before the word: not a long recognize job.
+    behaviour = 'download';
+    hw.hangMs = 60_000;
+    const episodes = [];
+    const record = perf.record;
+    const limit = JOB_LIMITS.recognize;
+    perf.record = (e) => episodes.push(e);
+    JOB_LIMITS.recognize = 100;
+    for (let k = 0; k < 4; k++) {
+      const x = 150 + k * 22;
+      t.ev('pointerdown', 1, 'pen', x, 300, { pressure: 0.6 });
+      for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, 300 - (j % 2) * 26, { pressure: 0.6 });
+      t.ev('pointerup', 1, 'pen', x + 16, 300, { pressure: 0 });
+    }
+    await t.frame();
+    await hw.run();
+    perf.record = record;
+    JOB_LIMITS.recognize = limit;
+    out.read = JSON.parse(bedrock.canvas.words_json()).map((w) => w.text);
+    out.longJobs = episodes.filter((e) => e.what === 'long_job').length;
+    window.Worker = Real;
+    return out;
+  });
+  assert.equal(r.stuck, 'recogniser did not answer');
+  assert.ok(r.stuckTerminated, 'the stuck worker is stopped');
+  assert.equal(r.next, 'ok', 'a fresh worker takes the next word');
+  assert.equal(r.workers, 2);
+  assert.match(r.oomOrder[0], /Out of memory/, `the real reason comes first: ${r.oomOrder}`);
+  assert.equal(r.oomOrder[1], 'recogniser stopped: out of memory');
+  assert.deepEqual(r.read, ['hello']);
+  assert.equal(r.longJobs, 0, 'the download is not counted as the word\'s own time');
+  await ctx.close();
+});
+
 test('correcting a reading: type the real text, pick a suggestion or tick it; it is kept with what was read and saved', async () => {
   const { page, ctx, errors } = await openApp(env);
   const r = await page.evaluate(async () => {

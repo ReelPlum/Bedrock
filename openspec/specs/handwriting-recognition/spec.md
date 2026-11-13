@@ -73,6 +73,38 @@ stored with `engine: "user"` and what was read kept in `alternatives`.
 - **THEN** all run in one worker with one WebAssembly runtime; the error names the model, that worker is stopped, and a fresh one takes the next request
 <!-- test-js: apps/web/tests/app.test.mjs :: all recognition models share one worker (one WebAssembly runtime); out of memory restarts it -->
 
+#### Scenario: One word at a time (regression)
+A report from iPad Safari showed up to 10 `recognize` jobs at once, each
+running 37 s to 92 s, and "recogniser stopped" several times. Every unread
+word was sent at the same moment (after a lasso move or opening a note), and
+the worker's message handler started each one straight away, so they all ran
+together in one single-threaded WebAssembly runtime: each as slow as all of
+them, with their memory added up until iPad Safari ran out. Now the app sends
+one word at a time, words just written first, and the worker also runs its
+requests (and model releases) one after another.
+- **GIVEN** three unread words already seen by an earlier pass and one word just written
+- **WHEN** two live passes are asked for at once
+- **THEN** one pass runs, the recogniser reads one word at a time, the new word first, each word once, and only the word being read is timed as `recognize`
+<!-- test-js: apps/web/tests/app.test.mjs :: recognition reads one word at a time, newest words first, and times each word from when the recogniser starts on it (regression) -->
+- **GIVEN** the worker gets a request, a release, a request that fails and another request
+- **WHEN** they arrive together
+- **THEN** it runs them one at a time in order, answers in order, and importing it into a page leaves the page's messages alone
+<!-- test-js: apps/web/tests/app.test.mjs :: the recogniser worker runs one request at a time, and a release waits its turn (regression) -->
+
+#### Scenario: A stuck or stopped recogniser (regression)
+The same report had one `recognize` job of 298 s and told the person only
+"recogniser stopped". A worker that says nothing for 60 s (no answer, no
+download progress) while a word waits is now stopped ("recogniser did not
+answer") and a fresh one takes the next word. When a request runs out of
+memory, that word's own error is given first, so the message names the
+model and the reason; the words waiting behind it get "recogniser stopped:
+out of memory". A model download is shown as such and the word is timed
+from when its model is ready.
+- **GIVEN** a worker that never answers, then one that runs out of memory with a second word waiting, then one that downloads its model first
+- **WHEN** words are read
+- **THEN** the silent one is stopped and a new worker answers; the out of memory error comes first; the download is not a long `recognize` job
+<!-- test-js: apps/web/tests/app.test.mjs :: a recogniser that stops answering is restarted, the real reason for a stop is shown, and a model download is not timed as the word (regression) -->
+
 #### Scenario: Careful reading
 - **GIVEN** careful reading is on
 - **WHEN** the writer pauses

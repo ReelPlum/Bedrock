@@ -82,7 +82,8 @@ test('the watcher notices pen lag, stutters, slow taps and long jobs, with what 
     const smooth = out.length;
     // A laggy stroke while saving.
     const endSave = w.start('save');
-    for (let i = 0; i < 20; i++) { t += 8; w.frame({ latency: 40, drawing: true }); }
+    // (A 120 Hz screen: a frame every 8 ms, so lag is over 25 ms.)
+    for (let i = 0; i < 20; i++) { t += 8; w.frame({ latency: 40, drawing: true, interval: 8 }); }
     w.frame({ drawing: false });
     // One frame long after the pen moved.
     t += 150; w.frame({ latency: 150, moving: true });
@@ -110,6 +111,40 @@ test('the watcher notices pen lag, stutters, slow taps and long jobs, with what 
   assert.ok(job.ms > 2000);
   assert.deepEqual(job.snapshot.running.map((j) => [j.job, !!j.running]), [['save', false]], 'the job that just ended');
   assert.equal(tap.ms, 320);
+  await ctx.close();
+});
+
+test('pen lag is judged against the frame rate of the screen, and is logged as writing even though the pen has lifted (regression)', async () => {
+  // A report from iPad Safari (60 frames a second) logged "The pen lagged"
+  // at 32 to 37 ms while idle: that is the browser's normal two frames from
+  // pen event to frame, and the snapshot was taken after the pen lifted.
+  const { page, ctx } = await openApp(env);
+  const got = await page.evaluate(async () => {
+    const { PerfWatcher } = await import('/src/perf.js');
+    const out = [];
+    let t = 1000;
+    const w = new PerfWatcher({ record: (e) => out.push(e), now: () => t, facts: () => ({ doing: 'idle', tool: 'pen' }) });
+    const stroke = (latency, interval) => {
+      for (let i = 0; i < 20; i++) { t += interval; w.frame({ latency, drawing: true, interval }); }
+      w.frame({ drawing: false, interval });
+    };
+    const limits = {};
+    stroke(37, 1000 / 60); // 60 Hz, two frames: normal
+    limits.at60 = Math.round(w.latencyLimit());
+    const at60normal = out.length;
+    stroke(60, 1000 / 60); // 60 Hz, a frame missed
+    const at60lag = out.length;
+    stroke(32, 1000 / 120); // 120 Hz: 32 ms is almost four frames
+    limits.at120 = Math.round(w.latencyLimit());
+    const fresh = new PerfWatcher({ record: () => {} });
+    limits.unknown = Math.round(fresh.latencyLimit());
+    return { at60normal, at60lag, out, limits };
+  });
+  assert.equal(got.at60normal, 0, '37 ms at 60 frames a second is not lag');
+  assert.equal(got.at60lag, 1, '60 ms at 60 frames a second is lag');
+  assert.equal(got.out.length, 2, '32 ms at 120 frames a second is lag');
+  assert.deepEqual(got.limits, { at60: 50, at120: 25, unknown: 50 });
+  assert.ok(got.out.every((e) => e.snapshot.doing === 'writing'), 'the stroke was being written');
   await ctx.close();
 });
 

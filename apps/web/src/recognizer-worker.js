@@ -184,15 +184,36 @@ async function release(name) {
   for (const x of [m, m?.enc, m?.dec]) await x?.dispose?.();
 }
 
-self.onmessage = async (e) => {
-  if (e.data.release) return release(e.data.release);
-  const { id, kind, image } = e.data;
-  const quality = e.data.quality === 'careful' ? 'careful' : 'fast';
-  try {
-    const text = kind === 'math' ? await readMath(image) : await readText(image, quality);
-    self.postMessage({ id, text, engine: kind === 'math' ? `${MODELS.math} (onnxruntime-web)` : `${MODELS.text[quality]} (transformers.js)` });
-  } catch (err) {
-    const model = kind === 'math' ? MODELS.math : MODELS.text[quality];
-    self.postMessage({ id, error: `${model}: ${String(err && err.message ? err.message : err)}` });
-  }
-};
+/** The worker's message handler. Requests run one at a time, in the
+ *  order they came: the models share one single-threaded WebAssembly
+ *  runtime, so running several at once only makes each one as slow as all
+ *  of them together, multiplies the memory in use (iPad Safari then runs
+ *  out and the worker has to be stopped), and could free a model while a
+ *  request still uses it. A release waits its turn the same way. */
+export function serialHandler({ read, release: free, post }) {
+  let queue = Promise.resolve();
+  return (e) => {
+    const m = e.data || {};
+    queue = queue.then(async () => {
+      if (m.release) return free(m.release);
+      const quality = m.quality === 'careful' ? 'careful' : 'fast';
+      try {
+        const text = await read(m.kind, m.image, quality);
+        post({ id: m.id, text, engine: m.kind === 'math' ? `${MODELS.math} (onnxruntime-web)` : `${MODELS.text[quality]} (transformers.js)` });
+      } catch (err) {
+        const model = m.kind === 'math' ? MODELS.math : MODELS.text[quality];
+        post({ id: m.id, error: `${model}: ${String(err && err.message ? err.message : err)}` });
+      }
+    }).catch(() => { /* a failed release: the next request still runs */ });
+    return queue;
+  };
+}
+
+// Only inside the worker (tests import this file into a page).
+if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
+  self.onmessage = serialHandler({
+    read: (kind, image, quality) => (kind === 'math' ? readMath(image) : readText(image, quality)),
+    release,
+    post: (m) => self.postMessage(m),
+  });
+}

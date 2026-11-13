@@ -3,8 +3,10 @@
 // The watcher notices four kinds of slow moment ("episodes"):
 //
 //   * latency:  the pen lagged: over a stroke, the time from the pen event
-//               to the frame that drew it was over 25 ms for the slowest
-//               5% of frames;
+//               to the frame that drew it was, for the slowest 5% of
+//               frames, over 3 frame intervals (so a frame was missed;
+//               50 ms where the browser draws 60 frames a second, as
+//               Safari does) and over 25 ms;
 //   * stutter:  one frame came over 100 ms after the pen or finger moved;
 //   * slow_tap: a tap or key took over 200 ms to answer (Event Timing:
 //               Safari 26.2+, Chrome, Firefox);
@@ -28,7 +30,14 @@
 import { scrub } from './error-report.js';
 
 export const LIMITS = {
+  // The pen lagged when the stroke's p95 latency is over both of these.
+  // A browser's normal pipeline already takes up to 2 frames from the pen
+  // event to the frame that draws it (iPad Safari: about 33 ms at 60
+  // frames a second), so lag means at least one frame more than that.
   latencyP95: 25,
+  latencyFrames: 3,
+  // The frame interval assumed until one is known (60 frames a second).
+  frameInterval: 1000 / 60,
   stutter: 100,
   tap: 200,
   // A stroke needs this many frames for its p95 to mean something.
@@ -117,6 +126,7 @@ export class PerfWatcher {
     this.finished = [];
     this.stroke = null;
     this.frames = [];
+    this.interval = 0; // the usual time between frames, once known
     this.observers = [];
   }
 
@@ -126,12 +136,16 @@ export class PerfWatcher {
     return this;
   }
 
-  /** Marks a job as started; call the returned function when it ends. */
+  /** Marks a job as started; call the returned function when it ends.
+   *  Its `restart()` starts the clock again, for a job that first had to
+   *  wait for something that is not its own work (a model download). */
   start(job) {
     const j = { job, start: this.now() };
     this.running.add(j);
     try { performance.mark?.(`bedrock:${job}`); } catch (_) { /* old browser */ }
-    return () => this._end(j);
+    const end = () => this._end(j);
+    end.restart = () => { j.start = this.now(); };
+    return end;
   }
 
   /** Runs `fn` as the job `job`; works for plain and async functions. */
@@ -156,8 +170,10 @@ export class PerfWatcher {
   }
 
   /** One drawn frame. `latency` is the time from the input event to this
-   *  frame (0 when no input led to it). */
-  frame({ latency = 0, drawing = false, moving = false } = {}) {
+   *  frame (0 when no input led to it); `interval` the usual time between
+   *  frames (input.js measures it; 0 while unknown). */
+  frame({ latency = 0, drawing = false, moving = false, interval = 0 } = {}) {
+    if (interval > 0 && interval < 100) this.interval = interval;
     if (latency > LIMITS.stutter && (drawing || moving)) this.episode('stutter', latency, { from: this.now() - latency });
     if (drawing) {
       if (!this.stroke) this.stroke = { from: this.now(), latencies: [] };
@@ -167,9 +183,15 @@ export class PerfWatcher {
       this.stroke = null;
       if (latencies.length >= LIMITS.strokeFrames) {
         const p = p95(latencies);
-        if (p > LIMITS.latencyP95) this.episode('latency', p, { from });
+        if (p > this.latencyLimit()) this.episode('latency', p, { from, doing: 'writing' });
       }
     }
+  }
+
+  /** The p95 latency (ms) over which a stroke lagged, at this screen's
+   *  frame rate. */
+  latencyLimit() {
+    return Math.max(LIMITS.latencyP95, LIMITS.latencyFrames * (this.interval || LIMITS.frameInterval));
   }
 
   /** A tap or key that took `duration` ms to show its answer. */
@@ -189,8 +211,10 @@ export class PerfWatcher {
     this.frames = this.frames.filter((f) => end - f.end <= 10_000).slice(-50);
   }
 
-  /** What was running between `from` and now. */
-  snapshot(from = this.now()) {
+  /** What was running between `from` and now. `doing` says what the
+   *  person was doing when it is known better than now (a stroke's lag is
+   *  noticed once the pen is lifted). */
+  snapshot(from = this.now(), { doing } = {}) {
     const now = this.now();
     const jobs = [
       ...[...this.running].map((j) => ({ job: j.job, ms: Math.round(now - j.start), running: true })),
@@ -200,7 +224,7 @@ export class PerfWatcher {
     let f = {};
     try { f = this.facts() || {}; } catch (_) { /* the page is half set up */ }
     const add = (k, v) => { if (name(v)) snap[k] = v; };
-    add('doing', f.doing);
+    add('doing', doing || f.doing);
     add('tool', f.tool);
     add('strokes_bucket', strokesBucket(f.strokes));
     add('zoom_bucket', zoomBucket(f.zoom));
@@ -229,9 +253,9 @@ export class PerfWatcher {
     return [...sum.values()].sort((a, b) => b.ms - a.ms).slice(0, MAX_SCRIPTS).map((s) => ({ ...s, ms: Math.round(s.ms) }));
   }
 
-  episode(what, ms, { message = MESSAGES[what], from } = {}) {
+  episode(what, ms, { message = MESSAGES[what], from, doing } = {}) {
     try {
-      this.record({ what, ms: Math.round(ms), message, snapshot: this.snapshot(from) });
+      this.record({ what, ms: Math.round(ms), message, snapshot: this.snapshot(from, { doing }) });
     } catch (_) { /* never break the app over this */ }
   }
 
