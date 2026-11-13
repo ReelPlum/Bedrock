@@ -101,8 +101,8 @@ try {
   });
   await sent(page, 5);
 
-  // "Send every word": two words from a note go up unchecked, then the
-  // writer corrects one and says the other is not a word.
+  // "Send every word": two words on two lines of a note go up unchecked,
+  // then the writer corrects one and says the other is not a word.
   await page.goto(app);
   await page.waitForFunction(() => window.bedrock?.ready);
   await installPointerHelpers(page);
@@ -138,8 +138,9 @@ try {
   assert.equal(rows[4].kind, 'scribble');
   assert.ok(rows[3].label.includes('\n') && rows[3].strokes >= 120, 'the paragraph kept its lines and all its strokes');
   const note = rows.slice(5).map((r) => [r.kind, r.label, r.label_source, r.status]);
+  assert.ok(rows.slice(5).every((r) => r.schema_version === 3), 'a note is sent line by line (version 3)');
   assert.deepEqual(note.sort(), [
-    ['drawing', '', 'corrected', 'new'],
+    ['text', '', 'corrected', 'new'], // a line holding one word the writer said is not a word
     ['text', 'hello', 'corrected', 'new'],
     ['text', 'helo', 'unchecked', 'superseded'],
     ['text', 'x', 'unchecked', 'superseded'],

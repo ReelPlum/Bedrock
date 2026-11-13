@@ -1,0 +1,5 @@
+[
+  ["note-1:a", { "id": "019a3b5c-7d2e-7abc-8def-000000000001", "sig": "text|confirmed|hi", "source": "confirmed" }],
+  ["note-1:b", { "id": "019a3b5c-7d2e-7abc-8def-000000000002", "sig": "text|unchecked|thre", "source": "unchecked" }],
+  ["note-2:c", { "id": "019a3b5c-7d2e-7abc-8def-000000000003", "sig": "drawing|corrected|", "source": "corrected" }]
+]

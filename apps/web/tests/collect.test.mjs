@@ -431,7 +431,7 @@ test('notes: the setting cannot be turned on before consent', async () => {
   await ctx.close();
 });
 
-test('notes: with the setting on, a confirmed word is sent as one word moved to 0,0', async () => {
+test('notes: with the setting on, a confirmed word is sent as its line, moved to 0,0', async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
   await agree(setup.page);
@@ -447,8 +447,8 @@ test('notes: with the setting on, a confirmed word is sent as one word moved to 
   await page.click('#wm-right');
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
   const s = server.requests.find((r) => r.path === '/v1/samples').body.samples[0];
-  assert.deepEqual([s.source, s.kind, s.label, s.label_source], ['note', 'text', 'helo', 'confirmed']);
-  assert.equal(s.model_reading, 'helo');
+  assert.deepEqual([s.version, s.source, s.kind, s.label, s.label_source], [3, 'note', 'text', 'helo', 'confirmed']);
+  assert.deepEqual(s.words, [{ strokes: [0, 1], kind: 'text', label: 'helo', label_source: 'confirmed', model_reading: 'helo' }]);
   assert.equal(s.model_engine, 'Xenova/trocr-small-handwritten -fake-');
   assert.equal(s.strokes.length, 2, 'only the word that was confirmed');
   const n = s.channels.length;
@@ -462,7 +462,7 @@ test('notes: with the setting on, a confirmed word is sent as one word moved to 
   await ctx.close();
 });
 
-test('notes: a correction is sent with the writer\'s text as the label and the reading alongside', async () => {
+test("notes: a correction is sent with the writer's text as the label and the reading alongside", async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
   await agree(setup.page);
@@ -474,7 +474,7 @@ test('notes: a correction is sent with the writer\'s text as the label and the r
   await page.press('#wm-correct-text', 'Enter');
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
   const s = server.requests.find((r) => r.path === '/v1/samples').body.samples[0];
-  assert.deepEqual([s.label, s.label_source, s.model_reading], ['hello', 'corrected', 'helo']);
+  assert.deepEqual([s.label, s.label_source, s.words[0].model_reading], ['hello', 'corrected', 'helo']);
 
   // Correcting it again has no model reading to report: the old text was
   // the writer's own.
@@ -484,7 +484,7 @@ test('notes: a correction is sent with the writer\'s text as the label and the r
   await page.press('#wm-correct-text', 'Enter');
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 2);
   const again = server.requests.filter((r) => r.path === '/v1/samples').at(-1).body.samples[0];
-  assert.deepEqual([again.label, again.label_source, again.model_reading], ['Hello', 'corrected', undefined]);
+  assert.deepEqual([again.label, again.label_source, again.words[0].model_reading], ['Hello', 'corrected', undefined]);
   assert.deepEqual(again.supersedes, [s.id], 'replaces the first correction of the same ink');
   await ctx.close();
 });
@@ -519,7 +519,7 @@ test('notes: with "Send every word" on, a new word is sent unchecked, then repla
   assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 0, 'sent once');
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
   const [first] = sentSamples(server);
-  assert.deepEqual([first.source, first.kind, first.label, first.label_source, first.model_reading], ['note', 'text', 'helo', 'unchecked', 'helo']);
+  assert.deepEqual([first.version, first.source, first.kind, first.label, first.label_source, first.words[0].model_reading], [3, 'note', 'text', 'helo', 'unchecked', 'helo']);
   assert.equal(first.supersedes, undefined);
 
   // A new reading from the recogniser replaces the unchecked one.
@@ -542,7 +542,31 @@ test('notes: with "Send every word" on, a new word is sent unchecked, then repla
   await page.click('#wm-drawing');
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 4);
   const fourth = sentSamples(server)[3];
-  assert.deepEqual([fourth.kind, fourth.label, fourth.label_source, fourth.supersedes], ['drawing', '', 'corrected', [third.id]]);
+  assert.deepEqual([fourth.kind, fourth.label, fourth.label_source, fourth.supersedes], ['text', '', 'corrected', [third.id]]);
+  assert.deepEqual([fourth.words[0].kind, fourth.words[0].label], ['drawing', '']);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('notes: two words written on one line are sent as one line, cut into its words', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  const { page, errors } = await newWordWithSettingOn(ctx, null);
+  const words = await page.evaluate(async () => {
+    const box = document.getElementById('stage').getBoundingClientRect();
+    await t.line(box.left + 530, box.top + 300, box.left + 560, box.top + 340);
+    await t.line(box.left + 570, box.top + 300, box.left + 600, box.top + 340);
+    const ws = JSON.parse(bedrock.canvas.words_json());
+    ws.forEach((w, k) => bedrock.canvas.set_word_text(w.id, ['to', 'gether'][k], 'text', 'Xenova/trocr-small-handwritten (fake)', 0.8));
+    return ws.map((w) => w.line);
+  });
+  assert.deepEqual(words, [0, 0], 'two words on the same line');
+  assert.equal(await page.evaluate(() => bedrock.wordSharer.scan()), 1);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  const [s] = sentSamples(server);
+  assert.deepEqual([s.version, s.label, s.strokes.length], [3, 'to gether', 4]);
+  assert.deepEqual(s.words.map((w) => [w.label, w.strokes]), [['to', [0, 1]], ['gether', [2, 3]]]);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -575,7 +599,7 @@ function goodnotesLikePdf() {
   return [...text].map((c) => c.charCodeAt(0));
 }
 
-test("importing a PDF: each page becomes a note, and every word is sent with the PDF's reading", async () => {
+test("importing a PDF: each page becomes a note, and every line is sent with the PDF's reading", async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
   await agree(setup.page);
@@ -590,11 +614,13 @@ test("importing a PDF: each page becomes a note, and every word is sent with the
   assert.deepEqual(notes.filter((t) => t.startsWith('Lecture')), ['Lecture 7 (page 1)', 'Lecture 7 (page 2)']);
   assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 1, 'the last page is open');
   const samples = sentSamples(server).sort((a, b) => a.label.localeCompare(b.label));
-  assert.deepEqual(samples.map((s) => [s.source, s.label, s.label_source, s.model_reading ?? null, s.model_engine ?? null, s.strokes.length]), [
-    ['note', '', 'unchecked', null, null, 1],
-    ['note', 'hi', 'unchecked', 'hi', 'pdf-text', 3],
-    ['note', 'ok', 'unchecked', 'ok', 'pdf-text', 1],
+  // "hi" and "ok" are far apart, so the layout puts them on lines of their own.
+  assert.deepEqual(samples.map((s) => [s.version, s.source, s.label, s.label_source, s.model_engine ?? null, s.strokes.length]), [
+    [3, 'note', '', 'unchecked', null, 1],
+    [3, 'note', 'hi', 'unchecked', 'pdf-text', 3],
+    [3, 'note', 'ok', 'unchecked', 'pdf-text', 1],
   ]);
+  assert.deepEqual(samples[1].words, [{ strokes: [0, 1, 2], kind: 'text', label: 'hi', label_source: 'unchecked', model_reading: 'hi' }]);
   // Imported again later (or opened with the setting on), nothing is sent twice.
   assert.equal(await page.evaluate(() => bedrock.wordSharer.scan({ imported: true })), 0);
   assert.deepEqual(errors, []);

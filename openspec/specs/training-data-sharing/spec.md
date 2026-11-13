@@ -93,7 +93,7 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 - **GIVEN** the setting on
 - **WHEN** the writer confirms or corrects a word
 - **THEN** that one word is sent moved to 0,0, labelled with the confirmed or corrected text, with the reading alongside
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: with the setting on, a confirmed word is sent as one word moved to 0,0 -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: notes: with the setting on, a confirmed word is sent as its line, moved to 0,0 -->
 
 #### Scenario: Unchecked words
 - **GIVEN** "Send every word" on

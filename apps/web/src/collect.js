@@ -6,8 +6,9 @@
 // queue when the server says it has it, or says it will never take it. So
 // writing offline works, and a lost connection loses nothing.
 //
-// The wire format is `bedrock-training` version 2; the backend's checks are
-// the reference (collect-core/src/sample.rs in the backend repository).
+// The wire format is `bedrock-training` version 2, and version 3 for a line
+// from a note (version 2 plus its `words`); the backend's checks are the
+// reference (collect-core/src/sample.rs in the backend repository).
 
 /** 2: words from imported PDFs are sent too. */
 export const CONSENT_VERSION = 2;
@@ -151,10 +152,10 @@ export function shortTag(text, max) {
   return String(text).normalize('NFKD').replace(/[^A-Za-z0-9 ._\-/+]/g, '-').slice(0, max) || 'unknown';
 }
 
-function sample({ source, kind, label, labelSource, language, strokes, channels, written, box, reading, engine, supersedes = [] }) {
+function sample({ source, kind, label, labelSource, language, strokes, channels, written, box, reading, engine, supersedes = [], words }) {
   return {
     format: 'bedrock-training',
-    version: 2,
+    version: words ? 3 : 2,
     id: uuidv7(),
     source,
     kind,
@@ -169,6 +170,7 @@ function sample({ source, kind, label, labelSource, language, strokes, channels,
     ...(box ? { box } : {}),
     // Earlier samples of the same ink that this one replaces.
     ...(supersedes.length ? { supersedes } : {}),
+    ...(words ? { words } : {}),
     channels,
     // Only what a recogniser needs: no brush, colour or stroke id.
     strokes: strokes.map((s) => ({ start: s.start, points: s.points })),
@@ -203,6 +205,59 @@ export function fromTraining({ prompt, note, box, written }) {
  * was written says something about the note, and nobody needs to know.
  */
 export function fromNote({ strokes, channels, label, labelSource, kind = 'text', language = 'en', reading, engine, supersedes }) {
+  return sample({ source: 'note', kind, label, labelSource, language, strokes: toOrigin(strokes, channels), channels, reading, engine, supersedes, written: Math.max(...strokes.map((s) => s.start)) });
+}
+
+/** One word's text as the backend wants it in a line: NFC, one line. */
+const wordLabel = (text) => String(text ?? '').normalize('NFC').replace(/\s+/g, ' ').trim();
+
+/**
+ * A sample from a real note: one line of handwriting (`bedrock-training`
+ * version 3), with where it was cut into words. `words` is
+ * `[{ strokes: [ink], kind: 'text'|'math'|'drawing', label, labelSource, reading?, engine? }]`
+ * with each word's ink as stroke JSON. The line keeps the words' strokes in
+ * writing order; each word names its strokes by their place in the line.
+ * Its label is the words' text joined by spaces, and its label source
+ * `unchecked` if any word is, else `corrected` if any is, else `confirmed`.
+ * The ink is moved to 0,0, like a single word.
+ */
+export function fromLine({ words, channels, supersedes }) {
+  const all = words.flatMap((w, k) => w.strokes.map((s) => ({ s, k })));
+  all.sort((a, b) => a.s.start - b.s.start);
+  const cuts = words.map((w) => {
+    const label = w.kind === 'drawing' ? '' : wordLabel(w.label);
+    return {
+      strokes: [],
+      kind: w.kind,
+      label,
+      label_source: w.labelSource,
+      ...(w.reading ? { model_reading: wordLabel(w.reading) } : {}),
+    };
+  });
+  all.forEach(({ k }, i) => cuts[k].strokes.push(i));
+  const sources = words.map((w) => w.labelSource);
+  const labelSource = sources.includes('unchecked') ? 'unchecked' : sources.includes('corrected') ? 'corrected' : 'confirmed';
+  const engine = words.find((w) => w.engine)?.engine || null;
+  const strokes = all.map((a) => a.s);
+  return {
+    ...sample({
+      source: 'note',
+      kind: 'text',
+      label: cuts.map((c) => c.label).filter(Boolean).join(' '),
+      labelSource,
+      language: 'en',
+      strokes: toOrigin(strokes, channels),
+      channels,
+      supersedes,
+      written: Math.max(...strokes.map((s) => s.start)),
+      words: cuts,
+    }),
+    ...(engine ? { model_engine: shortTag(engine, 80) } : {}),
+  };
+}
+
+/** The ink moved so its top left corner is at 0,0. */
+function toOrigin(strokes, channels) {
   const n = channels.length;
   const ix = channels.indexOf('x');
   const iy = channels.indexOf('y');
@@ -214,7 +269,7 @@ export function fromNote({ strokes, channels, label, labelSource, kind = 'text',
       minY = Math.min(minY, s.points[i + iy]);
     }
   }
-  const moved = strokes.map((s) => {
+  return strokes.map((s) => {
     const points = s.points.slice();
     for (let i = 0; i < points.length; i += n) {
       points[i + ix] = Math.round((points[i + ix] - minX) * 100) / 100;
@@ -222,7 +277,6 @@ export function fromNote({ strokes, channels, label, labelSource, kind = 'text',
     }
     return { ...s, points };
   });
-  return sample({ source: 'note', kind, label, labelSource, language, strokes: moved, channels, reading, engine, supersedes, written: Math.max(...strokes.map((s) => s.start)) });
 }
 
 // ---- The queue (IndexedDB) -------------------------------------------------

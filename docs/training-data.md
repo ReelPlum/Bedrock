@@ -9,20 +9,30 @@ unless the writer agrees.
 | Where | What | When |
 |---|---|---|
 | The training pages (`/train`) | The ink written in the box and the prompt it answers: a common word, a whole sentence, a short paragraph (its label keeps the line breaks it was shown with), or a formula. | After agreeing on the consent card on `/train` and entering an invite code. |
-| A note | Every handwritten word written after the setting was turned on, one sample per word: its ink, moved to 0,0, and what the recogniser read, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A word is sent once its reading has not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
-| An imported PDF | Every handwritten word of every page, one sample per word, marked `unchecked`, with the reading the PDF itself holds (GoodNotes hides its own handwriting recognition in the page) as `model_reading` and `model_engine: "pdf-text"`, or no text where it has none. | When a PDF is imported (Open or "Import PDF" in the menu) with saving set up on `/train`, even with "Send every word" off: importing is the writer's own act, as checking a word is. |
-| A note | A word again, with its checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
+| A note | Every handwritten word written after the setting was turned on, one sample per line of handwriting: the line's ink, moved to 0,0, where the app cut it into words, and what the recogniser read for each word, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A line is sent once its readings have not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
+| An imported PDF | Every handwritten word of every page, one sample per line, marked `unchecked`, with the reading the PDF itself holds (GoodNotes hides its own handwriting recognition in the page) as each word's `model_reading` and `model_engine: "pdf-text"`, or no text where it has none. | When a PDF is imported (Open or "Import PDF" in the menu) with saving set up on `/train`, even with "Send every word" off: importing is the writer's own act, as checking a word is. |
+| A note | The word's line again, with the word's checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
 
-A checked sample names the earlier sample of the same ink in `supersedes`,
-and the backend keeps only the newest. A checked word is never replaced by
-an unchecked reading. An unchecked reading is never trained on until the
+Whenever a line changes (a new reading, a word checked, words added or
+regrouped), it is sent again, naming in `supersedes` every earlier sample
+that holds any of the same strokes, and the backend keeps only the newest.
+Sending whole lines keeps the line in one piece, so a wrong word split can
+be fixed in review, and the reader can learn where words end. A checked
+word is never replaced by an unchecked reading. An unchecked reading is never trained on until the
 writer or a reviewer checks it (`bedrock-data review` in the backend). The
 rest of a note (typed text, pictures, the title, where words are on the
 page) is never sent.
 
 The logic is in `apps/web/src/share-words.js`. It remembers which sample it
-sent for each word (in local storage, the newest 5000), so a word is sent
-once per change.
+sent for each line, with its strokes and words (local storage
+`bedrock.sharedLines.v1`, the newest 3000), so a line is sent once per
+change. Earlier versions sent one sample per word and remembered them in
+`bedrock.sharedWords.v1`; those words are replaced by their lines the next
+time their note is open. A line longer than the backend takes in one sample
+(800 strokes or 50,000 points) is sent in pieces of whole words.
+
+The backend must accept version 3 before an app that sends it goes live: an
+older backend refuses it, and the app drops samples the server refuses.
 
 ## What the training pages ask for
 
@@ -39,7 +49,9 @@ lines of 32 characters, as before.
 
 ## What a sample holds
 
-`bedrock-training` version 2: the label and how we know it (`prompt`,
+`bedrock-training` version 2 from the training pages, version 3 from
+notes (version 2 plus `words`: which strokes make each word, each word's
+text and how we know it): the label and how we know it (`prompt`,
 `unchecked`, `confirmed` or `corrected`), what the recogniser read (if anything), the
 language, a coarse device class (for example `ipad`, never the full user
 agent), pen, finger or mouse, and the raw pen samples. No stroke ids, brushes
