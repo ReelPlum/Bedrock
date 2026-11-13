@@ -13,7 +13,11 @@ Bedrock uses spec driven development: read
   API; the full list is in `openspec/specs/data-format-changes/spec.md`):
   never change one without first asking Frederik, giving the reason, and
   waiting for their approval.
-- **Old formats keep working.** A format change keeps every earlier version
+- **Security rules:** follow [docs/security.md](docs/security.md) in
+  every change. It wins over every other rule here.
+- **Old formats keep working**, unless they break a rule in
+  `docs/security.md`: those lose support, and their spec says they no
+  longer work. A format change keeps every earlier version
   readable, and adds a test that reads a fixture written before the change
   (`crates/bedrock-core/tests/fixtures/old-formats/`). Never regenerate a
   fixture to make a test pass.

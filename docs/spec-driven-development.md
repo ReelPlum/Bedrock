@@ -38,7 +38,9 @@ data formats: people's notes and data depend on them. The full list is in
    only writers move on. Before the change, add a fixture written by the
    current version to `crates/bedrock-core/tests/fixtures/old-formats/` (or
    the matching place for other formats) and a test that reads it. Fixtures
-   are never regenerated.
+   are never regenerated. **The one exception:** a format that breaks a rule
+   in [security.md](security.md) loses support. Its spec says it no longer
+   works, and a test shows it is refused.
 3. **Write it down.** Update the format's spec and its document
    (`docs/note-format.md` and `docs/note.schema.json` for notes).
 
