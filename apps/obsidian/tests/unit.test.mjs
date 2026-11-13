@@ -10,7 +10,7 @@ import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { installWebApp, webAppUrl } from '../src/assets.js';
 import { packWebApp } from '../build.mjs';
-import { ErrorLog, reportsAddress, sendReport } from '../src/report.js';
+import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
 /** A ZIP like zip.rs writes: each entry deflated if that is smaller. */
 function zip(entries) {
@@ -470,4 +470,42 @@ test('the welcome page address sits next to the web app', async () => {
   const { welcomeUrl } = await import('../src/consent.js');
   assert.equal(welcomeUrl('app://local/v/web/index.html?host=obsidian&v=abc'), 'app://local/v/web/welcome/index.html?host=obsidian&v=abc');
   assert.equal(welcomeUrl('/index.html'), '/welcome/index.html');
+});
+
+test('slow reads, writes and index updates are logged with what was running', async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+  const log = new ErrorLog();
+  let t = 0;
+  const perf = pluginWatcher(log, { mobile: true }).configure({ now: () => t });
+  const slowVault = Object.create(vault);
+  slowVault.modifyBinary = async (f, buf) => { t += 2500; return vault.modifyBinary(f, buf); };
+  const s = createSession({ vault: slowVault, file: () => file, indexer: null, kv: {}, pickNote: async () => null, openLink: () => {}, perf });
+  await s.handlers.read({});
+  assert.equal(log.entries().length, 0, 'a quick read is not logged');
+  await s.handlers.write({ data: new Uint8Array(note(['Newton'])) });
+  await s.handlers.write({ data: new Uint8Array(note(['Newton'])) });
+  const slow = log.entries();
+  assert.equal(slow.length, 1, 'repeats within 30 s add to one entry');
+  assert.equal(slow[0].kind, 'slow');
+  assert.equal(slow[0].what, 'long_job');
+  assert.equal(slow[0].message, 'Plugin: A job took long: write');
+  assert.equal(slow[0].count, 2);
+  assert.equal(slow[0].ms, 2500);
+  assert.equal(slow[0].snapshot.doing, 'mobile');
+  assert.deepEqual(slow[0].snapshot.running.map((j) => j.job), ['write']);
+});
+
+test("the plugin's slow moments go with the canvas's automatic reports, once, and never into a person's", () => {
+  const log = new ErrorLog();
+  log.record('Bedrock: search index not renamed', new Error('x'), 'error');
+  log.slow({ what: 'long_job', ms: 3200, message: 'A job took long: index' }, 1000);
+  const canvas = { format: 'bedrock-error-report', version: 2, sent: 'auto', id: 'a', errors: [{ kind: 'slow', what: 'stutter', ms: 140, message: 'Bedrock stuttered', at: 500 }], context: { webgl2: true } };
+  const { report, last } = withPluginSlow(canvas, log, { mobile: true });
+  assert.deepEqual(report.errors.map((e) => e.message), ['Bedrock stuttered', 'Plugin: A job took long: index'], 'slow entries only, oldest first');
+  assert.deepEqual(report.context, { webgl2: true, mobile: true });
+  assert.equal(last, 1000);
+  assert.deepEqual(withPluginSlow(canvas, log, { since: last }).report.errors.length, 1, 'not sent twice');
+  const person = { ...canvas, sent: 'person' };
+  assert.equal(withPluginSlow(person, log).report, person, 'a report the person saw goes as they saw it');
 });

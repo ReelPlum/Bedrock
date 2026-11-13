@@ -67,7 +67,7 @@ Pointer Events with Pencil pressure and tilt) work exactly as in Safari.
 | app | `pick-note { query }` | Obsidian's file picker; the chosen note as link text, or null |
 | app | `open-link { type, target }` | opens the note in Obsidian |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
-| app | `send-report { report }` | posts an error report the person chose to send ("Share with the Bedrock team") with `requestUrl`; `{ id }` |
+| app | `send-report { report }` | posts an error report the person chose to send ("Share with the Bedrock team"), or an automatic performance report (`sent: "auto"`, which gets the plugin's own slow moments and a `mobile` fact added), with `requestUrl`; `{ id }` |
 | view | `flush` | the app saves now (sent before the view closes) |
 | view | `reload` | the file changed elsewhere (sync, another window): the app reloads it |
 | view | `show { strokes }` | the app brings those strokes (each as its whole word) into view and flashes a frame around them; `false` if none is on the page any more |

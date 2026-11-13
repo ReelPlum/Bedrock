@@ -13,6 +13,7 @@
 //     => ({ text, engine })
 
 import { MODELS } from './models.js';
+import { perf } from './perf.js';
 
 const IDLE_MS = 700; // recognise once the pen has rested this long
 const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
@@ -123,7 +124,7 @@ export class Handwriting {
     try {
       const image = await this.render(word);
       if (!image) return;
-      const { text, engine } = await this._engine()({ kind: word.kind, image, word, quality });
+      const { text, engine } = await perf.job('recognize', () => this._engine()({ kind: word.kind, image, word, quality }));
       if (typeof text === 'string' && this.canvas.set_word_text(word.id, text, word.kind, engine || 'unknown', -1)) {
         this.status.delete(word.id);
         this.onTextChanged();

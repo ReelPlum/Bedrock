@@ -2,13 +2,13 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
+import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
 import bundle from 'virtual:web-app';
 import { installWebApp, webAppUrl } from './assets.js';
 import { HostBridge } from './bridge.js';
 import { askAtLaunch, welcomeUrl } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
-import { ErrorLog, reportsAddress, sendReport } from './report.js';
+import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
@@ -176,6 +176,7 @@ class BedrockView extends FileView {
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
       sendReport: (report) => plugin.sendReport(report),
+      perf: plugin.perf,
       onReady: () => { this.appReady = true; this.showPending(); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
@@ -205,11 +206,16 @@ const DEFAULT_SETTINGS = { index: true, indexFolder: DEFAULT_INDEX_FOLDER, newNo
 export default class BedrockPlugin extends Plugin {
   async onload() {
     this.errors = new ErrorLog();
+    // The plugin's own slow jobs; they go with the canvas's automatic
+    // performance reports when the person switched those on (perf.js).
+    this.mobile = !!Platform?.isMobile;
+    this.perf = pluginWatcher(this.errors, { mobile: this.mobile });
+    this.slowSentUpTo = 0;
     const data = (await this.loadData()) || {};
     this.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     this.cameras = data.cameras || {};
     this.webDir = normalizePath(`${this.manifest.dir}/web`);
-    this.webAppReady = installWebApp(this.app.vault.adapter, this.webDir, bundle).catch((e) => {
+    this.webAppReady = this.perf.job('unpack', () => installWebApp(this.app.vault.adapter, this.webDir, bundle)).catch((e) => {
       this.problem(`Bedrock could not unpack its canvas: ${e}`, e);
     });
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
@@ -344,8 +350,11 @@ export default class BedrockPlugin extends Plugin {
 
   /** Sends an error report (the plugin's, or the canvas's through
    *  `send-report`). Resolves to its id. */
-  sendReport(report) {
-    return sendReport(report, requestUrl);
+  async sendReport(report) {
+    const { report: out, last } = withPluginSlow(report, this.errors, { since: this.slowSentUpTo, mobile: this.mobile });
+    const id = await sendReport(out, requestUrl);
+    this.slowSentUpTo = last;
+    return id;
   }
 
   /** Put a link to a word of a handwritten note on the clipboard. */

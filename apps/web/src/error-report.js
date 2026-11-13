@@ -1,4 +1,4 @@
-// The error report (`bedrock-error-report` version 1), built from the error
+// The error report (`bedrock-error-report`), built from the error
 // log. Pure: no page, host or Obsidian objects, so the web app's panel
 // (report-panel.js), the Obsidian plugin and the tests share it. The
 // backend's checks are the reference (collect-core/src/report.rs in the
@@ -7,7 +7,9 @@
 import { APP_VERSION, deviceClass, uuidv7 } from './collect.js';
 
 export const FORMAT = 'bedrock-error-report';
-export const VERSION = 1;
+// Version 2 adds slow entries (what, ms, snapshot) and `sent`. A report
+// without them is still sent as version 1, which every backend accepts.
+export const VERSION = 2;
 export const MAX_COMMENT = 2000;
 const MAX_ERRORS = 50;
 
@@ -40,25 +42,36 @@ export function context(win = globalThis) {
 export function buildReport(entries, {
   stage = 'running', comment = '', app = 'web', appVersion = APP_VERSION,
   device = deviceClass(), browser = browserTag(), facts = {}, now = Date.now(), id = uuidv7(now),
+  sent = 'person',
 } = {}) {
+  const auto = sent === 'auto';
+  const list = entries.filter((e) => !auto || e.kind === 'slow').slice(-MAX_ERRORS);
+  const v2 = auto || list.some((e) => e.kind === 'slow');
   const r = {
     format: FORMAT,
-    version: VERSION,
+    version: v2 ? VERSION : 1,
     id,
     app,
     app_version: appVersion,
     device,
     stage: stage === 'startup' ? 'startup' : 'running',
     created: Math.floor(now),
-    errors: entries.slice(-MAX_ERRORS).map((e) => {
+    errors: list.map((e) => {
       const out = { kind: e.kind, message: e.message, at: Math.floor(e.at) };
       if (e.stack) out.stack = e.stack;
       if (e.count > 1) out.count = e.count;
+      if (e.kind === 'slow') {
+        out.what = e.what;
+        out.ms = Math.max(0, Math.round(e.ms));
+        if (e.snapshot) out.snapshot = e.snapshot;
+      }
       return out;
     }),
     context: facts,
   };
+  if (v2) r.sent = auto ? 'auto' : 'person';
   if (browser) r.browser = browser;
+  if (auto) return r; // an automatic report never carries a comment
   const c = String(comment || '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, MAX_COMMENT);
   if (c) r.comment = c;
   return r;

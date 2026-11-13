@@ -13,6 +13,8 @@ import { host } from './host.js';
 import * as collect from './collect.js';
 import { WordSharer } from './share-words.js';
 import { showGate, gateStyles } from './consent.js';
+import { perf, AutoSender } from './perf.js';
+import { buildReport, context as reportContext, sendReport } from './report-panel.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -100,6 +102,11 @@ function loadSettings() {
 }
 
 const settings = loadSettings();
+
+const AUTO_PERF_CONSENT = 'Send performance reports automatically?\n\n'
+  + 'When Bedrock is slow (the pen lags, it stutters, a tap or a save takes long), it sends a short report to the Bedrock team by itself: '
+  + 'what was slow and for how long, and what Bedrock was doing then (job names such as "save", the tool, a rough stroke count and zoom, how handwriting is read, the app version and the kind of device).\n\n'
+  + 'No notes, no words, no file names, nothing about you. At most 3 reports a day. You can switch this off in the menu at any time.';
 function saveSettings() {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* ignore */ }
 }
@@ -201,7 +208,8 @@ async function main() {
   const frameStats = { full: 0, inkOnly: 0 }; // for the tests
   let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
-    onFrame: () => {
+    onFrame: (drew, latency) => {
+      perf.frame({ latency, drawing: canvas.is_drawing(), moving: input.active.size > 0 });
       // While the pen is writing, a frame is only the stroke under it: the
       // page, the camera and everything drawn over them (underlines, the
       // minimap, the selection) are as they were, so none of it is redrawn.
@@ -409,7 +417,9 @@ async function main() {
     return canvas.export_bedrock();
   }
 
-  async function saveNow() {
+  /** Timed as the `save` job (perf.js). */
+  function saveNow() { return perf.job('save', () => saveNowUntimed()); }
+  async function saveNowUntimed() {
     clearTimeout(saveTimer);
     saveTimer = null;
     if (startFailed || !store) return;
@@ -494,7 +504,9 @@ async function main() {
     return true;
   }
 
-  async function openNote(id) {
+  /** Timed as the `open` job (perf.js). */
+  function openNote(id) { return perf.job('open', () => openNoteUntimed(id)); }
+  async function openNoteUntimed(id) {
     if (saveTimer) await saveNow();
     await shareWordsAndSend();
     const rec = store && (await store.get(id));
@@ -583,7 +595,9 @@ async function main() {
     }
   }
 
-  async function renderLibrary() {
+  /** Timed as the `library` job (perf.js). */
+  function renderLibrary() { return perf.job('library', () => renderLibraryUntimed()); }
+  async function renderLibraryUntimed() {
     const list = $('note-list');
     const folders = await listFolders();
     const notes = store ? await store.list() : [];
@@ -1084,7 +1098,9 @@ async function main() {
   /** Each page of a PDF with handwriting (a GoodNotes export) becomes a
    *  note. With saving set up on /train, every word is also sent for
    *  training with the reading the PDF holds, for review. */
-  async function importPdf(f) {
+  /** Timed as the `import-pdf` job (perf.js). */
+  function importPdf(f) { return perf.job('import-pdf', () => importPdfUntimed(f)); }
+  async function importPdfUntimed(f) {
     toast(`Importing ${f.name}…`, 60000);
     await new Promise((r) => setTimeout(r, 30)); // let the message show first
     let pages;
@@ -1345,6 +1361,32 @@ async function main() {
     saveSettings();
     if (settings.shareWords) collect.flush().catch(() => {});
   });
+  // Performance reports sent by themselves: off until the person reads
+  // what is sent and agrees (perf.js, openspec/specs/performance).
+  perf.configure({
+    appBase: new URL('../', import.meta.url).href,
+    facts: () => ({
+      doing: canvas.is_drawing() ? 'writing' : input.active.size > 0 ? 'moving' : 'idle',
+      tool: currentTool(),
+      strokes: canvas.stroke_count(),
+      zoom: canvas.camera()[2],
+      recognizer: settings.recognize ? settings.recognizeMode : 'off',
+    }),
+  }).observe();
+  const autoSender = new AutoSender({
+    build: (entries) => buildReport(entries, { sent: 'auto', app: host ? 'obsidian' : 'web', facts: reportContext() }),
+    send: (report) => sendReport(report),
+  });
+  window.addEventListener('bedrock-slow', () => autoSender.episode());
+  $('auto-perf').checked = autoSender.on;
+  $('auto-perf').addEventListener('change', (e) => {
+    if (e.target.checked && !confirm(AUTO_PERF_CONSENT)) {
+      e.target.checked = false;
+      return;
+    }
+    autoSender.on = e.target.checked;
+    toast(autoSender.on ? 'Performance reports are sent automatically, at most 3 a day.' : 'Performance reports are no longer sent automatically.');
+  });
   $('spelling').checked = settings.spelling;
   $('spelling').addEventListener('change', (e) => {
     settings.spelling = e.target.checked;
@@ -1537,7 +1579,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });

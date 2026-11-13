@@ -36,6 +36,9 @@ browser) and every pen stroke as documented JSON (`note.json`). See
 - When something goes wrong, Bedrock says so and offers "Share with the Bedrock team": you
   see the whole error report (no notes, no file names) and nothing is sent until you press
   Send. Menu → Report a problem… works any time.
+- Bedrock notices when it is slow (pen lag, stutters, slow taps, long saves) and what was
+  running then; these show in the same report. Menu → "Send performance reports
+  automatically" sends them by themselves (off until you agree, at most 3 a day).
 
 Notes are kept in the browser's storage (IndexedDB), which the iPad's Files app cannot see.
 The export, or "Save to iCloud Drive / Files" for one note, is how notes leave the website.
