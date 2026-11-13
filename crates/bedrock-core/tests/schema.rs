@@ -101,6 +101,12 @@ fn notes_written_by_earlier_versions_match_the_schema() {
             }
             _ => continue,
         };
+        // The folder also keeps other formats (shared words, for example).
+        let format =
+            serde_json::from_str::<serde_json::Value>(&json).ok().and_then(|j| j["format"].as_str().map(String::from));
+        if format.as_deref() != Some(format::FORMAT_NAME) {
+            continue;
+        }
         assert_matches_schema(&v, &json, &name);
         checked += 1;
     }
