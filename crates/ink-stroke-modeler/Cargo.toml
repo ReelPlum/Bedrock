@@ -1,0 +1,13 @@
+[package]
+name = "ink-stroke-modeler"
+description = "Google's Ink Stroke Modeler (C++), built for WebAssembly and for tests, with a safe Rust interface"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license = "Apache-2.0"
+links = "ink_stroke_modeler"
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"

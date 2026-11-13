@@ -30,6 +30,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen-cli@0.2.130
+      # The WASI SDK builds the C++ Ink Stroke Modeler for WebAssembly;
+      # build-web.sh downloads it when it is not cached.
+      - uses: actions/cache@v4
+        with:
+          path: .wasi-sdk
+          key: wasi-sdk-${{ runner.os }}-${{ hashFiles('scripts/install-wasi-sdk.sh') }}
       - name: Build WebAssembly
         run: ./scripts/build-web.sh
       - name: Collect the site
