@@ -45,7 +45,7 @@ Classic.
   worker cache), CI and Pages workflows.
 - About 230 files of vendored C++ (2.8 MB of abseil source, 232 KB of the
   modeler); none of it is edited by hand.
-- The WebAssembly grows by about 0.1 MB before compression (the modeler,
-  abseil and the C and C++ libraries).
+- The WebAssembly grows by about 150 KB before compression and 60 KB
+  gzipped (the modeler, abseil and the C and C++ libraries).
 - Speed: the 100 000 stroke perf test stays inside its budgets (incremental
   sync after one stroke about 8.5 ms against 50 ms, measured 7.6 ms before).
