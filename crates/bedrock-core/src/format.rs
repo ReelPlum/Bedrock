@@ -916,37 +916,37 @@ mod tests {
         assert_eq!(load_bytes(to_json(&d).as_bytes(), 0).unwrap().doc.len(), d.len());
     }
 
-    /// Fuzz-style robustness: flipping or truncating bytes anywhere in a
-    /// saved note must never panic; it either loads (maybe with warnings) or
-    /// returns an error.
+    /// Fuzz-style robustness: flipping, cutting or adding bytes anywhere in
+    /// a saved note must never panic; it either loads (maybe with warnings)
+    /// or returns an error. `proptest` picks the damage, several changes at
+    /// a time, and shrinks a failure to the smallest damage that causes it.
     #[test]
     fn corrupted_files_never_panic() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, TestRunner};
         let d = sample_doc();
         let inputs = [to_bedrock(&d), to_svg(&d).into_bytes(), to_json(&d).into_bytes()];
-        let mut state = 0x1234_5678u64;
-        let mut rnd = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for original in &inputs {
-            for _ in 0..300 {
-                let mut b = original.clone();
-                match rnd() % 3 {
-                    0 => {
-                        let i = (rnd() as usize) % b.len();
-                        b[i] ^= (rnd() % 255 + 1) as u8;
+        // (which change, where as a share of the file, the byte to use)
+        let damage = prop::collection::vec((0..3u8, 0.0f64..1.0, any::<u8>()), 1..4);
+        let mut runner = TestRunner::new(Config { cases: 400, failure_persistence: None, ..Config::default() });
+        runner
+            .run(&(0..inputs.len(), damage), |(which, damage)| {
+                let mut b = inputs[which].clone();
+                for (kind, at, byte) in damage {
+                    if b.is_empty() {
+                        break;
                     }
-                    1 => b.truncate((rnd() as usize) % b.len()),
-                    _ => {
-                        let i = (rnd() as usize) % b.len();
-                        b.insert(i, rnd() as u8);
+                    let i = ((at * b.len() as f64) as usize).min(b.len() - 1);
+                    match kind {
+                        0 => b[i] ^= byte.max(1),
+                        1 => b.truncate(i),
+                        _ => b.insert(i, byte),
                     }
                 }
                 let _ = load_bytes(&b, 0);
-            }
-        }
+                Ok(())
+            })
+            .unwrap();
     }
 
     /// Regression: saving a note that was just opened must not change it
