@@ -2,6 +2,11 @@
 //! samples stored in the file (so every improvement here also improves old
 //! notes, and the file never changes):
 //!
+//! * [`filter_points`]: the input clean-up. By default Google's Ink Stroke
+//!   Modeler (see [`model_points`]): a wobble smoother for slow, shaky
+//!   movement and a spring and mass model that pulls the line along behind
+//!   the pen. The writer can switch back to the 1€ filters below
+//!   ([`set_smoother`], device-local).
 //! * [`OneEuro`] / [`OneEuro2`]: the 1€ filter (Casiez, Roussel, Vogel,
 //!   CHI 2012), a low-pass filter in *time* whose cutoff rises with speed.
 //!   Slow movement, where digitiser noise dominates, is smoothed hard; fast
@@ -17,7 +22,7 @@
 
 use crate::input::InputPoint;
 use std::f64::consts::PI;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 fn alpha(cutoff_hz: f64, dt_s: f64) -> f64 {
     let r = 2.0 * PI * cutoff_hz * dt_s;
@@ -128,11 +133,177 @@ pub fn decimate(points: &[InputPoint], min_spacing: f64) -> Vec<InputPoint> {
     out
 }
 
-/// The full input clean-up: unreliable start pressure, then 1€ filters on
+/// Which input clean-up smooths the ink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Smoother {
+    /// Google's Ink Stroke Modeler ([`model_points`]). The default.
+    Modeler,
+    /// Bedrock's own 1€ filters ([`one_euro_points`]), used before the
+    /// modeler.
+    OneEuro,
+}
+
+static SMOOTHER: AtomicU8 = AtomicU8::new(0);
+
+/// Choose the input clean-up for every pen. Device-local, rendering only:
+/// the file keeps raw samples. Re-tessellate afterwards.
+pub fn set_smoother(s: Smoother) {
+    SMOOTHER.store(if s == Smoother::OneEuro { 1 } else { 0 }, Ordering::Relaxed);
+}
+
+pub fn smoother() -> Smoother {
+    if SMOOTHER.load(Ordering::Relaxed) == 1 {
+        Smoother::OneEuro
+    } else {
+        Smoother::Modeler
+    }
+}
+
+/// The input clean-up chosen with [`set_smoother`]. The first point stays
+/// exact, and the line still reaches the point where the pen lifted.
+/// `scale` is world units per input pixel (see `Stroke::input_scale`).
+/// Strokes without timing (imported ones) always use the 1€ filters, which
+/// then leave them as they are.
+pub fn filter_points(points: &[InputPoint], scale: f64) -> Vec<InputPoint> {
+    match smoother() {
+        Smoother::Modeler if has_timing(points) => {
+            model_points(points, scale).unwrap_or_else(|| one_euro_points(points, scale))
+        }
+        _ => one_euro_points(points, scale),
+    }
+}
+
+/// Typical writing speed in input pixels per second, which the modeler's
+/// wobble smoother is tuned from: Google suggests smoothing fully below 2%
+/// of it and not at all above 3%.
+pub const MODELER_WRITING_SPEED: f64 = 400.0;
+/// The wobble smoother's window, seconds: Google suggests 2.5 divided by
+/// the input rate (Apple Pencil gives 120 to 240 samples a second).
+pub const MODELER_WOBBLE_WINDOW_S: f64 = 0.02;
+
+/// How tightly the modeler's line follows the pen (mass over spring
+/// constant, seconds squared). Google's starting point, 11/32400, rounds
+/// the tip of a small "v" by over a pixel; 7/32400 to 9/32400 keep letters'
+/// corners and still iron out a whole-pixel staircase (the tessellate tests).
+pub const MODELER_SPRING: f32 = 8.0 / 32400.0;
+
+fn modeler_params() -> ink_stroke_modeler::Params {
+    // Steady-hand smoothing widens the range of speeds that are smoothed.
+    let calm = 1.0 + 4.0 * smoothing() as f64;
+    ink_stroke_modeler::Params {
+        wobble_timeout: MODELER_WOBBLE_WINDOW_S,
+        wobble_speed_floor: 0.02 * MODELER_WRITING_SPEED * calm,
+        wobble_speed_ceiling: 0.03 * MODELER_WRITING_SPEED * calm,
+        spring_mass_constant: MODELER_SPRING,
+        end_of_stroke_stopping_distance: 0.01,
+        predict: false,
+        ..ink_stroke_modeler::Params::default()
+    }
+}
+
+thread_local! {
+    static MODELER: std::cell::RefCell<Option<ink_stroke_modeler::Modeler>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The input clean-up by Google's Ink Stroke Modeler: unreliable start
+/// pressure, then the modeler on position, pressure and tilt, in input
+/// pixels and seconds. The modeler resamples, so the points it gives back
+/// are not the ones it was given (at least 180 a second, in time order).
+/// None if the modeler refuses the input.
+pub fn model_points(points: &[InputPoint], scale: f64) -> Option<Vec<InputPoint>> {
+    use ink_stroke_modeler::{Event, Input};
+    let n = points.len();
+    if n < 3 {
+        return Some(points.to_vec());
+    }
+    let points = reliable_start(points);
+    let params = modeler_params();
+    MODELER.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let m = match cell.as_mut() {
+            Some(m) => {
+                m.reset(&params).ok()?;
+                m
+            }
+            None => cell.insert(ink_stroke_modeler::Modeler::new(&params).ok()?),
+        };
+        let mut out = Vec::with_capacity(n * 2);
+        let mut last_t = f64::NEG_INFINITY;
+        for (i, p) in points.iter().enumerate() {
+            let event = match i {
+                0 => Event::Down,
+                i if i == n - 1 => Event::Up,
+                _ => Event::Move,
+            };
+            // The modeler needs time to move forwards; samples that arrive
+            // together (coalesced) are spaced a microsecond apart.
+            let t = (p.t / 1000.0).max(last_t + 1e-6);
+            last_t = t;
+            let azimuth = (p.azimuth as f64).rem_euclid(std::f64::consts::TAU) as f32;
+            let input = Input {
+                x: (p.x / scale) as f32,
+                y: (p.y / scale) as f32,
+                time: t,
+                pressure: p.pressure.clamp(0.0, 1.0),
+                tilt: (std::f32::consts::FRAC_PI_2 - p.altitude).clamp(0.0, std::f32::consts::FRAC_PI_2),
+                orientation: azimuth,
+            };
+            m.update(event, input, &mut out).ok()?;
+        }
+        let first = points[0];
+        let mut pts: Vec<InputPoint> = out
+            .iter()
+            .map(|s| InputPoint {
+                x: s.x as f64 * scale,
+                y: s.y as f64 * scale,
+                pressure: s.pressure.clamp(0.0, 1.0),
+                altitude: std::f32::consts::FRAC_PI_2 - s.tilt.max(0.0),
+                azimuth: if s.orientation >= 0.0 { s.orientation } else { first.azimuth },
+                t: s.time * 1000.0,
+            })
+            .collect();
+        if pts.is_empty() {
+            return None;
+        }
+        // The first point exactly where the pen touched down, and the line
+        // reaching the point where it lifted.
+        pts[0].x = first.x;
+        pts[0].y = first.y;
+        let lift = points[n - 1];
+        let end = *pts.last().unwrap();
+        if end.pos().distance(lift.pos()) > 1e-6 {
+            pts.push(InputPoint { x: lift.x, y: lift.y, t: end.t.max(lift.t), ..end });
+        }
+        Some(pts)
+    })
+}
+
+/// Pressure in the first few milliseconds is replaced by the first reliable
+/// value (see [`UNRELIABLE_START_MS`]).
+fn reliable_start(points: &[InputPoint]) -> Vec<InputPoint> {
+    let n = points.len();
+    let t0 = points[0].t;
+    let reliable = points.iter().find(|p| p.t - t0 >= UNRELIABLE_START_MS).map(|p| p.pressure);
+    let duration = points[n - 1].t - t0;
+    points
+        .iter()
+        .map(|p| {
+            let mut q = *p;
+            if let Some(r) = reliable {
+                if duration > 2.0 * UNRELIABLE_START_MS && p.t - t0 < UNRELIABLE_START_MS {
+                    q.pressure = r;
+                }
+            }
+            q
+        })
+        .collect()
+}
+
+/// The 1€ input clean-up: unreliable start pressure, then 1€ filters on
 /// position, pressure and tilt. The first point stays exact, and the line
 /// still reaches the point where the pen lifted. `scale` is world units per
 /// input pixel (see `Stroke::input_scale`).
-pub fn filter_points(points: &[InputPoint], scale: f64) -> Vec<InputPoint> {
+pub fn one_euro_points(points: &[InputPoint], scale: f64) -> Vec<InputPoint> {
     let n = points.len();
     if n < 3 {
         return points.to_vec();
@@ -666,6 +837,59 @@ mod tests {
         // Without timing it is the plain pulled string.
         let untimed: Vec<_> = zig(0.0).into_iter().map(|p| p.at(0.0)).collect();
         assert_eq!(pulled_string_eased(&untimed, 4.0, 1.0), pulled_string(&untimed, 4.0));
+    }
+
+    /// A shaky line as a pen reports it: a sample every 8 ms, wobbling
+    /// 6 px up and down around y = 0.
+    fn tremor_line() -> Vec<InputPoint> {
+        (0..=60)
+            .map(|i| InputPoint::new(i as f64 * 8.0, if i % 2 == 1 { 6.0 } else { -6.0 }, 0.5).at(i as f64 * 8.0))
+            .collect()
+    }
+
+    #[test]
+    fn the_modeler_takes_out_tremor_and_keeps_both_ends() {
+        let input = tremor_line();
+        let out = model_points(&input, 1.0).expect("the modeler takes a normal stroke");
+        let wobble = |pts: &[InputPoint]| {
+            let mid: Vec<_> = pts.iter().filter(|p| p.x > 80.0 && p.x < 400.0).collect();
+            mid.iter().map(|p| p.y.abs()).sum::<f64>() / mid.len() as f64
+        };
+        assert!(wobble(&out) < wobble(&input) * 0.2, "wobble {} vs {}", wobble(&out), wobble(&input));
+        assert_eq!((out[0].x, out[0].y), (input[0].x, input[0].y), "starts where the pen touched down");
+        let (a, b) = (out.last().unwrap(), input.last().unwrap());
+        assert_eq!((a.x, a.y), (b.x, b.y), "ends where the pen lifted");
+        assert!(out.windows(2).all(|w| w[1].t >= w[0].t), "time order");
+    }
+
+    #[test]
+    fn the_modeler_works_at_any_zoom() {
+        // The same hand movement drawn zoomed in (world units half the
+        // input pixels) is the same line, half the size.
+        let at = |scale: f64| {
+            let pts: Vec<_> =
+                tremor_line().iter().map(|p| InputPoint { x: p.x * scale, y: p.y * scale, ..*p }).collect();
+            model_points(&pts, scale).unwrap()
+        };
+        let (one, half) = (at(1.0), at(0.5));
+        assert_eq!(one.len(), half.len());
+        for (a, b) in one.iter().zip(&half) {
+            assert!((a.x * 0.5 - b.x).abs() < 1e-3 && (a.y * 0.5 - b.y).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn strokes_without_timing_skip_the_modeler() {
+        // Imported strokes have no pen timing for the modeler to work from.
+        let pts: Vec<_> = (0..20).map(|i| InputPoint::new(i as f64 * 3.0, (i % 2) as f64, 0.5)).collect();
+        assert!(!has_timing(&pts));
+        assert_eq!(filter_points(&pts, 1.0), one_euro_points(&pts, 1.0));
+    }
+
+    #[test]
+    fn the_modeler_is_the_usual_smoother() {
+        // Read only: tests run in parallel, so none changes the setting.
+        assert_eq!(smoother(), Smoother::Modeler);
     }
 
     #[test]

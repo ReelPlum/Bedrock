@@ -207,7 +207,8 @@ fn timed_samples(
     let size = brush.size.max(0.1) as f64;
     // World units per input pixel when drawn: the size of input noise.
     let px = if stroke.input_scale.is_finite() && stroke.input_scale > 0.0 { stroke.input_scale } else { 1.0 };
-    // Input clean-up, in order: 1€ filters (noise out, little lag), merge
+    // Input clean-up, in order: the Ink Stroke Modeler or 1€ filters (noise
+    // out, little lag; see pen::filter_points), merge
     // points too close to carry a direction, smooth away the whole-pixel
     // staircase, then the stabiliser's pulled string if on.
     // A live stroke may end in predicted points (a guess at where the pen is
@@ -218,7 +219,10 @@ fn timed_samples(
     let merged = pen::decimate(&filtered, merge);
     let mut smoothed = pen::smooth_along(&merged, pen::PIXEL_SMOOTHING * px);
     if real < points.len() {
-        let all = pen::filter_points(points, px);
+        // The guess is short and thrown away on the next frame: the 1€
+        // filters keep it point for point, joined to where the real line
+        // ends (the Ink Stroke Modeler would pull the real line towards it).
+        let all = pen::one_euro_points(points, px);
         smoothed.extend(all.iter().skip(real).copied());
     }
     let cleaned = stabilize_eased(&smoothed, brush.stabilizer, px);

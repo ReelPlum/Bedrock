@@ -70,7 +70,7 @@ tapers) is saved with each new stroke; the "usual" setting saves nothing.
 <!-- test: pressure_curve_through_points_is_smooth_and_monotone -->
 <!-- test: pressure_curve_is_monotone_hits_endpoints_and_defaults_to_linear -->
 <!-- test-js: apps/web/tests/app.test.mjs :: pressure curve: points can be added and dragged, it is remembered, and soft/firm still works -->
-<!-- test-js: apps/web/tests/app.test.mjs :: pressure curve and steady hand survive a reload -->
+<!-- test-js: apps/web/tests/app.test.mjs :: pressure curve, steady hand and line smoothing survive a reload -->
 <!-- test-js: apps/web/tests/app.test.mjs :: pen pressure feel: soft draws light touches wider, is remembered, and redraws old ink -->
 
 #### Scenario: Steady hand

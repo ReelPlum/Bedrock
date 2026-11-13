@@ -94,6 +94,9 @@ function loadSettings() {
     pressureCurve: validCurve(s.pressureCurve),
     // Steady-hand smoothing for every pen, 0..100.
     smoothing: Number.isFinite(s.smoothing) ? Math.max(0, Math.min(100, s.smoothing)) : 0,
+    // How pen input is smoothed: 'modeler' (Google's Ink Stroke Modeler)
+    // or 'classic' (Bedrock's own filters, used before the modeler).
+    smoother: s.smoother === 'classic' ? 'classic' : 'modeler',
     lastNote: s.lastNote || null,
     // The folder the notes list shows; new notes go there.
     libraryFolder: typeof s.libraryFolder === 'string' ? s.libraryFolder : null,
@@ -1287,6 +1290,14 @@ async function main() {
     settings.smoothing = parseInt(e.target.value, 10) || 0;
     $('smoothing-value').textContent = smoothingLabel(settings.smoothing);
     canvas.set_smoothing(settings.smoothing / 100);
+    saveSettings();
+    input.requestFrame();
+  });
+  $('smoother').value = settings.smoother;
+  canvas.set_smoother(settings.smoother);
+  $('smoother').addEventListener('change', (e) => {
+    settings.smoother = e.target.value === 'classic' ? 'classic' : 'modeler';
+    canvas.set_smoother(settings.smoother);
     saveSettings();
     input.requestFrame();
   });

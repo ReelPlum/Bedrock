@@ -57,6 +57,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "hayro-syntax",
+ "ink-stroke-modeler",
  "jsonschema",
  "png",
  "proptest",
