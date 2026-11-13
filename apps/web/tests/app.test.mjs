@@ -440,6 +440,7 @@ test('colour presets can be added and deleted, and are remembered', async () => 
     ci.value = '#00aa88';
     ci.dispatchEvent(new Event('input'));
     ci.dispatchEvent(new Event('change'));
+    ci.dispatchEvent(new Event('blur'));
     const added = swatches();
     // Long-press (here: right-click) enters delete mode; tapping a colour removes it.
     document.querySelector('#colors .swatch').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
@@ -476,11 +477,14 @@ test('the + opens the colour picker and adds the chosen colour; there is no colo
     ci.value = '#ff8800';
     ci.dispatchEvent(new Event('input'));
     ci.dispatchEvent(new Event('change'));
+    ci.dispatchEvent(new Event('blur'));
     const added = swatches();
     const selected = added.find((s) => s.getAttribute('aria-checked') === 'true')?.getAttribute('aria-label');
     // Picking a colour already there only selects it.
+    ci.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     ci.value = '#ff8800';
     ci.dispatchEvent(new Event('change'));
+    ci.dispatchEvent(new Event('blur'));
     const again = swatches().length;
     const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
     return { before, whilePicking, added: added.length, selected, again, saved: s.palettes.ink, color: s.brushes[s.brush].color };
@@ -492,6 +496,68 @@ test('the + opens the colour picker and adds the chosen colour; there is no colo
   assert.ok(r.saved.includes('#ff8800') && !r.saved.includes('#123456'), JSON.stringify(r.saved));
   assert.equal(r.color, '#ff8800');
   await ctx.close();
+});
+
+test('bug: the colour picker adds one swatch when it closes, not one per move', async () => {
+  // Safari fires `change` (not only `input`) on every move in the colour
+  // wheel, which added a swatch for each one.
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const n = () => document.querySelectorAll('#colors .swatch').length;
+    const before = n();
+    const ci = document.getElementById('color-input');
+    ci.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ci.focus();
+    for (const c of ['#101010', '#202020', '#303030', '#404040']) {
+      ci.value = c;
+      ci.dispatchEvent(new Event('input'));
+      ci.dispatchEvent(new Event('change'));
+    }
+    const whileOpen = n();
+    ci.blur(); // the picker closes
+    const closed = n();
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+    // A picker that stays open without moving still ends up with one swatch,
+    // which follows any later moves in the same opening.
+    ci.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ci.value = '#505050';
+    ci.dispatchEvent(new Event('change'));
+    await new Promise((res) => setTimeout(res, 900));
+    const settled = n();
+    ci.value = '#606060';
+    ci.dispatchEvent(new Event('change'));
+    await new Promise((res) => setTimeout(res, 900));
+    const s2 = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+    return { before, whileOpen, closed, saved: s.palettes.ink, settled, after: n(), saved2: s2.palettes.ink };
+  });
+  assert.equal(r.whileOpen, r.before, 'no swatch while the picker is open');
+  assert.equal(r.closed, r.before + 1, 'one swatch when it closes');
+  assert.ok(r.saved.includes('#404040') && !r.saved.includes('#202020'), JSON.stringify(r.saved));
+  assert.equal(r.settled, r.before + 2);
+  assert.equal(r.after, r.before + 2, 'later moves in the same opening change that swatch');
+  assert.ok(r.saved2.includes('#606060') && !r.saved2.includes('#505050'), JSON.stringify(r.saved2));
+  await ctx.close();
+});
+
+test('bug: the + stays a circle when the toolbar is full', async () => {
+  for (const [width, dock] of [[700, 'bottom'], [1024, 'left']]) {
+    const ctx = await env.browser.newContext({ viewport: { width, height: 700 } });
+    const { page } = await openApp(env, { context: ctx });
+    const r = await page.evaluate((dock) => {
+      const d = document.getElementById('dock'); d.value = dock; d.dispatchEvent(new Event('change'));
+      const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+      const ci = document.getElementById('color-input');
+      for (const c of ['#111111', '#222222', '#333333', '#444444']) {
+        ci.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        ci.value = c; ci.dispatchEvent(new Event('input'));
+        ci.dispatchEvent(new Event('blur'));
+      }
+      const b = document.getElementById('color-add').getBoundingClientRect();
+      return [b.width, b.height];
+    }, dock);
+    assert.ok(Math.abs(r[0] - r[1]) < 0.5 && r[0] >= 26, `${dock}: + is ${r[0]}x${r[1]}`);
+    await ctx.close();
+  }
 });
 
 test('the toolbar can be docked to any edge and stays there', async () => {
