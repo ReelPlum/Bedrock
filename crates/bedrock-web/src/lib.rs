@@ -21,7 +21,35 @@ use web_sys::HtmlCanvasElement;
 
 #[wasm_bindgen(start)]
 pub fn start() {
-    console_error_panic_hook::set_once();
+    std::panic::set_hook(Box::new(|info| {
+        // The console, as before, and the error log behind "Share with the
+        // Bedrock team" (apps/web/src/errors.js), so a panic is not lost
+        // behind the bare "unreachable" error JavaScript sees afterwards.
+        console_error_panic_hook::hook(info);
+        report_panic(&info.to_string());
+    }));
+}
+
+/// Panics with `message`: lets the browser tests check that a panic reaches
+/// the error log. Not used by the app.
+#[doc(hidden)]
+#[wasm_bindgen]
+pub fn panic_for_tests(message: &str) {
+    panic!("{message}");
+}
+
+/// Hands a panic's message to `window.bedrockErrors.panic`, if the page has
+/// it. Never panics itself.
+fn report_panic(message: &str) {
+    let global = js_sys::global();
+    let Ok(errors) = js_sys::Reflect::get(&global, &JsValue::from_str("bedrockErrors")) else { return };
+    if errors.is_undefined() || errors.is_null() {
+        return;
+    }
+    let Ok(panic) = js_sys::Reflect::get(&errors, &JsValue::from_str("panic")) else { return };
+    if let Some(f) = panic.dyn_ref::<js_sys::Function>() {
+        let _ = f.call1(&errors, &JsValue::from_str(message));
+    }
 }
 
 fn pointer_kind(kind: &str) -> PointerKind {

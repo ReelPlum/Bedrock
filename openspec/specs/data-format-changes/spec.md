@@ -14,6 +14,7 @@ A **data format** is anything written to disk or sent between programs:
 | The on-device library (IndexedDB `bedrock`) | `saving-and-opening`, `library-folders` |
 | Training samples, the upload queue and their local storage | `training-data-sharing` |
 | Training prompts (`GET /v1/prompts`, `bedrock.train.prompts`) | `training-pages` |
+| Error reports (`bedrock-error-report`), `send-report`, the on-device log `bedrock.errors.v1` | `error-reporting` |
 | The backend API, its storage and training data | Bedrock-Backend `openspec/specs/` |
 
 ## Requirements

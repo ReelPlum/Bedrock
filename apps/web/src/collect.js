@@ -145,7 +145,7 @@ function pointerOf(strokes) {
   return Object.keys(n).sort((a, b) => n[b] - n[a])[0];
 }
 
-const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.1.0';
 
 /** The backend takes short plain tags only (letters, digits, space . _ - / +). */
 export function shortTag(text, max) {

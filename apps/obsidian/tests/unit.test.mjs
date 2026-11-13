@@ -10,6 +10,7 @@ import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { installWebApp, webAppUrl } from '../src/assets.js';
 import { packWebApp } from '../build.mjs';
+import { ErrorLog, reportsAddress, sendReport } from '../src/report.js';
 
 /** A ZIP like zip.rs writes: each entry deflated if that is smaller. */
 function zip(entries) {
@@ -416,4 +417,51 @@ test('the plugin packs the current web app, host adapter and WebAssembly include
   }
   assert.ok(!Object.keys(b.files).some((f) => f.startsWith('tests/')), 'tests are not shipped');
   assert.equal(b.hash, (await packWebApp()).hash, 'the version hash is stable');
+});
+
+test('the plugin error log keeps file names only, counts repeats and builds a report the backend takes', () => {
+  const log = new ErrorLog();
+  const err = new Error('boom');
+  err.stack = 'Error: boom\n    at load (app://obsidian.md/Users/frederik/Vault/.obsidian/plugins/bedrock-notes/main.js:12:3)';
+  log.record('could not write /Users/frederik/Vault/Diary.bedrock', err);
+  log.record('could not write /Users/frederik/Vault/Diary.bedrock', err);
+  log.record('index not updated', null, 'error');
+  const e = log.entries();
+  assert.equal(e.length, 2);
+  assert.deepEqual([e[0].kind, e[0].message, e[0].count], ['shown', 'could not write Diary.bedrock', 2]);
+  assert.equal(e[0].stack, 'Error: boom\nat load (main.js:12:3)');
+  const r = log.report({ comment: 'while syncing', appVersion: '0.1.0', now: 1794421375000 });
+  assert.equal(r.format, 'bedrock-error-report');
+  assert.equal(r.version, 1);
+  assert.equal(r.app, 'obsidian');
+  assert.equal(r.stage, 'running');
+  assert.equal(r.created, 1794421375000);
+  assert.equal(r.comment, 'while syncing');
+  assert.deepEqual(r.errors.map((x) => x.count ?? 1), [2, 1]);
+  assert.doesNotMatch(JSON.stringify(r), /frederik|Vault/);
+});
+
+test('reports are sent with requestUrl, and failures say what to do', async () => {
+  assert.equal(reportsAddress(''), '', 'no backend address yet: nothing is sent');
+  assert.equal(reportsAddress('http://example.com'), '', 'never in the clear');
+  const url = reportsAddress('https://bedrock.example');
+  assert.equal(url, 'https://bedrock.example/v1/reports');
+  const calls = [];
+  const ok = async (req) => { calls.push(req); return { status: 200, json: { id: 'r1' } }; };
+  assert.equal(await sendReport({ id: 'r1' }, ok, url), 'r1');
+  assert.deepEqual(calls[0], { url, method: 'POST', contentType: 'application/json', body: '{"id":"r1"}', throw: false });
+  await assert.rejects(sendReport({ id: 'r' }, async () => ({ status: 429, json: {} }), url), /Too many reports/);
+  await assert.rejects(sendReport({ id: 'r' }, async () => ({ status: 400, json: { detail: 'app is "web" or "obsidian"' } }), url), /refused \(app is/);
+  await assert.rejects(sendReport({ id: 'r' }, async () => { throw new Error('offline'); }, url), /Could not reach/);
+  await assert.rejects(sendReport({ id: 'r' }, ok, ''), /not switched on/);
+});
+
+test('the canvas sends its error reports through the plugin', async () => {
+  const vault = new FakeVault();
+  const sent = [];
+  const session = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {}, sendReport: async (r) => { sent.push(r); return r.id; } });
+  assert.deepEqual(await session.handlers['send-report']({ report: { id: 'x' } }), { id: 'x' });
+  assert.deepEqual(sent, [{ id: 'x' }]);
+  const none = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {} });
+  await assert.rejects(none.handlers['send-report']({ report: { id: 'x' } }), /not switched on/);
 });

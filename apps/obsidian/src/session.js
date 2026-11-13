@@ -28,9 +28,10 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {(query: string, sourcePath: string) => Promise<string|null>} o.pickNote
  * @param {(target: string, sourcePath: string) => void} o.openLink
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
+ * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
  * @param {() => void} [o.onReady]
  */
-export function createSession({ vault, file, indexer, kv, pickNote, openLink, copyLink, onReady }) {
+export function createSession({ vault, file, indexer, kv, pickNote, openLink, copyLink, sendReport, onReady }) {
   // mtime of our own last write, to tell our saves from outside changes.
   let ownMtime = null;
   let writing = Promise.resolve();
@@ -69,6 +70,10 @@ export function createSession({ vault, file, indexer, kv, pickNote, openLink, co
       'set-kv': async ({ key, value }) => { await kv.set(`${file().path}\u0000${key.replace(/:.*/, '')}`, value); return true; },
       'pick-note': async ({ query }) => pickNote(query || '', file().path),
       'open-link': async ({ target }) => { openLink(target, file().path); return true; },
+      'send-report': async ({ report } = {}) => {
+        if (!sendReport || !report || typeof report !== 'object') throw new Error('Sending is not switched on here.');
+        return { id: await sendReport(report) };
+      },
       'copy-link': async ({ stroke }) => {
         if (!copyLink || !isStrokeId(stroke)) return false;
         await copyLink(stroke, file().path);

@@ -174,6 +174,8 @@
     <label class="row"><input type="checkbox" id="show-minimap"> Show minimap</label>
     <label class="row"><input type="checkbox" id="show-latency"> Show latency</label>
     <button class="row" id="record-trace" type="button">Record a pen trace</button>
+    <hr>
+    <button role="menuitem" data-action="report">Report a problem…</button>
   </div>
 
   <div class="word-menu" id="word-menu" hidden role="dialog" aria-label="Word">
@@ -240,7 +242,7 @@
 
   <noscript>Bedrock needs JavaScript and WebAssembly.</noscript>
   <div id="fatal" class="fatal" hidden></div>
-  <script src="src/boot-check.js"></script>
+  <script src="src/errors.js"></script>
   <script type="module" src="src/main.js"></script>
 </body>
 </html>

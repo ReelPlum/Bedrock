@@ -61,6 +61,14 @@ class Setting {}
 class Notice { constructor(msg) { Notice.shown.push(msg); } }
 Notice.shown = [];
 
+/** Records requests; tests set `requestUrl.answer(req)` to reply. */
+async function requestUrl(req) {
+  requestUrl.calls.push(req);
+  return requestUrl.answer(req);
+}
+requestUrl.calls = [];
+requestUrl.answer = () => ({ status: 200, json: {} });
+
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath };
+module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };

@@ -26,5 +26,5 @@ an update lands mid-load.
 #### Scenario: A page from two versions
 - **GIVEN** a page put together from files of two versions just after an update
 - **WHEN** it fails to start
-- **THEN** it says to reload instead of staying empty
+- **THEN** it says to reload instead of staying empty, and offers to share what went wrong (see `error-reporting`)
 <!-- test-js: apps/web/tests/train.test.mjs :: a page put together from two versions (just after an update) says to reload instead of staying empty -->

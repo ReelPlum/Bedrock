@@ -2,16 +2,74 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, FuzzySuggestModal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { FileView, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
 import bundle from 'virtual:web-app';
 import { installWebApp, webAppUrl } from './assets.js';
 import { HostBridge } from './bridge.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
+import { ErrorLog, reportsAddress, sendReport } from './report.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
 const EXTENSION = 'bedrock';
 const MAX_CAMERAS = 500;
+
+/** "Share with the Bedrock team" for the plugin's own errors: the exact
+ *  report, an optional comment, and Send. (The canvas has its own panel.) */
+class ReportModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    const log = this.plugin.errors;
+    const now = Date.now();
+    const report = () => {
+      const r = log.report({ comment: comment.value, appVersion: this.plugin.manifest.version, now });
+      r.id = id;
+      return r;
+    };
+    contentEl.createEl('h2', { text: 'Share with the Bedrock team' });
+    contentEl.createEl('p', { text: log.list.length
+      ? 'This is everything that will be sent: what went wrong, the plugin version and the kind of device. No notes, no file names, nothing about you. Nothing is sent until you press Send.'
+      : 'Nothing has gone wrong that Bedrock noticed. Say what happened and it is sent with the plugin version and the kind of device.' });
+    const comment = contentEl.createEl('textarea', { attr: { placeholder: 'What were you doing? (optional)', maxlength: '2000', rows: '3' }, cls: 'bedrock-report-comment' });
+    const pre = contentEl.createEl('pre', { cls: 'bedrock-report' });
+    const id = log.report({ now }).id;
+    const row = contentEl.createDiv({ cls: 'bedrock-report-row' });
+    const status = row.createSpan({ cls: 'bedrock-report-status' });
+    const copy = row.createEl('button', { text: 'Copy' });
+    const send = row.createEl('button', { text: 'Send', cls: 'mod-cta' });
+    const render = () => {
+      const r = report();
+      pre.setText(JSON.stringify(r, null, 2));
+      send.disabled = !reportsAddress() || (!r.errors.length && !r.comment);
+    };
+    render();
+    if (!reportsAddress()) status.setText('Sending is not switched on in this version yet: copy the report and email it to us.');
+    comment.addEventListener('input', render);
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(pre.textContent); status.setText('Copied.'); } catch (_) { status.setText('Select the text and copy it.'); }
+    });
+    send.addEventListener('click', async () => {
+      send.disabled = true;
+      status.setText('Sending…');
+      try {
+        const sent = await this.plugin.sendReport(report());
+        status.setText(`Sent, thank you. Report ${sent}`);
+        log.clear();
+        send.remove();
+      } catch (e) {
+        status.setText(e.message);
+        send.disabled = false;
+      }
+    });
+  }
+
+  onClose() { this.contentEl?.empty?.(); }
+}
 
 /** Obsidian's own kind of file picker, over every file in the vault. */
 class NotePicker extends FuzzySuggestModal {
@@ -97,6 +155,7 @@ class BedrockView extends FileView {
       pickNote: (query, sourcePath) => plugin.pickNote(query, sourcePath),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
+      sendReport: (report) => plugin.sendReport(report),
       onReady: () => { this.appReady = true; this.showPending(); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
@@ -125,12 +184,13 @@ const DEFAULT_SETTINGS = { index: true, indexFolder: DEFAULT_INDEX_FOLDER, newNo
 
 export default class BedrockPlugin extends Plugin {
   async onload() {
+    this.errors = new ErrorLog();
     const data = (await this.loadData()) || {};
     this.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     this.cameras = data.cameras || {};
     this.webDir = normalizePath(`${this.manifest.dir}/web`);
     this.webAppReady = installWebApp(this.app.vault.adapter, this.webDir, bundle).catch((e) => {
-      new Notice(`Bedrock could not unpack its canvas: ${e}`);
+      this.problem(`Bedrock could not unpack its canvas: ${e}`, e);
     });
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
     this.kv = {
@@ -149,6 +209,7 @@ export default class BedrockPlugin extends Plugin {
 
     this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
     this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
+    this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
     this.addSettingTab(new BedrockSettings(this.app, this));
 
@@ -159,14 +220,14 @@ export default class BedrockPlugin extends Plugin {
     }));
     this.registerEvent(vault.on('rename', async (f, oldPath) => {
       if (!(f instanceof TFile) || f.extension !== EXTENSION || !this.settings.index) return;
-      await this.indexer.rename(oldPath, f.path, await vault.readBinary(f)).catch(() => {});
+      await this.indexer.rename(oldPath, f.path, await vault.readBinary(f)).catch((e) => this.errors.record('Bedrock: search index not renamed', e, 'error'));
       for (const k of Object.keys(this.cameras)) {
         if (k.startsWith(`${oldPath}\u0000`)) { this.cameras[f.path + k.slice(oldPath.length)] = this.cameras[k]; delete this.cameras[k]; }
       }
       this.persist();
     }));
     this.registerEvent(vault.on('delete', (f) => {
-      if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch(() => {});
+      if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch((e) => this.errors.record('Bedrock: search index not removed', e, 'error'));
     }));
     // A search result or link that lands on an index note opens the
     // handwriting, at the words that were found.
@@ -231,6 +292,24 @@ export default class BedrockPlugin extends Plugin {
     });
   }
 
+  /** Tells the person about a problem, with a Report button, and logs it. */
+  problem(message, err) {
+    this.errors.record(message, err);
+    const notice = new Notice(message, 15000);
+    const el = notice.noticeEl;
+    if (el?.createEl) {
+      const b = el.createEl('button', { text: 'Report', cls: 'bedrock-report-button' });
+      b.addEventListener('click', (e) => { e.stopPropagation(); new ReportModal(this.app, this).open(); });
+    }
+    return notice;
+  }
+
+  /** Sends an error report (the plugin's, or the canvas's through
+   *  `send-report`). Resolves to its id. */
+  sendReport(report) {
+    return sendReport(report, requestUrl);
+  }
+
   /** Put a link to a word of a handwritten note on the clipboard. */
   async copyLink(file, stroke) {
     const text = linkToStroke(this.app.metadataCache.fileToLinktext(file, '', true), stroke);
@@ -248,7 +327,11 @@ export default class BedrockPlugin extends Plugin {
 
   async reindex(announce) {
     if (!this.settings.index) return;
-    const n = await this.indexer.sync().catch((e) => { console.warn('Bedrock: indexing failed', e); return 0; });
+    const n = await this.indexer.sync().catch((e) => {
+      console.warn('Bedrock: indexing failed', e);
+      this.errors.record('Bedrock: indexing failed', e, 'error');
+      return 0;
+    });
     if (announce) new Notice(`Bedrock: ${n} handwritten note${n === 1 ? '' : 's'} indexed.`);
   }
 
