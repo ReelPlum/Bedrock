@@ -68,4 +68,34 @@ fn hundred_thousand_strokes() {
     println!("incremental sync after one stroke: {incr:?}, rebuilt {} chunk(s)", diff.added.len());
     assert!(diff.added.len() <= 2);
     assert!(incr.as_millis() < 50, "adding a stroke must not stall the next frame");
+
+    // The eraser and the lasso look at every stroke's bounds. That is kept
+    // instead of a spatial index (rstar was considered): it fits easily in
+    // a frame, and an index would have to give strokes back in stacking
+    // order, which costs as much as the scan.
+    let (a, b) = (Vec2::new(3000.0, 3000.0), Vec2::new(3004.0, 3002.0));
+    let t = Instant::now();
+    let mut hits = 0;
+    for _ in 0..100 {
+        hits = bedrock_core::eraser::strokes_hit(d.strokes(), a, b, 6.0).len();
+    }
+    let erase = t.elapsed() / 100;
+    println!("eraser per move: {erase:?} ({hits} strokes hit)");
+    assert!(hits > 0);
+    assert!(erase.as_micros() < 2_000, "an eraser move must fit easily in a 120 Hz frame");
+    let lasso: Vec<Vec2> = (0..64)
+        .map(|k| {
+            let u = k as f64 / 64.0 * std::f64::consts::TAU;
+            Vec2::new(3000.0 + 80.0 * u.cos(), 3000.0 + 40.0 * u.sin())
+        })
+        .collect();
+    let t = Instant::now();
+    let mut taken = 0;
+    for _ in 0..20 {
+        taken = bedrock_core::selection::strokes_in_lasso(&d, &lasso).len();
+    }
+    let select = t.elapsed() / 20;
+    println!("lasso: {select:?} ({taken} strokes taken)");
+    assert!(taken > 0);
+    assert!(select.as_millis() < 5, "a lasso must select without a visible pause");
 }

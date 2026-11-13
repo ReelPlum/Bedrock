@@ -18,6 +18,8 @@ of projects. Frederik asked for the survey's suggestions to be put in place
   files are generated with `proptest` (test only).
 - SVG exports are read back with `roxmltree`, so one re-saved by a drawing
   program still opens.
+- `rstar` was considered for the eraser and lasso and turned down after
+  measuring; their speed on a 100 000 stroke note is now tested.
 - The PDF importer reads the file with `hayro-syntax` and writes PNG files
   with `png`. Bedrock's own part (turning pen paths into strokes, the hidden
   text layer, placing pictures) stays.
