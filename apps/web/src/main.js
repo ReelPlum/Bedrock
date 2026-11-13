@@ -114,10 +114,23 @@ function toast(msg, ms = 3500) {
   toast.timer = setTimeout(() => { t.hidden = true; }, ms);
 }
 
-function fatal(msg) {
+/** A failure that stops Bedrock: the message, Reload, and "Share with the
+ *  Bedrock team" (errors.js). */
+function fatal(msg, err) {
+  if (window.bedrockErrors) {
+    window.bedrockErrors.fatal(msg, err);
+    return;
+  }
   const f = $('fatal');
   f.textContent = msg;
   f.hidden = false;
+}
+
+/** An error the person is told about in a toast: logged, so it can be
+ *  shared with the Bedrock team (Menu → Report a problem). */
+function problem(msg, ms, err) {
+  window.bedrockErrors?.shown(msg, err);
+  toast(msg, ms);
 }
 
 async function main() {
@@ -127,13 +140,13 @@ async function main() {
   try {
     canvas = new Canvas($('base'), $('overlay'), ...randomSeed());
   } catch (e) {
-    fatal(`Bedrock needs WebGL2, which this browser does not provide. (${e})`);
+    fatal(`Bedrock needs WebGL2, which this browser does not provide. (${e})`, e);
     return;
   }
 
   // Inside a host app (the Obsidian plugin) the note is the host's file.
   const store = await (host ? Promise.resolve(host.store()) : NoteStore.open()).catch((e) => {
-    toast(`Local storage is unavailable, notes will not be saved: ${e}`, 8000);
+    problem(`Local storage is unavailable, notes will not be saved: ${e}`, 8000, e);
     return null;
   });
 
@@ -230,7 +243,7 @@ async function main() {
         toast('Downloading the handwriting model. This happens once; it then runs on this device.', 6000);
       } else if (m.error && !handwriting.errorShown) {
         handwriting.errorShown = true;
-        toast(`Handwriting recognition is not available here (${m.error}).`, 8000);
+        problem(`Handwriting recognition is not available here (${m.error}).`, 8000);
       }
     },
   });
@@ -312,7 +325,7 @@ async function main() {
         waiting.delete(e.data.seq);
         resolve?.(e.data);
       };
-      worker.onerror = fail;
+      worker.onerror = (e) => { window.bedrockErrors?.worker('save worker', e); fail(); };
     } catch (_) {
       worker = null; // no module workers: save on the main thread instead
     }
@@ -396,7 +409,7 @@ async function main() {
       if (!$('library').hidden && !$('note-list').querySelector('.folder-name')) renderLibrary();
     }).catch((e) => {
       setSaveState('Not saved!', true);
-      toast(`Could not save this note on this device: ${e && e.message ? e.message : e}. Use “Save to iCloud Drive / Files” to keep a copy.`, 10000);
+      problem(`Could not save this note on this device: ${e && e.message ? e.message : e}. Use “Save to iCloud Drive / Files” to keep a copy.`, 10000, e);
     });
     return saving;
   }
@@ -467,7 +480,7 @@ async function main() {
       if (cam && cam.length === 3) canvas.set_camera(cam[0], cam[1], cam[2]);
       if (warnings.length) toast(`Some damaged parts of this note were skipped: ${warnings.slice(0, 3).join('; ')}`, 8000);
     } catch (e) {
-      toast(`This note could not be opened: ${e}`, 8000);
+      problem(`This note could not be opened: ${e}`, 8000, e);
       return newNote();
     }
     settings.lastNote = id;
@@ -1128,6 +1141,7 @@ async function main() {
       await saveFile(zip.finish(), `Bedrock notes ${date}.zip`, 'application/zip');
     },
     fit: () => { canvas.fit_content(); input.requestFrame(); saveCamera(); },
+    report: () => window.bedrockErrors?.open({ stage: 'running' }),
   };
   document.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -1526,10 +1540,7 @@ main().then(() => {
     location.reload();
     return;
   }
+  // Recorded with its stack; the message comes with Reload and Share.
+  window.bedrockErrors?.record('error', e);
   fatal(`Bedrock failed to start: ${e && e.message ? e.message : e}`);
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = 'Reload';
-  b.addEventListener('click', () => location.reload());
-  $('fatal').append(' ', b);
 });

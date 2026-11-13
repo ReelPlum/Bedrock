@@ -72,7 +72,7 @@ test('registers the .bedrock view, commands and settings, and unpacks the web ap
   const { plugin, written } = await loaded();
   assert.deepEqual(Object.keys(plugin.views), ['bedrock-note']);
   assert.deepEqual(plugin.extensions, { bedrock: 'bedrock-note' });
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'reindex']);
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'report-problem', 'reindex']);
   assert.equal(plugin.settingTabs.length, 1);
   assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/index.html'), 'web app unpacked');
   assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/src/host.js'));
@@ -215,4 +215,24 @@ test('the view shows the ink once the canvas is ready, and at once if it already
   view.setEphemeralState(null);
   assert.equal(sent.length, 2);
   plugin.unload();
+});
+
+test('a plugin problem is shown with Report and logged; reports go out through requestUrl, from the plugin and from the canvas', async () => {
+  const { plugin } = await loaded();
+  fake.Notice.shown.length = 0;
+  plugin.problem('Bedrock could not unpack its canvas: Error: EACCES /Users/frederik/Vault/.obsidian/plugins/bedrock-notes/web/index.html', new Error('EACCES'));
+  assert.equal(fake.Notice.shown.length, 1);
+  const [entry] = plugin.errors.entries();
+  assert.equal(entry.kind, 'shown');
+  assert.equal(entry.message, 'Bedrock could not unpack its canvas: Error: EACCES index.html', 'no folders');
+  // Opening the report is a command.
+  const before = fake.Modal.opened.length;
+  plugin.commands.find((c) => c.id === 'report-problem').callback();
+  assert.equal(fake.Modal.opened.length, before + 1);
+  // Sending needs the backend's address, which this version does not have.
+  const report = plugin.errors.report({ appVersion: plugin.manifest.version });
+  assert.equal(report.app, 'obsidian');
+  assert.equal(report.app_version, '0.1.0');
+  await assert.rejects(plugin.sendReport(report), /not switched on/);
+  assert.equal(fake.requestUrl.calls.length, 0);
 });

@@ -33,6 +33,9 @@ browser) and every pen stroke as documented JSON (`note.json`). See
 - Export all notes as a ZIP that unzips to your folders, each note with a Markdown sidecar
   (`Name.bedrock.md`) beside it: drag the folder into an Obsidian vault and search, links and
   the graph work at once (with the Bedrock plugin, notes open as handwriting).
+- When something goes wrong, Bedrock says so and offers "Share with the Bedrock team": you
+  see the whole error report (no notes, no file names) and nothing is sent until you press
+  Send. Menu → Report a problem… works any time.
 
 Notes are kept in the browser's storage (IndexedDB), which the iPad's Files app cannot see.
 The export, or "Save to iCloud Drive / Files" for one note, is how notes leave the website.
