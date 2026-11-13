@@ -17,6 +17,40 @@ test('starts without errors and renders the paper', async () => {
   await ctx.close();
 });
 
+// The Duplicate update failed to start for a writer whose browser kept the
+// old page (without the Duplicate button) while loading the new scripts.
+test('a page from an older version than its scripts reloads once by itself and starts; if that does not help it says so with a Reload button', async () => {
+  const fs = await import('node:fs/promises');
+  const real = await fs.readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const old = real.replace(/\s*<button[^>]*id="wm-duplicate"[^>]*>[^<]*<\/button>/, '');
+  assert.notEqual(old, real, 'the old page lacks the Duplicate button');
+  const run = async (stale) => {
+    const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+    const page = await ctx.newPage();
+    let loads = 0;
+    await page.route((u) => u.pathname === '/' || u.pathname === '/index.html', (route) => {
+      loads++;
+      route.fulfill({ contentType: 'text/html', body: stale(loads) ? old : real });
+    });
+    await page.goto(env.url);
+    return { page, ctx, loads: () => loads };
+  };
+  // The browser's copy once, then the server's: it heals itself.
+  const a = await run((n) => n === 1);
+  await a.page.waitForFunction(() => window.bedrock?.ready, null, { timeout: 20000 });
+  assert.equal(a.loads(), 2, 'one reload');
+  await a.ctx.close();
+  // Always the old page: one reload, then a message with a Reload button.
+  const b = await run(() => true);
+  await b.page.waitForFunction(() => !document.getElementById('fatal')?.hidden && document.querySelector('#fatal button'), null, { timeout: 20000 });
+  const text = await b.page.textContent('#fatal');
+  assert.match(text, /^Bedrock failed to start: /);
+  assert.equal(await b.page.textContent('#fatal button'), 'Reload');
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(b.loads(), 2, 'no reload loop');
+  await b.ctx.close();
+});
+
 test('grid paper stays fixed to the page when zooming', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

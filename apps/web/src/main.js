@@ -1449,7 +1449,28 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+// A start that fails is most often a page and scripts from two versions
+// just after an update: reload once by itself (the service worker then
+// checks every file with the server), and after that offer a reload.
+const RELOADED = 'bedrock-start-reloaded';
+main().then(() => {
+  try { sessionStorage.removeItem(RELOADED); } catch { /* private mode */ }
+}).catch((e) => {
   console.error(e);
+  let again = false;
+  try {
+    // Not inside a host app: it ships the page and scripts together.
+    again = !host && !sessionStorage.getItem(RELOADED);
+    if (again) sessionStorage.setItem(RELOADED, '1');
+  } catch { /* no storage: just say it */ }
+  if (again) {
+    location.reload();
+    return;
+  }
   fatal(`Bedrock failed to start: ${e && e.message ? e.message : e}`);
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = 'Reload';
+  b.addEventListener('click', () => location.reload());
+  $('fatal').append(' ', b);
 });
