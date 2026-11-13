@@ -36,6 +36,17 @@ local storage, not part of any note.
 - **THEN** the brush takes that colour as it is chosen, and when the picker closes it is added as a new preset and selected; a colour already in the presets is only selected, and closing the picker without choosing adds nothing
 <!-- test-js: apps/web/tests/app.test.mjs :: the + opens the colour picker and adds the chosen colour; there is no colour wheel -->
 
+#### Scenario: One opening of the picker makes one swatch
+- **GIVEN** the colour picker opened from the +
+- **WHEN** the colour is moved around many times (Safari reports every move as a finished choice)
+- **THEN** no swatch is added while it is open, and exactly one is added when it closes; if the picker is left open and still, the swatch appears and later moves in that opening change it rather than add more
+<!-- test-js: apps/web/tests/app.test.mjs :: bug: the colour picker adds one swatch when it closes, not one per move -->
+
+#### Scenario: The + keeps its shape
+- **GIVEN** a toolbar full of colours, docked at the bottom of a narrow screen or at the side
+- **THEN** the + stays a circle the size of the other swatches
+<!-- test-js: apps/web/tests/app.test.mjs :: bug: the + stays a circle when the toolbar is full -->
+
 ### Requirement: The toolbar and menu SHALL fit the screen
 
 #### Scenario: Docking the toolbar
