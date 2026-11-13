@@ -106,14 +106,16 @@ export class InputController {
       const began = performance.now();
       const drew = this.canvas.render();
       if (drew) this._pace(ts, performance.now() - began);
+      let latency = 0;
       if (drew && this.lastInputTime) {
         const l = performance.now() - this.lastInputTime;
+        latency = l;
         this.latency.last = l;
         this.latency.samples += 1;
         this.latency.avg += (l - this.latency.avg) / Math.min(this.latency.samples, 60);
         this.lastInputTime = 0;
       }
-      this.onFrame(drew);
+      this.onFrame(drew, latency);
       if (this.canvas.needs_render()) this.requestFrame();
     });
   }

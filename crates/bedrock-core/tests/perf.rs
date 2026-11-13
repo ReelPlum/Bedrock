@@ -174,3 +174,164 @@ fn scribbling_out_on_a_big_note_stays_smooth() {
     assert_eq!(e.doc.len(), 1600 - fading);
     assert!(up.as_millis() < 5);
 }
+
+/// Time one call, print it, and return its result and duration.
+fn timed<R>(what: &str, f: impl FnOnce() -> R) -> (R, std::time::Duration) {
+    let t = Instant::now();
+    let r = f();
+    let d = t.elapsed();
+    println!("{what}: {d:?}");
+    (r, d)
+}
+
+/// A 1366 x 1024 engine on a note of `n` handwriting strokes.
+fn big_engine(n: usize) -> bedrock_core::engine::Engine {
+    let mut e = bedrock_core::engine::Engine::new(1);
+    e.resize(1366.0, 1024.0);
+    e.doc = big_note(n);
+    e
+}
+
+/// Every eraser mode, one swipe across a few lines of a 100 000 stroke
+/// note: each move fits in a frame, and undoing the swipe is quick.
+#[test]
+#[ignore]
+fn erasing_on_a_big_note() {
+    use bedrock_core::engine::{PointerKind, ScreenSample, Tool};
+    let mut e = big_engine(100_000);
+    let mut scene = Scene::new();
+    scene.sync(&e.doc);
+    let sample = |i: usize| {
+        ScreenSample::new(100.0 + i as f64 * 3.0, 100.0 + (i as f64 * 0.3).sin() * 20.0, 0.5, 1000.0 + i as f64 * 4.0)
+    };
+    for (tool, name, move_ms, undo_ms) in [
+        (Tool::EraseStroke, "stroke", 16, 60),
+        (Tool::ErasePartial, "partial", 16, 400),
+        (Tool::EraseTrim, "trim", 16, 60),
+    ] {
+        e.tool = tool;
+        let before = e.doc.len();
+        e.pointer_down(1, PointerKind::Pen, sample(0));
+        let mut worst = std::time::Duration::ZERO;
+        for i in 1..120 {
+            let t = Instant::now();
+            e.pointer_move(1, PointerKind::Pen, sample(i));
+            worst = worst.max(t.elapsed());
+        }
+        e.pointer_up(1, PointerKind::Pen, None);
+        println!("{name} eraser: worst move {worst:?} ({} -> {} strokes)", before, e.doc.len());
+        assert_ne!(e.doc.len(), before, "the {name} eraser must hit something");
+        assert!(worst.as_millis() < move_ms, "a {name} eraser move must fit in a 60 Hz frame on 100 000 strokes");
+        let (_, sync) = timed("  redraw after", || scene.sync(&e.doc));
+        assert!(sync.as_millis() < 100);
+        let (_, undo) = timed("  undo", || e.undo());
+        assert_eq!(e.doc.len(), before);
+        assert!(undo.as_millis() < undo_ms, "undoing a {name} eraser swipe");
+        scene.sync(&e.doc);
+    }
+}
+
+/// Bug: moving a big selection took seconds on a big note (2000 strokes
+/// on 100 000: 3.6 s to move, 2.9 s to undo). Every new id was checked by
+/// looking through the whole note, and the moved strokes were taken out
+/// and put back one by one, shifting the rest of the note each time.
+#[test]
+#[ignore]
+fn moving_a_big_selection_on_a_big_note() {
+    let mut d = big_note(100_000);
+    let mut scene = Scene::new();
+    scene.sync(&d);
+    let ids: Vec<_> = d.strokes()[30_000..32_000].iter().map(|s| s.id).collect();
+    let order: Vec<_> = d.strokes().iter().map(|s| s.id).collect();
+    let (moved, t_move) = timed("move 2000 strokes", || d.translate(&ids, Vec2::new(5.0, 5.0)));
+    assert_eq!(moved.len(), 2000);
+    assert_eq!(d.strokes()[30_000].id, moved[0], "moved strokes keep their place");
+    let (_, t_sync) = timed("  redraw after", || scene.sync(&d));
+    let (_, t_undo) = timed("  undo", || d.undo());
+    assert!(d.strokes().iter().map(|s| s.id).eq(order.iter().copied()), "undo puts every stroke back in place");
+    let (_, t_redo) = timed("  redo", || d.redo());
+    assert_eq!(d.strokes()[31_999].id, moved[1999]);
+    assert!(t_move.as_millis() < 150, "moving 2000 strokes must not pause");
+    assert!(t_undo.as_millis() < 100 && t_redo.as_millis() < 100);
+    assert!(t_sync.as_millis() < 300);
+    let (copies, t_dup) = timed("duplicate 2000 strokes", || d.duplicate(&moved, Vec2::new(40.0, 0.0)));
+    assert_eq!(copies.len(), 2000);
+    assert!(t_dup.as_millis() < 150);
+}
+
+/// Bug: grouping handwriting into words was quadratic (each stroke against
+/// every line sorted a copy of that line's letter heights): 140 ms for a
+/// note of 10 000 strokes, 540 ms for 20 000, 23 s for 100 000. It runs
+/// again after every change to find words for search and links.
+#[test]
+#[ignore]
+fn word_layout_on_a_big_note() {
+    let d = big_note(20_000);
+    let (lay, t) = timed("word layout, 20 000 strokes", || bedrock_core::words::layout(&d));
+    assert!(!lay.words.is_empty());
+    assert!(t.as_millis() < 60, "laying out words must not stall writing");
+    let d = big_note(100_000);
+    let (_, t) = timed("word layout, 100 000 strokes", || bedrock_core::words::layout(&d));
+    assert!(t.as_millis() < 500);
+}
+
+/// Saving, opening and exporting a note of 10 000 strokes (a thick
+/// notebook) stays quick. The minimap and the sync check of a 100 000
+/// stroke note too.
+#[test]
+#[ignore]
+fn saving_opening_and_exporting_a_big_note() {
+    use bedrock_core::format;
+    let d = big_note(10_000);
+    let (bytes, t_save) = timed("save 10 000 strokes", || format::to_bedrock(&d));
+    let (loaded, t_open) = timed("open 10 000 strokes", || format::load_bytes(&bytes, 1).unwrap());
+    assert_eq!(loaded.doc.len(), d.len());
+    assert!(loaded.warnings.is_empty());
+    let (svg, t_svg) = timed("SVG export of 10 000 strokes", || format::to_svg(&d));
+    assert!(svg.len() > 1000);
+    println!("  file {} KB", bytes.len() / 1000);
+    assert!(t_save.as_millis() < 1_500, "saving");
+    assert!(t_open.as_millis() < 1_500, "opening");
+    assert!(t_svg.as_millis() < 3_000, "exporting");
+
+    let d = big_note(100_000);
+    let (lines, t_map) = timed("minimap of 100 000 strokes", || bedrock_core::overview::polylines(&d, 2.0));
+    assert!(!lines.is_empty());
+    assert!(t_map.as_millis() < 300);
+    let (_, t_hash) = timed("sync check of 100 000 strokes", || bedrock_core::mirror::content_hash(&d));
+    assert!(t_hash.as_millis() < 50);
+}
+
+/// The eraser and lasso look at every stroke's stored bounds instead of a
+/// spatial index (rstar was measured and turned down for this, see the
+/// ink-latency spec); that must stay well inside a frame on 100 000 strokes.
+#[test]
+#[ignore]
+fn eraser_and_lasso_hit_tests_on_a_big_note() {
+    let d = big_note(100_000);
+    let (a, b) = (Vec2::new(3000.0, 3000.0), Vec2::new(3004.0, 3002.0));
+    let t = Instant::now();
+    let mut hits = 0;
+    for _ in 0..100 {
+        hits = bedrock_core::eraser::strokes_hit(d.strokes(), a, b, 6.0).len();
+    }
+    let erase = t.elapsed() / 100;
+    println!("eraser hit test: {erase:?} ({hits} strokes hit)");
+    assert!(hits > 0);
+    assert!(erase.as_micros() < 2_000, "an eraser hit test must fit easily in a 120 Hz frame");
+    let lasso: Vec<Vec2> = (0..64)
+        .map(|k| {
+            let u = k as f64 / 64.0 * std::f64::consts::TAU;
+            Vec2::new(3000.0 + 80.0 * u.cos(), 3000.0 + 40.0 * u.sin())
+        })
+        .collect();
+    let t = Instant::now();
+    let mut taken = 0;
+    for _ in 0..20 {
+        taken = bedrock_core::selection::strokes_in_lasso(&d, &lasso).len();
+    }
+    let select = t.elapsed() / 20;
+    println!("lasso: {select:?} ({taken} strokes taken)");
+    assert!(taken > 0);
+    assert!(select.as_millis() < 5, "a lasso must select without a visible pause");
+}

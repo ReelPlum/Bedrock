@@ -74,7 +74,7 @@ export function open({ stage = 'running', entries = globalThis.bedrockErrors?.en
   const copy = el('button', { type: 'button', textContent: 'Copy' });
   const close = el('button', { type: 'button', textContent: 'Close' });
   const intro = entries.length
-    ? 'This is everything that will be sent: what went wrong, the app version and the kind of device. No notes, no file names, nothing about you. Nothing is sent until you press Send.'
+    ? 'This is everything that will be sent: what went wrong or was slow (and what Bedrock was doing then), the app version and the kind of device. No notes, no file names, nothing about you. Nothing is sent until you press Send.'
     : 'Nothing has gone wrong that Bedrock noticed. Say what happened and it is sent with the app version and the kind of device. Nothing is sent until you press Send.';
   const panel = el('div', { className: 'bx-panel', role: 'dialog', ariaModal: 'true', ariaLabel: 'Share with the Bedrock team' },
     el('h2', { textContent: 'Share with the Bedrock team' }),
