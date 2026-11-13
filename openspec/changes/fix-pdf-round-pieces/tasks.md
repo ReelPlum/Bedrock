@@ -2,9 +2,13 @@
 
 ## 1. Reproduce
 - [x] 1.1 Test with an Apple Notes style stroke (capsules and dabs) that fails on the old reader
+- [x] 1.2 Test with long round pieces that meet (lumps and jumps back where pieces met)
+- [x] 1.3 Tests for SVG outlines: round ends of thin lines, lines that turn back
 
 ## 2. Fix
-- [x] 2.1 Centre line halfway between each piece's sides, width across its middle, round ends cut, dabs as points
+- [x] 2.1 Centre line from the largest dab touching each side point, so round ends fall on the pen's sample; dabs as points
+- [x] 2.4 Leave out points that add nothing
+- [x] 2.5 SVG outlines: keep round ends of thin lines, cut at turns back
 - [x] 2.2 Widths kept as pressure; no taper or speed thinning; exact-point smoothing
 - [x] 2.3 Checked on Frederik's PDF against how it renders
 

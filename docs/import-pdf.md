@@ -35,9 +35,12 @@ Pen apps draw each stroke as one filled shape made of short overlapping
 pieces, each an outline around a stretch of the line: GoodNotes with flat
 ends, Apple Notes with round ends drawn as curves, plus a round dab at each
 pen sample. The importer finds each piece's two ends (along its longest
-direction), takes the line halfway between its two sides, and measures its
-width across the middle; round ends are cut off so the pieces join
-smoothly, and a dab is a point as wide as the circle. The pieces are joined
+direction). Along a round-ended piece, each point of one side gives the
+largest round dab inside the piece that touches it there: its centre is on
+the line and its size is the line's width there, and on a round end every
+point gives the end's own dab, centred where the pen was, so the pieces
+meet exactly. A four-cornered piece takes the line halfway between its two
+sides. A dab is a point as wide as the circle. The pieces are joined
 in order into one stroke. The brush is as wide as the stroke's widest point
 and narrower points press lighter, so the line keeps the widths the PDF
 drew; taper and speed thinning are off for imported strokes, and the exact

@@ -46,6 +46,20 @@ const MAX_INK_WIDTH: f64 = 40.0;
 /// World units per input pixel given to imported strokes (see
 /// [`Stroke::input_scale`]).
 const INPUT_SCALE: f64 = 0.05;
+/// Spacing (page units) of the points read along each piece of a stroke.
+const STEP: f64 = 0.1;
+/// Most points read along one piece.
+const MAX_STEPS: usize = 400;
+/// How far along a piece's outline its neighbours are ignored when
+/// measuring the width there (see `medial_balls`).
+const NEAR: f64 = 0.25;
+/// How far (as part of its width) a dab may reach out of a bigger one and
+/// still count as inside it (see `drop_hidden_ends`).
+const HIDDEN_SLACK: f64 = 0.1;
+/// How far (page units) the points kept may stray from the line read.
+const SIMPLIFY: f64 = 0.01;
+/// Rounds of averaging with the neighbours that even out where pieces meet.
+const SMOOTH_PASSES: usize = 3;
 /// Straight pieces each curve in a path is drawn with.
 const CURVE_STEPS: usize = 6;
 const MAX_STREAM: usize = 128 * 1024 * 1024;
@@ -1341,10 +1355,8 @@ fn area(poly: &[Vec2]) -> f64 {
 /// round-ended piece reaches half its width past the line's end, so its
 /// centre line is shortened by that much at each end.
 struct Stretch {
-    points: Vec<Vec2>,
-    width: f64,
-    /// Round ends: the points run on into them, to be trimmed.
-    round: bool,
+    /// The centre line, with the width across the piece at each point.
+    points: Vec<(Vec2, f64)>,
 }
 
 /// `n` points spread evenly along a polyline, ends included.
@@ -1368,35 +1380,6 @@ fn resample(line: &[Vec2], n: usize) -> Vec<Vec2> {
     out
 }
 
-/// A polyline with `start` taken off its start and `end` off its end, but
-/// never all of it: at least its middle point is left.
-fn trim_ends(line: &[Vec2], start: f64, end: f64) -> Vec<Vec2> {
-    let total: f64 = line.windows(2).map(|w| w[0].distance(w[1])).sum();
-    if line.len() < 2 || total < 1e-9 {
-        return line.to_vec();
-    }
-    let keep = (total - start - end).max(0.0);
-    let (start, end) = if keep > 0.0 { (start, end) } else { (total * 0.5, total * 0.5) };
-    let at = |d: f64| -> (usize, Vec2) {
-        let mut walked = 0.0;
-        for i in 0..line.len() - 1 {
-            let seg = line[i].distance(line[i + 1]);
-            if walked + seg >= d {
-                let t = if seg > 1e-12 { (d - walked) / seg } else { 0.0 };
-                return (i, line[i].lerp(line[i + 1], t));
-            }
-            walked += seg;
-        }
-        (line.len() - 2, line[line.len() - 1])
-    };
-    let (i, a) = at(start);
-    let (j, b) = at(total - end);
-    let mut out = vec![a];
-    out.extend_from_slice(&line[i + 1..=j]);
-    out.push(b);
-    out
-}
-
 fn stretch(piece: &[Vec2]) -> Option<Stretch> {
     let n = piece.len();
     if n < 3 {
@@ -1413,7 +1396,7 @@ fn stretch(piece: &[Vec2]) -> Option<Stretch> {
         && r.width().min(r.height()) > 0.85 * d
         && (area(piece) / (std::f64::consts::FRAC_PI_4 * d * d) - 1.0).abs() < 0.15
     {
-        return Some(Stretch { points: vec![(r.min + r.max) * 0.5], width: d, round: false });
+        return Some(Stretch { points: vec![((r.min + r.max) * 0.5, d)] });
     }
     let mean = piece.iter().fold(Vec2::ZERO, |s, p| s + *p) * (1.0 / n as f64);
     let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
@@ -1447,32 +1430,122 @@ fn stretch(piece: &[Vec2]) -> Option<Stretch> {
         side_b.push(piece[i]);
     }
     let a_len: f64 = side_a.windows(2).map(|w| w[0].distance(w[1])).sum();
-    let steps = ((a_len / 0.5).ceil() as usize).clamp(2, 48) + 1;
-    // Halfway between each point of one side and the nearest point of the
-    // other: the two sides can be of different lengths where the ends are
-    // of different widths.
-    let nearest = |p: Vec2, line: &[Vec2]| {
-        line.windows(2)
-            .map(|w| {
-                let d = w[1] - w[0];
-                let t = if d.dot(d) > 1e-18 { ((p - w[0]).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
-                w[0] + d * t
+    // Finely: at a PDF's scale a letter is a few units tall.
+    let steps = ((a_len / STEP).ceil() as usize).clamp(2, MAX_STEPS) + 1;
+    let side = resample(&side_a, steps);
+    let points: Vec<(Vec2, f64)> = if n > 4 {
+        medial_balls(piece, i0, i1)
+    } else {
+        // Four corners: halfway between each point of one side and the
+        // nearest point of the other.
+        let nearest = |p: Vec2, line: &[Vec2]| {
+            line.windows(2)
+                .map(|w| {
+                    let d = w[1] - w[0];
+                    let t = if d.dot(d) > 1e-18 { ((p - w[0]).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
+                    w[0] + d * t
+                })
+                .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
+                .unwrap_or(line[0])
+        };
+        side.into_iter()
+            .map(|p| {
+                let q = nearest(p, &side_b);
+                ((p + q) * 0.5, p.distance(q))
             })
-            .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
-            .unwrap_or(line[0])
+            .collect()
     };
-    let pairs: Vec<(Vec2, Vec2)> = resample(&side_a, steps).into_iter().map(|p| (p, nearest(p, &side_b))).collect();
-    let centre: Vec<Vec2> = pairs.iter().map(|(p, q)| (*p + *q) * 0.5).collect();
-    let length: f64 = centre.windows(2).map(|w| w[0].distance(w[1])).sum();
-    if length < 1e-9 {
+    if points.is_empty() || points.iter().all(|p| p.1 < 1e-9) {
         return None;
     }
-    // Across the middle, from one side to the other.
-    let (p, q) = pairs[pairs.len() / 2];
-    let width = p.distance(q);
-    // Four corners and straight sides: flat ends. Curves: round ends.
-    let round = n > 4;
-    Some(Stretch { points: centre, width, round })
+    Some(Stretch { points })
+}
+
+/// The centre line of a round-ended piece, read along its outline `piece`
+/// from corner `i0` forwards to corner `i1` (one side): for each point
+/// there, the largest round dab inside the piece that touches it (its
+/// centre and width). Along the sides these dabs are centred on the line,
+/// as wide as the line is there; on a round end every point gives the
+/// end's own dab, centred where the pen was. So the line runs from one
+/// end's centre to the other's, with the width at each point, and the round
+/// ends add no length.
+fn medial_balls(piece: &[Vec2], i0: usize, i1: usize) -> Vec<(Vec2, f64)> {
+    let n = piece.len();
+    // The outline finely, from corner i0 round to i0 again, with how far
+    // along it each point is.
+    let mut ring_in: Vec<Vec2> = (0..=n).map(|k| piece[(i0 + k) % n]).collect();
+    ring_in.dedup_by(|a, b| a.distance(*b) < 1e-12);
+    let total: f64 = ring_in.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if total < 1e-9 {
+        return Vec::new();
+    }
+    // Finer for a thin piece, so its round ends are more than a few points.
+    // Its width is about its area over half its outline.
+    let width = 2.0 * area(piece) / total;
+    let count = ((total / STEP.min(0.25 * width)).ceil() as usize).clamp(16, 4 * MAX_STEPS);
+    let ring = resample(&ring_in, count + 1);
+    let ring = &ring[..count];
+    let step = total / count as f64;
+    // Where corner i1 is along it: the side ends there.
+    let to_i1: f64 = (0..(i1 + n - i0) % n).map(|k| piece[(i0 + k) % n].distance(piece[(i0 + k + 1) % n])).sum();
+    let end = ((to_i1 / step).round() as usize).min(count - 1);
+    // Which way is inside: left of a counter-clockwise outline.
+    let signed: f64 = (0..n)
+        .map(|k| {
+            let (p, q) = (piece[k], piece[(k + 1) % n]);
+            p.x * q.y - q.x * p.y
+        })
+        .sum();
+    // Outline points this close along the outline are left out: the
+    // outline is drawn with short straight pieces, and at their corners a
+    // point's very next neighbours would make the dab tiny.
+    // Not further than a fraction of the piece's width, so a thin piece's
+    // round ends still count.
+    let skip = ((NEAR.min(0.4 * width) / step).ceil() as usize).max(1);
+    let mut out: Vec<(Vec2, f64)> = Vec::new();
+    for k in 0..=end {
+        let p = ring[k];
+        let tangent = (ring[(k + 1) % count] - ring[(k + count - 1) % count]).normalized();
+        if tangent == Vec2::ZERO {
+            continue;
+        }
+        let inward = if signed > 0.0 { tangent.perp() } else { tangent.perp() * -1.0 };
+        // A dab touching at p with centre p + inward * r holds q while
+        // |q - p|^2 >= 2 r (q - p) . inward.
+        let mut r = f64::INFINITY;
+        for j in skip..=count - skip {
+            let d = ring[(k + j) % count] - p;
+            let ahead = d.dot(inward);
+            if ahead > 1e-9 {
+                r = r.min(d.dot(d) / (2.0 * ahead));
+            }
+        }
+        if r.is_finite() {
+            out.push((p + inward * r, 2.0 * r));
+        }
+    }
+    drop_hidden_ends(out)
+}
+
+/// A line of round dabs (centre, width) without the dabs at either end
+/// that lie (all but) inside another. On a round end the dabs found all
+/// sit at the end's centre, each a little off, as the outline is drawn with
+/// short straight pieces; they draw nothing the biggest of them does not,
+/// and left in they would make the line jitter where pieces meet.
+fn drop_hidden_ends(mut line: Vec<(Vec2, f64)>) -> Vec<(Vec2, f64)> {
+    let hidden = |line: &[(Vec2, f64)], k: usize| {
+        let (c, w) = line[k];
+        line.iter()
+            .enumerate()
+            .any(|(j, &(d, v))| j != k && v >= w && c.distance(d) + w * 0.5 <= v * 0.5 * (1.0 + HIDDEN_SLACK))
+    };
+    while line.len() > 1 && hidden(&line, 0) {
+        line.remove(0);
+    }
+    while line.len() > 1 && hidden(&line, line.len() - 1) {
+        line.pop();
+    }
+    line
 }
 
 /// The centre line of one filled stroke outline, in page space, with the
@@ -1493,52 +1566,79 @@ fn centre_line(pieces: &[Vec<Vec2>]) -> Option<(Vec<(Vec2, f64)>, f64)> {
     }
     // The pieces come in writing order, but each one's own direction is
     // not known: turn each to start where the one before ended.
+    let ends = |s: &Stretch| (s.points[0].0, s.points.last().unwrap().0);
     for i in 0..stretches.len() {
-        let (from, to) = (stretches[i].points[0], *stretches[i].points.last().unwrap());
+        let (from, to) = ends(&stretches[i]);
         let flip = if i == 0 {
             stretches.get(1).is_some_and(|next| {
-                let (nf, nt) = (next.points[0], *next.points.last().unwrap());
+                let (nf, nt) = ends(next);
                 let near = |p: Vec2| p.distance(nf).min(p.distance(nt));
                 near(from) < near(to)
             })
         } else {
-            let end = *stretches[i - 1].points.last().unwrap();
+            let end = stretches[i - 1].points.last().unwrap().0;
             end.distance(to) < end.distance(from)
         };
         if flip {
             stretches[i].points.reverse();
         }
     }
-    // Inside a round end the halfway points bend towards one side, so it
-    // is cut off: half the width at the stroke's own ends (where the pen
-    // stopped at the end's centre), the whole width where pieces meet
-    // (the next piece, or the dab there, carries the line on).
-    let last = stretches.len() - 1;
-    for (i, s) in stretches.iter_mut().enumerate() {
-        if s.round {
-            let (start, end) = (if i == 0 { 0.5 } else { 1.0 }, if i == last { 0.5 } else { 1.0 });
-            s.points = trim_ends(&s.points, s.width * start, s.width * end);
-        }
-    }
     let mut line: Vec<(Vec2, f64)> = Vec::new();
     for s in &stretches {
         for &p in &s.points {
-            if line.last().is_none_or(|l| l.0.distance(p) > 0.05) {
-                line.push((p, s.width));
+            if line.last().is_none_or(|l| l.0.distance(p.0) > 0.02) {
+                line.push(p);
             }
         }
     }
-    // The pieces' own lines meet with small kinks: one gentle pass of
-    // averaging with the neighbours evens them out, keeping the ends.
-    if line.len() > 2 {
-        let raw = line.clone();
-        for i in 1..raw.len() - 1 {
-            let (a, b, c) = (raw[i - 1], raw[i], raw[i + 1]);
-            line[i] = ((a.0 + b.0 * 2.0 + c.0) * 0.25, (a.1 + b.1 * 2.0 + c.1) * 0.25);
+    // The pieces' own lines meet with small kinks: a gentle averaging with
+    // the neighbours evens them out, keeping the ends.
+    for _ in 0..SMOOTH_PASSES {
+        if line.len() > 2 {
+            let raw = line.clone();
+            for i in 1..raw.len() - 1 {
+                let (a, b, c) = (raw[i - 1], raw[i], raw[i + 1]);
+                line[i] = ((a.0 + b.0 * 2.0 + c.0) * 0.25, (a.1 + b.1 * 2.0 + c.1) * 0.25);
+            }
         }
     }
-    let mut widths: Vec<f64> = stretches.iter().map(|s| s.width).collect();
-    Some((line, median(&mut widths)))
+    let mut widths: Vec<f64> = line.iter().map(|p| p.1).collect();
+    let typical = median(&mut widths);
+    Some((simplify(&line), typical))
+}
+
+/// The points of `line` that are needed to draw it: a point is left out
+/// where the line through its neighbours passes within `SIMPLIFY` of it,
+/// with the width there within twice that (Ramer-Douglas-Peucker).
+fn simplify(line: &[(Vec2, f64)]) -> Vec<(Vec2, f64)> {
+    if line.len() < 3 {
+        return line.to_vec();
+    }
+    let mut keep = vec![false; line.len()];
+    keep[0] = true;
+    keep[line.len() - 1] = true;
+    let mut todo = vec![(0, line.len() - 1)];
+    while let Some((a, b)) = todo.pop() {
+        let (pa, pb) = (line[a], line[b]);
+        let d = pb.0 - pa.0;
+        let len2 = d.dot(d);
+        let mut worst = (0.0, 0);
+        for (k, &(p, w)) in line.iter().enumerate().take(b).skip(a + 1) {
+            let t = if len2 > 1e-18 { ((p - pa.0).dot(d) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let off = p.distance(pa.0 + d * t);
+            let off_w = (w - (pa.1 + (pb.1 - pa.1) * t)).abs() * 0.5;
+            let e = off.max(off_w);
+            if e > worst.0 {
+                worst = (e, k);
+            }
+        }
+        if worst.0 > SIMPLIFY {
+            keep[worst.1] = true;
+            todo.push((a, worst.1));
+            todo.push((worst.1, b));
+        }
+    }
+    line.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
 }
 
 /// The pressure at which the pen draws a line `width` wide with a brush
@@ -1946,6 +2046,93 @@ mod tests {
         }
         c.push_str("f\n");
         c
+    }
+
+    /// A stroke as Apple Notes draws it in a PDF, with long pieces: each
+    /// piece a capsule over `per_piece` stretches between pen samples (x, y,
+    /// width), its sides following the line and its ends round, the next
+    /// piece starting at the sample where the last one ended; every other
+    /// piece outlined the other way round.
+    fn apple_notes_long_pieces(samples: &[(f64, f64, f64)], per_piece: usize) -> String {
+        const K: f64 = 0.552_284_8;
+        let at = |k: usize| Vec2::new(samples[k].0, samples[k].1);
+        let normal = |k: usize| (at((k + 1).min(samples.len() - 1)) - at(k.saturating_sub(1))).normalized().perp();
+        let mut c = String::from("0.1 0.1 0.1 sc\n");
+        let arc = |c: &mut String, centre: Vec2, r: f64, turns: &[Vec2]| {
+            for t in turns.windows(2) {
+                let (a, b) = (t[0], t[1]);
+                let (c1, c2, end) = (centre + (a + b * K) * r, centre + (b + a * K) * r, centre + b * r);
+                c.push_str(&format!("{:.4} {:.4} {:.4} {:.4} {:.4} {:.4} c ", c1.x, c1.y, c2.x, c2.y, end.x, end.y));
+            }
+        };
+        let mut start = 0;
+        let mut piece = 0;
+        while start + 1 < samples.len() {
+            let end = (start + per_piece).min(samples.len() - 1);
+            let mut ks: Vec<usize> = (start..=end).collect();
+            let flip = piece % 2 == 1;
+            if flip {
+                ks.reverse();
+            }
+            let side = |k: usize, s: f64| at(k) + normal(k) * (s * samples[k].2 / 2.0 * if flip { -1.0 } else { 1.0 });
+            let first = side(ks[0], 1.0);
+            c.push_str(&format!("{:.4} {:.4} m ", first.x, first.y));
+            for &k in &ks[1..] {
+                let q = side(k, 1.0);
+                c.push_str(&format!("{:.4} {:.4} l ", q.x, q.y));
+            }
+            let (l, f) = (*ks.last().unwrap(), ks[0]);
+            let nl = normal(l) * if flip { -1.0 } else { 1.0 };
+            arc(&mut c, at(l), samples[l].2 / 2.0, &[nl, nl.perp() * -1.0, nl * -1.0]);
+            for &k in ks.iter().rev().skip(1) {
+                let q = side(k, -1.0);
+                c.push_str(&format!("{:.4} {:.4} l ", q.x, q.y));
+            }
+            let nf = normal(f) * if flip { -1.0 } else { 1.0 };
+            arc(&mut c, at(f), samples[f].2 / 2.0, &[nf * -1.0, nf.perp(), nf]);
+            c.push_str("h\n");
+            start = end;
+            piece += 1;
+        }
+        c.push_str("f\n");
+        c
+    }
+
+    #[test]
+    fn pdf_strokes_in_long_round_pieces_are_smooth_where_the_pieces_meet() {
+        // Bug: in an Apple Notes PDF, where one piece of a stroke met the
+        // next the imported line jumped back and bulged, so letters looked
+        // lumpy and pointy: the round end of each piece was read as part
+        // of the line.
+        // A half circle of radius 6 (a letter at PDF scale), 1.2 wide in
+        // the middle and 0.6 at the ends, in pieces of 6 samples.
+        let samples: Vec<(f64, f64, f64)> = (0..=60)
+            .map(|k| {
+                let a = std::f64::consts::PI * k as f64 / 60.0;
+                (40.0 - 6.0 * a.cos(), 40.0 + 6.0 * a.sin(), 0.6 + 0.6 * a.sin())
+            })
+            .collect();
+        let doc = &import(&page_pdf(&apple_notes_long_pieces(&samples, 6)), 1, 0.0).unwrap()[0].doc;
+        assert_eq!(doc.len(), 1, "one stroke");
+        let s = &doc.strokes()[0];
+        let centre = Vec2::new(40.0, 60.0); // (40, 40) in note space, y down
+        let mut last_angle = f64::NEG_INFINITY;
+        for p in &s.points {
+            let d = p.pos() - centre;
+            // On the line,
+            assert!((d.length() - 6.0).abs() < 0.05, "{:?} is {} off the line", p.pos(), (d.length() - 6.0).abs());
+            // never going back,
+            let angle = (-d.y).atan2(-d.x);
+            assert!(angle >= last_angle - 0.01, "goes back at {:?}", p.pos());
+            last_angle = angle;
+            // and as wide as drawn there, with no bulges.
+            let want = 0.6 + 0.6 * angle.clamp(0.0, std::f64::consts::PI).sin();
+            let drawn = s.brush.footprint(p, 0.0).width as f64;
+            assert!((drawn - want).abs() < 0.1 * want, "{drawn} wide at {:?}, drawn {want}", p.pos());
+        }
+        // From one end of the line to the other.
+        assert!(s.points.first().unwrap().pos().distance(Vec2::new(34.0, 60.0)) < 0.1);
+        assert!(s.points.last().unwrap().pos().distance(Vec2::new(46.0, 60.0)) < 0.1);
     }
 
     #[test]

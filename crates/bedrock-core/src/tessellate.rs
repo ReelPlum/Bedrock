@@ -713,19 +713,24 @@ pub fn outlines(stroke: &Stroke) -> Vec<Vec<Vec2>> {
     outlines_for(stroke, &samples(stroke))
 }
 
-/// Points closer together than this (world units) are dropped from SVG
-/// outlines: invisible, and it keeps files small and fast to write.
+/// Points closer together than this (world units), or than a tenth of the
+/// line's width, are dropped from SVG outlines: invisible, and it keeps
+/// files small and fast to write.
 const OUTLINE_MIN_STEP: f64 = 0.2;
 
 /// Like [`outlines`] for samples already computed.
 pub fn outlines_for(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Vec2>> {
     pieces(stroke, s)
         .iter()
+        .flat_map(|p| split_at_turns(p))
         .map(|p| {
-            let o = outline_from_samples(p);
+            let o = outline_from_samples(&p);
+            // A thin line's round ends are small: keep enough of them.
+            let thinnest = p.iter().map(|s| s.width).fold(f64::INFINITY, f64::min);
+            let step = OUTLINE_MIN_STEP.min(thinnest * 0.1);
             let mut out: Vec<Vec2> = Vec::with_capacity(o.len());
             for q in o {
-                if out.last().is_none_or(|l| l.distance(q) >= OUTLINE_MIN_STEP) {
+                if out.last().is_none_or(|l| l.distance(q) >= step) {
                     out.push(q);
                 }
             }
@@ -733,6 +738,25 @@ pub fn outlines_for(stroke: &Stroke, s: &[Sample]) -> Vec<Vec<Vec2>> {
         })
         .filter(|o| !o.is_empty())
         .collect()
+}
+
+/// A line cut where it turns back on itself (by more than a right angle),
+/// the turning sample in both parts. One outline cannot go round such a
+/// turn (its sides would cross into a spike or a notch); each part gets
+/// round ends instead, and the outlines, all wound the same way, fill as
+/// one.
+fn split_at_turns(s: &[Sample]) -> Vec<Vec<Sample>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 1..s.len().saturating_sub(1) {
+        let (din, dout) = (s[i].pos - s[i - 1].pos, s[i + 1].pos - s[i].pos);
+        if din.dot(dout) < 0.0 {
+            out.push(s[start..=i].to_vec());
+            start = i;
+        }
+    }
+    out.push(s[start..].to_vec());
+    out
 }
 
 pub fn outline_from_samples(s: &[Sample]) -> Vec<Vec2> {
@@ -789,6 +813,56 @@ mod tests {
             assert!(g.ra > 0.0 && g.rb > 0.0 && g.ra.is_finite() && g.rb.is_finite());
             assert!((0.0..=1.0).contains(&g.alpha_a) && (0.0..=1.0).contains(&g.alpha_b));
         }
+    }
+
+    #[test]
+    fn svg_outlines_of_thin_lines_keep_round_ends() {
+        // Bug: an imported PDF's lines, about 1 wide, were written to SVG
+        // with pointed or flat ends, as most points of their round ends
+        // were dropped as too close together.
+        let pts = (0..20).map(|i| InputPoint::new(i as f64 * 0.3, 0.0, 1.0).at(i as f64 * 4.0)).collect();
+        let s = Stroke::new(StrokeId(1), Brush::new(BrushKind::Pen, Rgba::BLACK, 1.0), 0.0, InputDevice::Pen, pts);
+        let samples = samples(&s);
+        let r = samples.last().unwrap().width / 2.0;
+        let end = samples.last().unwrap().pos;
+        let outline = &outlines_for(&s, &samples)[0];
+        // Past the last point the outline is a half circle around it.
+        let cap: Vec<&Vec2> = outline.iter().filter(|q| q.x > end.x + 1e-6).collect();
+        assert!(cap.len() >= 6, "{} points on the round end", cap.len());
+        for q in cap {
+            assert!((q.distance(end) - r).abs() < 0.01, "{:?} is not on the round end", q);
+        }
+    }
+
+    #[test]
+    fn svg_outlines_turn_back_without_spikes() {
+        // Bug: a line that goes out and comes back the same way (an
+        // imported PDF letter does this often) was written to SVG with a
+        // spike or a cut where it turned, as one outline cannot go round
+        // the turn.
+        let mut pts: Vec<InputPoint> = (0..=20).map(|i| InputPoint::new(i as f64 * 0.5, 0.0, 1.0)).collect();
+        pts.extend((1..=20).map(|i| InputPoint::new(10.0 - i as f64 * 0.5, 0.0, 1.0)));
+        for (i, p) in pts.iter_mut().enumerate() {
+            p.t = i as f64 * 4.0;
+        }
+        let s = Stroke::new(StrokeId(1), Brush::new(BrushKind::Pen, Rgba::BLACK, 1.0), 0.0, InputDevice::Pen, pts);
+        let samples = samples(&s);
+        let r = samples.iter().map(|s| s.width).fold(0.0, f64::max) / 2.0;
+        // Every point of the outlines is on the edge of the line: as far
+        // from the line through the samples as half its width, or nearer.
+        for o in outlines_for(&s, &samples) {
+            for q in o {
+                let off = samples
+                    .windows(2)
+                    .map(|w| crate::geom::point_segment_distance(q, w[0].pos, w[1].pos))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(off < r + 0.02, "{:?} pokes {} out of the line", q, off - r);
+            }
+        }
+        // And the turn is round: the outlines reach half the width past it.
+        let tip = samples.iter().map(|s| s.pos.x).fold(f64::NEG_INFINITY, f64::max);
+        let reach = outlines_for(&s, &samples).iter().flatten().map(|q| q.x).fold(f64::NEG_INFINITY, f64::max);
+        assert!((reach - tip - r).abs() < 0.05, "reaches {} past the turn", reach - tip);
     }
 
     #[test]
