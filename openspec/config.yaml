@@ -26,6 +26,7 @@ context: |
 rules:
   proposal:
     - If the change touches a data format (see openspec/specs/data-format-changes/spec.md), add a "Data format change" section that says what changes, why, and how data written by earlier versions keeps working, and stop to ask the owner for approval before any task is shipped. Record the approval in that section.
+    - Before proposing new code, research whether a tried, tested and maintained open source library already does exactly what is needed and allows commercial use (docs/open-source-first.md). Add an "Open source" section naming what was looked at and what is used. Prefer Rust; if an option that is not Rust is clearly better, stop and ask the owner. If we build our own, give the reason.
   design:
     - A data format change keeps every earlier version readable; say how, and which old-format fixture proves it.
   tasks:
@@ -39,4 +40,5 @@ rules:
     - Every feature and data format has a living spec in openspec/specs/; a change that adds one adds its spec.
     - A capability that stores or exchanges data has a "Data formats" section describing the format.
     - Scenarios use GIVEN / WHEN / THEN and name observable behaviour, not implementation.
-    - Name the test that proves each scenario in an HTML comment under it (`<!-- test: name -->`).
+    - 'Name the test that proves each scenario in an HTML comment under it (`<!-- test: name -->`).'
+    - 'A capability that uses an open source library, model or data set has an "Open source used" section: name and version, what it is used for, why it was chosen, why it is mature, its licence (commercial use allowed), and what was considered and turned down (see docs/open-source-first.md).'
