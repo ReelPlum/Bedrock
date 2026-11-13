@@ -38,6 +38,9 @@ async function fakeBackend(ctx) {
  *  these tests point the app at the pretend backend. */
 async function context({ address = API } = {}) {
   const ctx = await env.browser.newContext({ viewport: { width: 900, height: 800 } });
+  // These tests are of sharing as an option: the launch gate (which makes
+  // it part of using the app) is tested in launch-gate.test.mjs.
+  await ctx.addInitScript(() => { window.bedrockNoLaunchGate = true; });
   if (address) {
     await ctx.addInitScript((a) => {
       const s = JSON.parse(localStorage.getItem('bedrock.collect.v1') || '{}');
@@ -206,7 +209,7 @@ test('after consent a sample is queued, sent with the code, and taken off the qu
   assert.equal(auth, `Bearer ${CODE}`);
   assert.match(contributor, /^[0-9a-f-]{36}$/);
   assert.equal(body.contributor.id, contributor);
-  assert.equal(body.contributor.consent_version, 2);
+  assert.equal(body.contributor.consent_version, 3);
   assert.equal(body.contributor.handedness, 'left');
   const s = body.samples[0];
   assert.deepEqual([s.format, s.version, s.source, s.label_source], ['bedrock-training', 2, 'train', 'prompt']);
@@ -648,9 +651,9 @@ test('consent given to an older consent text is asked for again', async () => {
   const r = await page.evaluate(async () => {
     const c = await import('/src/collect.js');
     const s = c.agree({ code: 'x' });
-    return { now: c.isReady(s), old: c.isReady({ ...s, consent: 1 }), version: c.CONSENT_VERSION };
+    return { now: c.isReady(s), old: c.isReady({ ...s, consent: 2 }), older: c.isReady({ ...s, consent: 1 }), version: c.CONSENT_VERSION };
   });
-  assert.deepEqual(r, { now: true, old: false, version: 2 });
+  assert.deepEqual(r, { now: true, old: false, older: false, version: 3 });
   await ctx.close();
 });
 
@@ -690,5 +693,22 @@ test('notes: with the recogniser off, words are sent without text', async () => 
   await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
   const [s] = sentSamples(server);
   assert.deepEqual([s.label, s.label_source], ['', 'unchecked']);
+  await ctx.close();
+});
+
+test('a page that tried to send before consent sends once consent is given, without a reload', async () => {
+  // Bug: flush() before consent finished at once, before it was stored as
+  // the flush in progress, so every later flush() on that page waited on
+  // it and sent nothing.
+  const { ctx, server } = await context();
+  const { page } = await openSetup(ctx);
+  await page.evaluate(async () => {
+    const c = await import('/src/collect.js');
+    await c.flush(); // not ready yet: nothing to do
+    c.agree({ code: 'bedrock-abcde-fghjk-mnpqr-stuvw-xyz23' });
+    await c.enqueue(c.fromNote({ strokes: [{ start: 1, points: [0, 0, 0.5, 0, 1, 1, 0.5, 8] }], channels: ['x', 'y', 'pressure', 't'], label: 'hi', labelSource: 'unchecked' }));
+    await c.flush();
+  });
+  assert.equal(server.requests.filter((r) => r.path === '/v1/samples').length, 1);
   await ctx.close();
 });

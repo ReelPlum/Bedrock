@@ -10,8 +10,17 @@
 // from a note (version 2 plus its `words`); the backend's checks are the
 // reference (collect-core/src/sample.rs in the backend repository).
 
-/** 2: words from imported PDFs are sent too. */
-export const CONSENT_VERSION = 2;
+/** 1: the training pages, and note words with the setting on.
+ *  2: words from imported PDFs are sent too.
+ *  3: every word written in notes is sent, and agreeing is needed to use
+ *     the app while the launch gate is on (see `LAUNCH_GATE`). */
+export const CONSENT_VERSION = 3;
+/** While Bedrock is invite-only, the app and the Obsidian plugin ask for
+ *  the invite code and this consent as soon as they start, and cannot be
+ *  used without them. Set to false to make sharing optional again. It
+ *  only takes effect once `DEFAULT_API` is set: with no server there is
+ *  nothing to check a code against. */
+export const LAUNCH_GATE = true;
 /** The backend's address, fixed in the app: people cannot change it. Empty
  *  until the backend is deployed, and saving stays off until it is set. */
 export const DEFAULT_API = '';
@@ -21,6 +30,36 @@ export const DEFAULT_API = '';
 export function apiAddress(stored, host = globalThis.location?.hostname) {
   const local = host === 'localhost' || host === '127.0.0.1';
   return local && typeof stored === 'string' && stored ? stored : DEFAULT_API;
+}
+/** True when the app must ask for the code and consent before it can be
+ *  used: the gate is on and a safe server address is built in. A page
+ *  served from this computer may switch it off (tests of the optional
+ *  mode set `bedrockNoLaunchGate` before the page loads). */
+export function gateRequired(s = loadState(), host = globalThis.location?.hostname) {
+  const local = host === 'localhost' || host === '127.0.0.1';
+  if (local && globalThis.bedrockNoLaunchGate === true) return false;
+  return LAUNCH_GATE && isSafeApi(s.api);
+}
+
+/** True when the gate has to be shown now: required, and no current
+ *  consent with a code, or the server turned the code down. */
+export function gateNeeded(s = loadState(), host = globalThis.location?.hostname) {
+  return gateRequired(s, host) && (!isReady(s) || s.problem === 'code');
+}
+
+/** Asks the server whether an invite code works (`GET /v1/stats`, which
+ *  needs a code and changes nothing). Resolves to `ok`, `wrong`
+ *  (the server turned it down), `offline` (no answer) or `server`. */
+export async function checkCode(code, s = loadState()) {
+  if (!isSafeApi(s.api)) return 'offline';
+  let res;
+  try {
+    res = await fetch(`${s.api}/v1/stats`, { headers: { Authorization: `Bearer ${String(code).trim()}` } });
+  } catch (_) {
+    return 'offline';
+  }
+  if (res.status === 401 || res.status === 403) return 'wrong';
+  return res.ok ? 'ok' : 'server';
 }
 const STATE_KEY = 'bedrock.collect.v1';
 const DB_NAME = 'bedrock-collect';
@@ -385,6 +424,10 @@ async function send(s, batch) {
 /** Sends what is waiting. Safe to call at any time; only one runs at once. */
 export function flush() {
   flushing ||= (async () => {
+    // Let `flushing` hold this run before it can end: a run with nothing
+    // to do would otherwise clear it first and then be stored for good,
+    // and no later flush on this page would send.
+    await null;
     try {
       for (;;) {
         const s = loadState();

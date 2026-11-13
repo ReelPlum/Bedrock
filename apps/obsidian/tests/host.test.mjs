@@ -348,3 +348,65 @@ test('the word menu copies a link to the word, for pasting into a vault note', a
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+// ---- Invite code and consent at start ----------------------------------------
+
+const API = 'https://collect.test';
+const CODE = 'bedrock-abcde-fghjk-mnpqr-stuvw-xyz23';
+
+/** The harness with a server address built in and a pretend backend that
+ *  takes `CODE`. */
+async function openHostWithServer(state = null) {
+  const ctx = await browser.newContext({ viewport: { width: 1024, height: 900 } });
+  await ctx.addInitScript(([a, st]) => {
+    const s = st || JSON.parse(localStorage.getItem('bedrock.collect.v1') || '{}');
+    if (!s.api) localStorage.setItem('bedrock.collect.v1', JSON.stringify({ ...s, api: a }));
+  }, [API, state]);
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+  await ctx.route(`${API}/**`, (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    const ok = req.headers().authorization === `Bearer ${CODE}`;
+    return route.fulfill({ status: ok ? 200 : 401, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify(ok ? { samples: 0, accepted: [], refused: [] } : { error: 'code' }) });
+  });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/obsidian/tests/harness.html`);
+  await page.waitForFunction(() => window.host);
+  return { page, ctx, errors };
+}
+
+test('at start, the plugin asks for the invite code and consent in a window, and closes it once agreed', async () => {
+  const { page, ctx, errors } = await openHostWithServer();
+  await page.evaluate(() => { window.launched = host.launch(); });
+  await page.waitForSelector('#consent-window iframe');
+  const welcome = page.frames().find((f) => f.url().includes('/welcome/index.html') && !f.url().includes('probe'));
+  await welcome.waitForFunction(() => document.getElementById('launch-gate')?.open);
+  assert.match(await welcome.textContent('#launch-gate'), /Every handwritten word you write in a note/);
+  await welcome.fill('#gate-code', CODE);
+  await welcome.check('#gate-agree');
+  await welcome.click('#gate-go');
+  assert.equal(await page.evaluate(() => window.launched), 'agreed');
+  await page.waitForFunction(() => !document.getElementById('consent-window'));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('iframe.bedrock-welcome-frame').length), 0, 'the hidden page is gone too');
+  const s = await page.evaluate(() => ({ c: JSON.parse(localStorage.getItem('bedrock.collect.v1')), set: JSON.parse(localStorage.getItem('bedrock.settings.v1')) }));
+  assert.equal(s.c.consent, 3);
+  assert.equal(s.c.code, CODE);
+  assert.equal(s.set.shareWords, true);
+  // A note opened now has no gate over it.
+  await openFile(page, 'Gate.bedrock');
+  const frame = page.frames().find((f) => f.url().includes('/index.html?host=obsidian'));
+  assert.equal(await frame.evaluate(() => !!document.getElementById('launch-gate')), false);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('at start, nothing is shown when consent is already given', async () => {
+  const state = { code: CODE, consent: 3, contributor: '5b0f2e4c-8a1d-4c3e-9f6a-2d7b1c0e4a99' };
+  const { page, ctx, errors } = await openHostWithServer(state);
+  assert.equal(await page.evaluate(() => host.launch()), 'not-needed');
+  assert.equal(await page.evaluate(() => host.windows), 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

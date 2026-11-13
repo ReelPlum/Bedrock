@@ -1,8 +1,10 @@
 // The "Saving your samples" card on /train: consent, invite code, and
 // "Delete my contributions".
 import * as collect from '../src/collect.js';
+import { CONSENT_HTML, accept } from '../src/consent.js';
 
 const $ = (id) => document.getElementById(id);
+$('consent-text').innerHTML = CONSENT_HTML;
 
 async function show() {
   const s = collect.loadState();
@@ -42,7 +44,7 @@ $('setup-form').addEventListener('submit', async (e) => {
   if (!$('agree').checked) return fail('Tick the box to agree, or leave saving off.');
   if (!code) return fail('Enter your invite code.');
   fail('');
-  collect.agree({ code, handedness: $('handedness').value });
+  accept({ code, handedness: $('handedness').value });
   await collect.flush().catch(() => {});
   await show();
 });

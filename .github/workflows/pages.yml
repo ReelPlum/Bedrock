@@ -36,7 +36,7 @@ jobs:
         run: |
           mkdir -p _site
           cd apps/web
-          cp -r index.html style.css sw.js manifest.webmanifest src pkg dict icons train ../../_site/
+          cp -r index.html style.css sw.js manifest.webmanifest src pkg dict icons train welcome ../../_site/
           touch ../../_site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:

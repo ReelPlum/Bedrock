@@ -6,6 +6,7 @@ import { FileView, FuzzySuggestModal, Modal, Notice, Plugin, PluginSettingTab, S
 import bundle from 'virtual:web-app';
 import { installWebApp, webAppUrl } from './assets.js';
 import { HostBridge } from './bridge.js';
+import { askAtLaunch, welcomeUrl } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, reportsAddress, sendReport } from './report.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
@@ -16,6 +17,25 @@ const MAX_CAMERAS = 500;
 
 /** "Share with the Bedrock team" for the plugin's own errors: the exact
  *  report, an optional comment, and Send. (The canvas has its own panel.) */
+/** The window the launch gate is shown in (see consent.js). */
+class ConsentModal extends Modal {
+  constructor(app, { mount, onClose }) {
+    super(app);
+    this.mount = mount;
+    this.whenClosed = onClose;
+  }
+
+  onOpen() {
+    this.modalEl?.addClass?.('bedrock-consent-modal');
+    this.mount(this.contentEl);
+  }
+
+  onClose() {
+    this.contentEl.empty?.();
+    this.whenClosed();
+  }
+}
+
 class ReportModal extends Modal {
   constructor(app, plugin) {
     super(app);
@@ -243,7 +263,10 @@ export default class BedrockPlugin extends Plugin {
       if (to) await leaf.openFile(to.file, { eState: to.eState });
     }));
     // Notes edited by the web app or on another device get indexed too.
-    this.app.workspace.onLayoutReady(() => this.reindex(false));
+    this.app.workspace.onLayoutReady(() => {
+      this.reindex(false);
+      this.askConsent();
+    });
   }
 
   /** If `file` is an index note: the handwritten note to open in its
@@ -302,6 +325,21 @@ export default class BedrockPlugin extends Plugin {
       b.addEventListener('click', (e) => { e.stopPropagation(); new ReportModal(this.app, this).open(); });
     }
     return notice;
+  }
+
+  /** While Bedrock is invite-only, ask for the invite code and consent
+   *  as soon as Obsidian has started (consent.js). Resolves to how it
+   *  went, or null where there is no window (tests without a DOM). */
+  async askConsent() {
+    await this.webAppReady;
+    if (typeof document === 'undefined') return null;
+    const url = welcomeUrl(webAppUrl(this.app.vault.adapter, this.webDir, bundle.hash));
+    this.consent = askAtLaunch({
+      doc: document,
+      url,
+      open: (w) => { const m = new ConsentModal(this.app, w); m.open(); return m; },
+    });
+    return this.consent;
   }
 
   /** Sends an error report (the plugin's, or the canvas's through

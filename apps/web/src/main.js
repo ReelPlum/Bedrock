@@ -12,6 +12,7 @@ import { cleanName, folderContents, folderNameProblem, folderTrail, libraryFiles
 import { host } from './host.js';
 import * as collect from './collect.js';
 import { WordSharer } from './share-words.js';
+import { showGate, gateStyles } from './consent.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -133,7 +134,28 @@ function problem(msg, ms, err) {
   toast(msg, ms);
 }
 
+/** While Bedrock is invite-only, the invite code and consent are asked
+ *  for at once, over everything (consent.js). The app loads behind it. */
+function askAtLaunch() {
+  const onAccepted = (r) => {
+    // Agreeing turns on "Send every word"; keep this page's copy of the
+    // settings in step, or its next save would turn it off again.
+    // Agreed on another page: that page stored the setting.
+    const stored = loadSettings();
+    const on = r ? r.sharing : { shareWords: stored.shareWords, shareWordsSince: stored.shareWordsSince };
+    if (on) Object.assign(settings, on);
+    const box = document.getElementById('share-words');
+    if (box) box.checked = settings.shareWords && collect.isReady();
+  };
+  gateStyles();
+  showGate({ onAccepted });
+  // A code the server turns down later (or "Stop saving" in another tab)
+  // brings the gate back.
+  collect.onStatus(() => { if (collect.gateNeeded()) showGate({ onAccepted }); });
+}
+
 async function main() {
+  askAtLaunch();
   await init();
   const stage = $('stage');
   let canvas;
@@ -1301,6 +1323,12 @@ async function main() {
   // Words go to the training data backend only when this is on, and only
   // after consent and an invite code (set up on /train).
   $('share-words').checked = settings.shareWords && collect.isReady();
+  // While the launch gate is on, sending is part of using the app: it is
+  // stopped with "Stop saving" on the Train page, which brings the gate back.
+  if (collect.gateRequired()) {
+    $('share-words').disabled = true;
+    $('share-words').closest('label').title = 'Part of using Bedrock while it is invite-only. "Stop saving" on the Train page stops it.';
+  }
   $('share-words').addEventListener('change', (e) => {
     if (e.target.checked && !collect.isReady()) {
       e.target.checked = false;

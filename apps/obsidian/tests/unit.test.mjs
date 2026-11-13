@@ -465,3 +465,9 @@ test('the canvas sends its error reports through the plugin', async () => {
   const none = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {} });
   await assert.rejects(none.handlers['send-report']({ report: { id: 'x' } }), /not switched on/);
 });
+
+test('the welcome page address sits next to the web app', async () => {
+  const { welcomeUrl } = await import('../src/consent.js');
+  assert.equal(welcomeUrl('app://local/v/web/index.html?host=obsidian&v=abc'), 'app://local/v/web/welcome/index.html?host=obsidian&v=abc');
+  assert.equal(welcomeUrl('/index.html'), '/welcome/index.html');
+});

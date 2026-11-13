@@ -11,6 +11,7 @@ import { createSession } from '/obsidian/src/session.js';
 import { Indexer, strokesForIndexPlace } from '/obsidian/src/index-note.js';
 import { readZip, text } from '/obsidian/src/zip.js';
 import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
+import { askAtLaunch } from '/obsidian/src/consent.js';
 
 const frame = document.getElementById('frame');
 const vault = new FakeVault();
@@ -24,6 +25,24 @@ let pickAnswer = 'Ideas';
 
 window.host = {
   vault,
+  /** What the plugin does when Obsidian starts: ask for the invite code
+   *  and consent. The "window" is a div here. Resolves to how it went. */
+  launch() {
+    this.windows = 0;
+    return askAtLaunch({
+      doc: document,
+      url: '/welcome/index.html?host=obsidian',
+      open: (w) => {
+        this.windows += 1;
+        const el = document.createElement('div');
+        el.id = 'consent-window';
+        el.style.cssText = 'position:fixed;inset:0;width:620px;height:760px;background:#fff';
+        document.body.append(el);
+        w.mount(el);
+        return { close() { el.remove(); w.onClose(); } };
+      },
+    });
+  },
   calls,
   setPick(v) { pickAnswer = v; },
   get session() { return session; },
