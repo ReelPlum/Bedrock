@@ -13,7 +13,7 @@ a picture.
 
 | From the PDF | In Bedrock |
 |---|---|
-| Each pen stroke | One stroke, in the order it was written, with its colour and width. Transparent strokes become highlighter strokes. |
+| Each pen stroke | One stroke, in the order it was written, with its colour and its width along the line (thin and thick parts as drawn). Transparent strokes become highlighter strokes. |
 | GoodNotes's own reading of the handwriting (hidden text in the page) | The reading of the word under it (engine `pdf-text`), shown like any recognised word. The recogniser keeps it rather than reading the word again. |
 | Pictures (screenshots, photos) | The same picture, at the same place and size on the page, under the ink. JPEGs are kept as they are; other pictures are saved as PNG. |
 | Typed text, filled shapes, JPEG 2000 pictures | Left out; the message after importing says how many. |
@@ -31,10 +31,19 @@ training at once, marked unchecked, with the PDF's reading alongside (see
 
 `crates/bedrock-core/src/pdf.rs` reads the page tree and content streams
 (Flate or uncompressed, object streams and form XObjects included).
-GoodNotes draws each stroke as a filled outline of short pieces, each going
-out along one edge of the line and back along the other; the outward half
-of each piece is the centre line, and the piece's area over its length is
-the width. Stroked paths (other apps) are taken as they are. The hidden
+Pen apps draw each stroke as one filled shape made of short overlapping
+pieces, each an outline around a stretch of the line: GoodNotes with flat
+ends, Apple Notes with round ends drawn as curves, plus a round dab at each
+pen sample. The importer finds each piece's two ends (along its longest
+direction), takes the line halfway between its two sides, and measures its
+width across the middle; round ends are cut off so the pieces join
+smoothly, and a dab is a point as wide as the circle. The pieces are joined
+in order into one stroke. The brush is as wide as the stroke's widest point
+and narrower points press lighter, so the line keeps the widths the PDF
+drew; taper and speed thinning are off for imported strokes, and the exact
+PDF points are not smoothed as if they were screen pixels, so small
+handwriting keeps its shape. Stroked paths (other apps) are taken as they
+are. The hidden
 text layer sits far off the page, so it is first lined up with the ink
 (bounds, then nudged towards the ink under it until it settles) and each
 piece of text is given to the word it lands on.
