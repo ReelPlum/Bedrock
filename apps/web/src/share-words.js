@@ -11,7 +11,8 @@
 //
 // Only words written after the setting was turned on are sent by
 // themselves. A word the writer checks while the setting is on is sent
-// whenever it was written: checking it is the writer's own act.
+// whenever it was written: checking it is the writer's own act. So is
+// importing a PDF: every word of an imported note is sent at once.
 
 import * as collect from './collect.js';
 
@@ -29,9 +30,10 @@ export class WordSharer {
    * @param {() => boolean} o.enabled the setting is on and collect is ready
    * @param {() => number} o.since when the setting was turned on, Unix ms
    * @param {() => boolean} o.reading true when the recogniser is on (else words are sent without text)
+   * @param {() => boolean} [o.ready] saving is set up on /train (for imported notes)
    */
-  constructor({ canvas, noteId, enabled, since, reading, enqueue = collect.enqueue, now = Date.now, storage = globalThis.localStorage }) {
-    Object.assign(this, { canvas, noteId, enabled, since, reading, enqueue, now, storage });
+  constructor({ canvas, noteId, enabled, since, reading, ready = () => collect.isReady(), enqueue = collect.enqueue, now = Date.now, storage = globalThis.localStorage }) {
+    Object.assign(this, { canvas, noteId, enabled, since, reading, ready, enqueue, now, storage });
     this.settleMs = SETTLE_MS;
     this.seen = new Map(); // key -> { sig, at }: when an unchecked reading was first seen
     this.checks = new Map(); // key -> { labelSource, reading, engine }: what the writer just did
@@ -62,8 +64,10 @@ export class WordSharer {
     return this.scan();
   }
 
-  /** What `word` should be sent as now, or null. */
-  plan(word, key) {
+  /** What `word` should be sent as now, or null. `imported`: the note was
+   *  just imported, so a word without a reading is sent without text
+   *  rather than waiting for the recogniser. */
+  plan(word, key, imported = false) {
     if (word.id == null || !(word.strokes || []).length) return null;
     const check = this.checks.get(key);
     const kind = word.kind === 'math' ? 'math' : word.kind === 'drawing' ? 'drawing' : 'text';
@@ -85,22 +89,27 @@ export class WordSharer {
     }
     if (word.text != null) return { kind, label: word.text, labelSource: 'unchecked', reading: word.text, engine: word.engine || null, checked: false };
     // Not read: wait for the recogniser, unless it is off.
-    return this.reading() ? null : { kind, label: '', labelSource: 'unchecked', reading: null, engine: null, checked: false };
+    return this.reading() && !imported ? null : { kind, label: '', labelSource: 'unchecked', reading: null, engine: null, checked: false };
   }
 
   /** Sends what is due. `force` sends unchecked readings without waiting
    *  for them to settle (the app is being hidden or the note closed).
+   *  `imported`: the open note was just imported from a PDF; importing is
+   *  the writer's own act, so every word is sent now, with the reading the
+   *  PDF held, whenever it was written and even with "Send every word"
+   *  off (saving must be set up on /train).
    *  Returns how many samples were queued. */
-  scan({ force = false } = {}) {
+  scan({ force = false, imported = false } = {}) {
+    if (imported) force = true;
     const run = async () => {
-      if (!this.enabled()) return 0;
+      if (!(imported ? this.ready() : this.enabled())) return 0;
       const note = this.noteId();
       const now = this.now();
-      let n = 0;
+      const batch = [];
       let channels = null;
       for (const word of JSON.parse(this.canvas.words_json())) {
         const key = `${note}:${word.id}`;
-        const want = this.plan(word, key);
+        const want = this.plan(word, key, imported);
         if (!want) continue;
         const sig = `${want.kind}|${want.labelSource}|${want.label}`;
         const prev = this.sent.get(key);
@@ -115,7 +124,7 @@ export class WordSharer {
         if (!ink.length) continue;
         // Written before the setting was on: only sent if the writer checks
         // it now.
-        if (!this.checks.has(key) && Math.min(...ink.map((s) => s.start)) < this.since()) continue;
+        if (!imported && !this.checks.has(key) && Math.min(...ink.map((s) => s.start)) < this.since()) continue;
         channels ||= JSON.parse(this.canvas.meta_json()).channels;
         const sample = collect.fromNote({
           strokes: ink,
@@ -128,14 +137,18 @@ export class WordSharer {
           engine: want.engine,
           supersedes: prev ? [prev.id] : [],
         });
-        await this.enqueue(sample);
-        this.sent.delete(key); // re-insert so it counts as newest
-        this.sent.set(key, { id: sample.id, sig, source: want.labelSource });
-        this.checks.delete(key);
-        n++;
+        batch.push({ key, sample, sig, source: want.labelSource });
       }
-      if (n) this._save();
-      return n;
+      if (!batch.length) return 0;
+      // One write for all of them: an imported page can hold hundreds.
+      await this.enqueue(batch.map((b) => b.sample));
+      for (const { key, sample, sig, source } of batch) {
+        this.sent.delete(key); // re-insert so it counts as newest
+        this.sent.set(key, { id: sample.id, sig, source });
+        this.checks.delete(key);
+      }
+      this._save();
+      return batch.length;
     };
     // One scan at a time, so a word is never sent twice by two scans.
     this.busy = (this.busy || Promise.resolve()).then(run, run);

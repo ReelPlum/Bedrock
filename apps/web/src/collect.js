@@ -9,7 +9,8 @@
 // The wire format is `bedrock-training` version 2; the backend's checks are
 // the reference (collect-core/src/sample.rs in the backend repository).
 
-export const CONSENT_VERSION = 1;
+/** 2: words from imported PDFs are sent too. */
+export const CONSENT_VERSION = 2;
 /** The backend's address, fixed in the app: people cannot change it. Empty
  *  until the backend is deployed, and saving stays off until it is set. */
 export const DEFAULT_API = '';
@@ -249,7 +250,7 @@ async function tx(mode, run) {
 }
 
 export const queue = {
-  put: (s) => tx('readwrite', (st) => st.put(s)),
+  put: (s) => tx('readwrite', (st) => { for (const one of [].concat(s)) st.put(one); }),
   first: (n) => tx('readonly', (st) => st.getAll(null, n)),
   remove: (ids) => tx('readwrite', (st) => { for (const id of ids) st.delete(id); }),
   count: () => tx('readonly', (st) => st.count()),
@@ -376,6 +377,8 @@ function sendSoon() {
 
 /** Keeps a sample; it is sent with the next batch, within a minute.
  *  Resolves when it is safely queued. */
+/** Queues one sample, or several in one go (an imported note can hold
+ *  hundreds of words). */
 export async function enqueue(s) {
   await queue.put(s);
   await announce();

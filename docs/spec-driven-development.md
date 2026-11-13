@@ -14,9 +14,13 @@ built on [OpenSpec](https://github.com/Fission-AI/OpenSpec).
 | `openspec/config.yaml` | Project context and rules the model follows when writing specs and tasks. |
 | `.claude/testing/profile.json` | The test commands `/interlock:ship` runs (taken from CI). |
 
-Each scenario names the test that proves it in a comment
-(`<!-- test: name -->`). `crates/bedrock-core/tests/specs.rs` fails when a
-cited test no longer exists, so specs and tests cannot drift apart silently.
+Each scenario names the test that proves it in a comment:
+`<!-- test: name -->` for a Rust test function, or
+`<!-- test-js: apps/web/tests/x.test.mjs :: test title -->` for a
+JavaScript test (the web app, the Obsidian plugin).
+`crates/bedrock-core/tests/specs.rs` fails when a cited test no longer
+exists, in the living specs and in the delta specs of open changes, so
+specs and tests cannot drift apart silently.
 
 ## Data formats
 

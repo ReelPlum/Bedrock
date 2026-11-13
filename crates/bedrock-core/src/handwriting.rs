@@ -77,7 +77,10 @@ pub struct WordInfo {
 
 #[derive(Debug, Default)]
 pub struct Handwriting {
-    revision: Option<u64>,
+    /// Which document the layout is for: its revision and a fingerprint of
+    /// its strokes. The revision alone is not enough: two notes opened one
+    /// after the other can have the same revision.
+    revision: Option<(u64, usize, Option<StrokeId>, Option<StrokeId>)>,
     layout: Layout,
     dict: Option<Dictionary>,
 }
@@ -117,9 +120,11 @@ impl Handwriting {
     }
 
     fn refresh(&mut self, doc: &Document) {
-        if self.revision != Some(doc.revision()) {
+        let s = doc.strokes();
+        let key = (doc.revision(), s.len(), s.first().map(|s| s.id), s.last().map(|s| s.id));
+        if self.revision != Some(key) {
             self.layout = words::layout(doc);
-            self.revision = Some(doc.revision());
+            self.revision = Some(key);
         }
     }
 
@@ -295,6 +300,26 @@ mod tests {
             x += 20.0;
         }
         x + 30.0
+    }
+
+    #[test]
+    fn another_note_with_the_same_revision_is_laid_out_afresh() {
+        // Bug: the layout was kept per revision only, so after switching to
+        // a note with the same revision the words of the one before came
+        // back (wrong strokes sent for training, wrong words read).
+        let mut a = Document::new(1);
+        line(&mut a, 0.0, 100.0, 3);
+        let mut b = Document::new(2);
+        line(&mut b, 500.0, 300.0, 1);
+        letter(&mut b, 900.0, 300.0);
+        letter(&mut b, 1300.0, 300.0);
+        assert_eq!(a.revision(), b.revision());
+        let mut hw = Handwriting::new();
+        assert_eq!(hw.words(&a).len(), 1);
+        let words = hw.words(&b);
+        assert_eq!(words.len(), 3);
+        let ids: HashSet<StrokeId> = b.strokes().iter().map(|s| s.id).collect();
+        assert!(words.iter().all(|w| w.strokes.iter().all(|s| ids.contains(s))));
     }
 
     #[test]

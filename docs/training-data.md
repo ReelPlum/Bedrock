@@ -10,6 +10,7 @@ unless the writer agrees.
 |---|---|---|
 | The training pages (`/train`) | The ink written in the box and the prompt it answers: a common word, a whole sentence, a short paragraph (its label keeps the line breaks it was shown with), or a formula. | After agreeing on the consent card on `/train` and entering an invite code. |
 | A note | Every handwritten word written after the setting was turned on, one sample per word: its ink, moved to 0,0, and what the recogniser read, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A word is sent once its reading has not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
+| An imported PDF | Every handwritten word of every page, one sample per word, marked `unchecked`, with the reading the PDF itself holds (GoodNotes hides its own handwriting recognition in the page) as `model_reading` and `model_engine: "pdf-text"`, or no text where it has none. | When a PDF is imported (Open or "Import PDF" in the menu) with saving set up on `/train`, even with "Send every word" off: importing is the writer's own act, as checking a word is. |
 | A note | A word again, with its checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
 
 A checked sample names the earlier sample of the same ink in `supersedes`,
@@ -58,6 +59,10 @@ connection loses nothing. The server address must be `https`.
 
 "Delete my contributions" on `/train` removes everything the writer sent
 and everything still waiting. "Stop saving" withdraws consent on the device.
+
+The consent text has a version (`CONSENT_VERSION` in `collect.js`). It is 2
+since imported PDFs were added to what is sent; consent given to an older
+text is asked for again.
 
 ## The server address
 

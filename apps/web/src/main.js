@@ -1,4 +1,4 @@
-import init, { Canvas, ZipBuilder, peek_title } from '../pkg/bedrock_web.js';
+import init, { Canvas, ZipBuilder, peek_title, import_pdf } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
 import { Handwriting } from './handwriting.js';
@@ -102,6 +102,9 @@ const settings = loadSettings();
 function saveSettings() {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* ignore */ }
 }
+
+/** A PDF file (it may have a few bytes before the header). */
+const isPdf = (b) => new TextDecoder('latin1').decode(b.subarray(0, 1024)).includes('%PDF-');
 
 function toast(msg, ms = 3500) {
   const t = $('toast');
@@ -514,7 +517,7 @@ async function main() {
       input.setAttribute('aria-label', label);
       input.enterKeyHint = 'done';
       let finished = false;
-      const finish = (v) => { if (!finished) { finished = true; resolve(v); } };
+      const finish = (v) => { if (!finished) { finished = true; input.dataset.done = 'true'; resolve(v); } };
       input.onkeydown = (e) => {
         if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim() || null); }
         if (e.key === 'Escape') { e.preventDefault(); finish(null); }
@@ -651,6 +654,20 @@ async function main() {
       li.append(del);
       return li;
     }));
+    // A folder being named keeps its row, untouched (moving or removing it
+    // would lose the focus and the name being typed); the rest is redrawn
+    // around it.
+    const naming = list.querySelector('.folder-name:not([data-done])')?.closest('li');
+    if (naming) {
+      const id = naming.dataset.folder;
+      const kept = rows.map((r) => (id && r.dataset.folder === id ? naming : r));
+      if (!kept.includes(naming)) kept.unshift(naming);
+      for (const c of [...list.children]) if (c !== naming) c.remove();
+      const at = kept.indexOf(naming);
+      naming.before(...kept.slice(0, at));
+      naming.after(...kept.slice(at + 1));
+      return;
+    }
     list.replaceChildren(...rows);
     if (!rows.length) {
       const li = document.createElement('li');
@@ -1025,11 +1042,53 @@ async function main() {
     if (!$('library').contains(e.target) && !$('btn-library').contains(e.target)) $('library').hidden = true;
   });
 
+  /** Each page of a PDF with handwriting (a GoodNotes export) becomes a
+   *  note. With saving set up on /train, every word is also sent for
+   *  training with the reading the PDF holds, for review. */
+  async function importPdf(f) {
+    toast(`Importing ${f.name}…`, 60000);
+    await new Promise((r) => setTimeout(r, 30)); // let the message show first
+    let pages;
+    try {
+      pages = import_pdf(f.bytes, ...randomSeed(), Date.now());
+    } catch (e) {
+      toast(`${f.name} could not be read (${e}).`, 6000);
+      return;
+    }
+    if (!pages.length) {
+      toast(`No handwriting found in ${f.name}.`, 6000);
+      return;
+    }
+    const base = f.name.replace(/\.pdf$/i, '');
+    const warnings = new Set();
+    let sent = 0;
+    for (const [i, page] of pages.entries()) {
+      if (saveTimer) await saveNow();
+      canvas.load(page.bedrock, ...randomSeed());
+      note = { id: newNoteId(), created: Date.now() };
+      canvas.set_title(pages.length > 1 ? `${base} (page ${i + 1})` : base);
+      applyDocToUi();
+      savedRevision = -1;
+      await saveNow();
+      page.warnings.forEach((w) => warnings.add(w));
+      sent += await wordSharer.scan({ imported: true }).catch(() => 0);
+    }
+    const what = pages.length > 1 ? `${pages.length} pages` : f.name;
+    const extra = [sent ? `${sent} words sent for training` : '', ...warnings].filter(Boolean).join('; ');
+    toast(`Imported ${what}${extra ? ` (${extra})` : ''}.`, 6000);
+    return pages.length;
+  }
+
   const actions = {
     new: () => newNote(),
+    'import-pdf': async () => {
+      const f = await pickFile($('file-input'));
+      if (f) await importPdf(f);
+    },
     open: async () => {
       const f = await pickFile($('file-input'));
       if (!f) return;
+      if (isPdf(f.bytes)) return importPdf(f);
       try {
         if (saveTimer) await saveNow();
         const warnings = canvas.load(f.bytes, ...randomSeed());
@@ -1432,7 +1491,7 @@ async function main() {
   }
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { renderLibrary, collect, wordSharer, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
+  window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });

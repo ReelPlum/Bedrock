@@ -25,6 +25,7 @@ pub mod handwriting;
 pub mod input;
 pub mod mirror;
 pub mod overview;
+pub mod pdf;
 pub mod pen;
 pub mod scene;
 pub mod scribble;
