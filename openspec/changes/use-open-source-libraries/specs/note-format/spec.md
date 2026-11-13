@@ -51,6 +51,23 @@ Every `note.json` Bedrock writes SHALL be valid against
 - **THEN** every entry reads back the same
 <!-- test: archives_from_the_earlier_writer_still_open -->
 
+### Requirement: An SVG export SHALL still open after another program re-saves it
+
+A drawing program that re-saves a Bedrock SVG keeps its content but may
+change how it is written. The note and its pictures SHALL still come back.
+
+#### Scenario: Re-saved by a drawing program
+- **GIVEN** an SVG export whose metadata uses other quotes and line breaks, whose note JSON is written as escaped text instead of CDATA, and whose pictures use `xlink:href` with their attributes in another order
+- **WHEN** it is opened
+- **THEN** the note opens with its title, strokes and pictures, and no warnings
+<!-- test: an_svg_resaved_by_another_tool_still_opens -->
+
+#### Scenario: An export cut short
+- **GIVEN** an SVG export cut off after the note data, so it is not well formed XML
+- **WHEN** it is opened
+- **THEN** the note still opens from the data at the top of the file
+<!-- test: an_svg_resaved_by_another_tool_still_opens -->
+
 ## Open source used
 
 | | zip | crc32fast | base64 | jsonschema (tests) | proptest (tests) |
@@ -65,3 +82,16 @@ Every `note.json` Bedrock writes SHALL be valid against
 
 The `zip` crate adds about 270 KB to the WebAssembly build before
 compression.
+
+| | roxmltree |
+|---|---|
+| Version | [0.21](https://crates.io/crates/roxmltree) |
+| Used for | Reading SVG files back: the note JSON in `<metadata id="bedrock-note">` and the pictures embedded in `<image>`. |
+| Why this one | A small, read-only XML parser that gives the whole document as a tree, which is all opening an SVG needs, and it decodes CDATA, escaped text and namespaced attributes the way any XML reader would. When a file is not well formed XML (cut short), Bedrock falls back to its earlier plain text search, so nothing that opened before stops opening. |
+| Why it is mature | Since 2018, about 105 million downloads, released October 2026; used by `resvg`/`usvg`, the most used SVG renderer in Rust. One main maintainer (the author of resvg), trusted because of that wide use. |
+| Licence | MIT or Apache-2.0: commercial use allowed. |
+| Considered | `quick-xml` (very widely used, but a streaming reader that needs more code for the same lookups; a good choice if the SVG is ever read in one pass for speed); `xml-rs` (slower, less maintained). |
+| Not Rust | No. |
+
+Writing the SVG stays Bedrock's own: it is a fixed template with a
+twelve line escape function, and the exact output is part of the format.

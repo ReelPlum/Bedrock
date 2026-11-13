@@ -74,7 +74,7 @@ fn a_note_with_everything_matches_the_schema() {
     assert_matches_schema(&v, &format::to_json(&d), "note JSON");
     // The JSON embedded in an SVG export, and note.json inside a .bedrock.
     let svg = format::to_svg(&d);
-    assert_matches_schema(&v, format::extract_json(&svg).expect("embedded JSON"), "JSON inside the SVG");
+    assert_matches_schema(&v, &format::extract_json(&svg).expect("embedded JSON"), "JSON inside the SVG");
     let (files, _) = bedrock_core::zip::read(&format::to_bedrock(&d)).expect("zip");
     let note = &files.iter().find(|(n, _)| n == format::NOTE_JSON).expect("note.json").1;
     assert_matches_schema(&v, std::str::from_utf8(note).unwrap(), "note.json in the .bedrock");
@@ -92,7 +92,7 @@ fn notes_written_by_earlier_versions_match_the_schema() {
         let json = match path.extension().and_then(|e| e.to_str()) {
             Some("json") => String::from_utf8(bytes).unwrap(),
             Some("svg") => {
-                format::extract_json(std::str::from_utf8(&bytes).unwrap()).expect("embedded JSON").to_string()
+                format::extract_json(std::str::from_utf8(&bytes).unwrap()).expect("embedded JSON").into_owned()
             }
             Some("bedrock") => {
                 let (files, _) = bedrock_core::zip::read(&bytes).expect("zip");

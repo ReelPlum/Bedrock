@@ -16,6 +16,8 @@ of projects. Frederik asked for the survey's suggestions to be put in place
 - Saved notes are checked against the published schema
   (`docs/note.schema.json`) with `jsonschema`, and random notes and damaged
   files are generated with `proptest` (test only).
+- SVG exports are read back with `roxmltree`, so one re-saved by a drawing
+  program still opens.
 - The PDF importer reads the file with `hayro-syntax` and writes PNG files
   with `png`. Bedrock's own part (turning pen paths into strokes, the hidden
   text layer, placing pictures) stays.
@@ -24,7 +26,7 @@ of projects. Frederik asked for the survey's suggestions to be put in place
 
 Each library is recorded with why it was chosen, why it is mature, its
 licence and what was turned down, in the "Open source used" section of the
-spec it belongs to: `note-format` (zip, crc32fast, base64, jsonschema,
+spec it belongs to: `note-format` (zip, crc32fast, base64, roxmltree, jsonschema,
 proptest) and `import-pdf` (hayro-syntax, png).
 
 ## Data formats
