@@ -30,6 +30,12 @@ local storage, not part of any note.
 <!-- test: parse_and_format -->
 <!-- test-js: apps/web/tests/app.test.mjs :: colour presets can be added and deleted, and are remembered -->
 
+#### Scenario: The + opens the colour picker
+- **GIVEN** the dashed + after the colour presets (the only way to pick a new colour; there is no separate colour wheel)
+- **WHEN** it is tapped and a colour chosen in the system colour picker
+- **THEN** the brush takes that colour as it is chosen, and when the picker closes it is added as a new preset and selected; a colour already in the presets is only selected, and closing the picker without choosing adds nothing
+<!-- test-js: apps/web/tests/app.test.mjs :: the + opens the colour picker and adds the chosen colour; there is no colour wheel -->
+
 ### Requirement: The toolbar and menu SHALL fit the screen
 
 #### Scenario: Docking the toolbar

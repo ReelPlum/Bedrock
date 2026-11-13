@@ -793,21 +793,33 @@ async function main() {
     el.addEventListener('contextmenu', (e) => { e.preventDefault(); cancel(); fn(); });
   }
 
-  // ----- colour presets: + adds the current colour, long-press to delete -------
+  // ----- colour presets: + opens the colour picker and adds the colour picked;
+  // long-press a colour to delete it ------------------------------------------
   function setColorEditing(on) {
     colorsEl.classList.toggle('editing', on);
   }
-  $('color-add').addEventListener('click', () => {
-    const c = currentBrush().color.toLowerCase();
+  /** Adds `c` to the current palette unless it is there already; either way
+   * the brush ends up with that colour selected. */
+  function addColor(c) {
+    c = c.toLowerCase();
     const palette = currentPalette();
-    if (palette.some((p) => p.toLowerCase() === c)) {
-      toast('That colour is already in your colours', 1500);
-      return;
-    }
-    palette.push(c);
+    if (!palette.some((p) => p.toLowerCase() === c)) palette.push(c);
+    selectTool(settings.brush, { noToggle: true });
+    currentBrush().color = c;
+    saveSettings();
+    applyTool();
+  }
+  const colorInput = $('color-input');
+  colorInput.addEventListener('click', () => setColorEditing(false));
+  // While the picker is open the brush follows it, so the size dots show the
+  // colour; the swatch is added when the picker closes on a choice.
+  colorInput.addEventListener('input', (e) => {
+    selectTool(settings.brush, { noToggle: true });
+    currentBrush().color = e.target.value;
     saveSettings();
     applyTool();
   });
+  colorInput.addEventListener('change', (e) => addColor(e.target.value));
 
   // ----- size presets: three per brush; the slider edits the selected one ------
   function renderPresets(erasing, b) {
@@ -1030,12 +1042,6 @@ async function main() {
     const name = btn.dataset.tool || btn.dataset.brush;
     btn.addEventListener('click', () => selectTool(name));
   }
-  $('color-input').addEventListener('input', (e) => {
-    selectTool(settings.brush, { noToggle: true });
-    currentBrush().color = e.target.value;
-    saveSettings();
-    applyTool();
-  });
   $('size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
   $('pop-size').addEventListener('input', (e) => setSize(parseFloat(e.target.value)));
 
