@@ -25,7 +25,7 @@ export function termsUrl(loc = globalThis.location) {
 /** The line by the tick box, here and on /train. Agreeing to it is
  *  consent version 3 (`collect.CONSENT_VERSION`). */
 export function agreeHtml() {
-  return `I agree to the <a href="${termsUrl()}" target="_blank" rel="noopener">Terms of service</a>, which say how my handwriting is sent and used.`;
+  return `I agree to the <a href="${termsUrl()}" target="_blank" rel="noopener">Terms of Service</a>`;
 }
 
 /** Turns on "Send every word I write in notes" in the stored settings,
@@ -113,7 +113,7 @@ export function showGate({ doc = document, onAccepted = () => {}, check = collec
   dialog.querySelector('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const code = $('gate-code').value.trim();
-    if (!$('gate-agree').checked) return fail('Tick the box to agree to the Terms of service. Bedrock cannot be used without it for now.');
+    if (!$('gate-agree').checked) return fail('Tick the box to agree to the Terms of Service. Bedrock cannot be used without it for now.');
     if (!code) return fail('Enter your invite code.');
     fail('');
     $('gate-go').disabled = true;

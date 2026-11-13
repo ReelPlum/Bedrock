@@ -21,7 +21,7 @@ takes effect once a server address is built in. Consent that is a condition
 of using an app is not "freely given" under GDPR article 7(4), so before a
 public release the switch should be turned off (sharing is then optional,
 as in the table below) or the legal basis reviewed. What is sent and why
-is the website's Terms of service (`/terms`, `apps/web/terms/index.html`);
+is the website's Terms of Service (`/terms`, `apps/web/terms/index.html`);
 the launch window and `/train` ask people to agree to it with a link.
 
 ## When something is sent

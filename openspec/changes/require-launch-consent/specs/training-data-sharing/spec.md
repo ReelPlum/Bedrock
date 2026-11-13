@@ -6,7 +6,7 @@
 
 With `LAUNCH_GATE` on and a safe server address built in, the web app
 SHALL show the gate (a modal dialog with the invite code, an optional
-writing hand, and a tick box to agree to the Terms of service, linked to
+writing hand, and a tick box to agree to the Terms of Service, linked to
 the website's `/terms` page) as soon as it starts, whenever there is no
 consent to the current version (3) with a code, or the server has turned
 the code down. It SHALL NOT close without agreeing. The code SHALL be
@@ -42,11 +42,11 @@ address built in, the app opens without the gate.
 <!-- test-js: apps/web/tests/launch-gate.test.mjs :: consent given to the version 2 text is asked for again, keeping the code and the contributor id -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: consent given to an older consent text is asked for again -->
 
-#### Scenario: Terms of service
+#### Scenario: Terms of Service
 - **GIVEN** the website's `/terms` page, the gate and `/train`
 - **WHEN** they are shown
 - **THEN** `/terms` says what is sent and why and names the consent version people agree to; the gate and `/train` ask to agree to it with a link instead of showing the text; agreeing on `/train` also turns "Send every word" on, and "Stop saving" there brings the gate back
-<!-- test-js: apps/web/tests/launch-gate.test.mjs :: the Terms of service page says what is sent, and /train agrees to it too, turning on "Send every word" -->
+<!-- test-js: apps/web/tests/launch-gate.test.mjs :: the Terms of Service page says what is sent, and /train agrees to it too, turning on "Send every word" -->
 
 #### Scenario: Several windows
 - **GIVEN** the app open in two windows

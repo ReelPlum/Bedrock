@@ -69,8 +69,8 @@ test('the app asks for the invite code and consent at once, and cannot be used u
   const { ctx, server } = await context();
   const { page, errors } = await openApp(ctx);
   assert.equal(await gateOpen(page), true, 'shown at launch');
-  assert.equal(await page.getAttribute('#launch-gate a', 'href'), `${env.url}terms/`, 'the box agrees to the Terms of service, linked');
-  assert.match(await page.textContent('.gate-agree'), /I agree to the Terms of service/);
+  assert.equal(await page.getAttribute('#launch-gate a', 'href'), `${env.url}terms/`, 'the box agrees to the Terms of Service, linked');
+  assert.equal((await page.textContent('.gate-agree')).trim(), 'I agree to the Terms of Service');
   // Escape does not close it, and the app behind cannot be clicked.
   await page.keyboard.press('Escape');
   assert.equal(await gateOpen(page), true, 'Escape does not close it');
@@ -159,7 +159,7 @@ test('consent given to the version 2 text is asked for again, keeping the code a
   await ctx.close();
 });
 
-test('the Terms of service page says what is sent, and /train agrees to it too, turning on "Send every word"', async () => {
+test('the Terms of Service page says what is sent, and /train agrees to it too, turning on "Send every word"', async () => {
   const { ctx } = await context();
   const terms = await ctx.newPage();
   await terms.goto(`${env.url}terms/`);

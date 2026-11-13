@@ -15,9 +15,9 @@ people may never open (`/train`), and "Send every word" is off by default.
   else. It cannot be closed without agreeing, and the app behind it cannot
   be used. The code is checked with the server (`GET /v1/stats`, which
   needs a code and changes nothing) before it is accepted.
-- **Terms of service.** What is sent and why moves to a `/terms` page on
+- **Terms of Service.** What is sent and why moves to a `/terms` page on
   the website (`apps/web/terms/`). The gate and `/train` ask people to tick
-  "I agree to the Terms of service", with a link, instead of showing the
+  "I agree to the Terms of Service", with a link, instead of showing the
   text (Frederik, 2026-11-13: "Make it a terms of service link instead.
   And have a /terms page on the website", "have the user agree to the
   terms of service instead"). Inside Obsidian the link opens the public
