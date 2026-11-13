@@ -29,9 +29,11 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {(target: string, sourcePath: string) => void} o.openLink
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
  * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
+ * @param {{ job: (name: string, fn: () => any) => any }} [o.perf]  times reads, writes and index updates (perf.js)
  * @param {() => void} [o.onReady]
  */
-export function createSession({ vault, file, indexer, kv, pickNote, openLink, copyLink, sendReport, onReady }) {
+export function createSession({ vault, file, indexer, kv, pickNote, openLink, copyLink, sendReport, onReady, perf }) {
+  const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // mtime of our own last write, to tell our saves from outside changes.
   let ownMtime = null;
   let writing = Promise.resolve();
@@ -44,7 +46,7 @@ export function createSession({ vault, file, indexer, kv, pickNote, openLink, co
       ready: async () => { onReady?.(); return true; },
       read: async () => {
         const f = file();
-        const data = await vault.readBinary(f);
+        const data = await job('read', () => vault.readBinary(f));
         return { name: f.basename, created: f.stat.ctime, modified: f.stat.mtime, data };
       },
       write: async ({ data }) => {
@@ -54,14 +56,14 @@ export function createSession({ vault, file, indexer, kv, pickNote, openLink, co
         inFlight++;
         writing = writing.catch(() => {}).then(async () => {
           try {
-            await vault.modifyBinary(f, buf);
+            await job('write', () => vault.modifyBinary(f, buf));
             ownMtime = f.stat.mtime;
           } finally {
             inFlight--;
           }
           // Keep search and links in step with the handwriting, including
           // corrections the writer made to what was read.
-          await indexer?.update(f.path, buf).catch((e) => console.warn('Bedrock: index not updated', e));
+          await job('index', () => indexer?.update(f.path, buf))?.catch((e) => console.warn('Bedrock: index not updated', e));
         });
         await writing;
         return true;

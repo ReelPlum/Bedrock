@@ -10,7 +10,10 @@
 //   * after that: a quiet "Something went wrong" notice with Details, at
 //     most once a minute, that never covers the canvas;
 //   * Share opens `report-panel.js`, which shows the exact report and sends
-//     it only when the person presses Send.
+//     it only when the person presses Send;
+//   * moments Bedrock was slow (`perf.js`) are logged here too, as kind
+//     `slow`, and after 3 in 5 minutes a quiet "Bedrock seems slow" notice
+//     offers Details (not when the person lets them be sent automatically).
 //
 // No note content is collected on purpose: only error messages and stacks,
 // with every folder and address cut down to the file name. The log lives in
@@ -24,7 +27,15 @@
   const MAX_STACK = 4000;
   const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
   const NOTICE_EVERY_MS = 60_000;
-  const KINDS = ['error', 'rejection', 'panic', 'worker', 'shown'];
+  const KINDS = ['error', 'rejection', 'panic', 'worker', 'shown', 'slow'];
+  const SLOW_WHATS = ['latency', 'stutter', 'slow_tap', 'long_job'];
+  // The same kind of slow moment within this time adds to one entry.
+  const SLOW_MERGE_MS = 30_000;
+  // The slow notice: after this many episodes within the window, at most
+  // once per SLOW_NOTICE_EVERY_MS.
+  const SLOW_NOTICE_AFTER = 3;
+  const SLOW_WINDOW_MS = 5 * 60_000;
+  const SLOW_NOTICE_EVERY_MS = 10 * 60_000;
   const here = document.currentScript?.src || location.href;
   const ready = () => !!(window.bedrock?.ready || window.trainer?.ready || window.setup?.ready);
 
@@ -63,7 +74,8 @@
       const v = JSON.parse(localStorage.getItem(KEY) || '{}');
       const cutoff = Date.now() - KEEP_MS;
       return Array.isArray(v.entries)
-        ? v.entries.filter((e) => e && KINDS.includes(e.kind) && typeof e.message === 'string' && e.at > cutoff).slice(-MAX_ENTRIES)
+        ? v.entries.filter((e) => e && KINDS.includes(e.kind) && typeof e.message === 'string' && e.at > cutoff
+          && (e.kind !== 'slow' || (SLOW_WHATS.includes(e.what) && Number.isFinite(e.ms)))).slice(-MAX_ENTRIES)
         : [];
     } catch (_) { return []; }
   }
@@ -74,6 +86,8 @@
   }
 
   let lastNotice = 0;
+  let lastSlowNotice = 0;
+  let slowTimes = [];
 
   function messageOf(err) {
     if (err == null) return 'unknown error';
@@ -98,6 +112,47 @@
     save();
     try { window.dispatchEvent(new CustomEvent('bedrock-error', { detail: entry })); } catch (_) { /* old browser */ }
     return entry;
+  }
+
+  /** Logs a moment Bedrock was slow (from perf.js): `what` is one of
+   *  SLOW_WHATS, `ms` how long, `snapshot` what was running. The same kind
+   *  within 30 s adds to one entry, keeping the slowest moment's snapshot. */
+  function slow({ what, ms, message, snapshot } = {}) {
+    if (!SLOW_WHATS.includes(what) || !Number.isFinite(ms)) return null;
+    const now = Date.now();
+    const msg = scrub(message || what, MAX_MESSAGE);
+    const ms0 = Math.max(0, Math.round(ms));
+    let entry = null;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (now - e.at >= SLOW_MERGE_MS) break;
+      if (e.kind === 'slow' && e.what === what && e.message === msg) { entry = e; break; }
+    }
+    if (entry) {
+      entry.count += 1;
+      if (ms0 > entry.ms) {
+        entry.ms = ms0;
+        if (snapshot) entry.snapshot = snapshot; else delete entry.snapshot;
+      }
+    } else {
+      entry = { kind: 'slow', message: msg, what, ms: ms0, at: now, count: 1 };
+      if (snapshot) entry.snapshot = snapshot;
+      entries.push(entry);
+      if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES);
+    }
+    save();
+    try { window.dispatchEvent(new CustomEvent('bedrock-slow', { detail: entry })); } catch (_) { /* old browser */ }
+    slowTimes = slowTimes.filter((t) => now - t < SLOW_WINDOW_MS);
+    slowTimes.push(now);
+    if (slowTimes.length >= SLOW_NOTICE_AFTER && now - lastSlowNotice >= SLOW_NOTICE_EVERY_MS && ready() && !autoOn()) {
+      if (notice('Bedrock seems slow.')) lastSlowNotice = now;
+    }
+    return entry;
+  }
+
+  /** The person lets slow moments be sent by themselves (perf.js). */
+  function autoOn() {
+    try { return JSON.parse(localStorage.getItem('bedrock.perf.v1') || '{}').auto === true; } catch (_) { return false; }
   }
 
   function style() {
@@ -168,17 +223,18 @@
     return box;
   }
 
-  /** A quiet note that something went wrong, at most once a minute. */
-  function notice() {
+  /** A quiet note that something went wrong, at most once a minute.
+   *  Returns whether it was shown. */
+  function notice(message = 'Something went wrong.') {
     const now = Date.now();
-    if (now - lastNotice < NOTICE_EVERY_MS || document.querySelector('.bx-notice')) return;
+    if (now - lastNotice < NOTICE_EVERY_MS || document.querySelector('.bx-notice')) return false;
     lastNotice = now;
     style();
     const n = document.createElement('div');
     n.className = 'bx-notice';
     n.setAttribute('role', 'status');
     const text = document.createElement('span');
-    text.textContent = 'Something went wrong.';
+    text.textContent = message;
     const details = document.createElement('button');
     details.type = 'button';
     details.textContent = 'Details';
@@ -192,6 +248,7 @@
     n.append(text, details, close);
     document.body.append(n);
     setTimeout(() => n.remove(), 12_000);
+    return true;
   }
 
   function caught(kind, err, stack) {
@@ -235,6 +292,7 @@
     panic: (message) => record('panic', message, { stack: '' }),
     /** A worker that failed. */
     worker: (name, e) => caught('worker', `${name}: ${messageOf(e?.error ?? e?.message ?? e)}`, e?.error?.stack),
+    slow,
     fatal,
     open,
     clear() { entries.length = 0; save(); },

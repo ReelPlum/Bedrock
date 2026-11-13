@@ -37,7 +37,8 @@ panics to the console.
 
 ## Data formats
 
-**Report** (`bedrock-error-report`, version 1), JSON, at most 64 KB. The
+**Report** (`bedrock-error-report`, version 1, or version 2 when it holds
+moments Bedrock was slow; see the `performance` spec), JSON, at most 64 KB. The
 fields and limits are the backend's `error-reports` spec: `format`,
 `version`, `id` (UUID v7 made on the device), `app` (`web` or `obsidian`),
 `app_version`, `device` (coarse class), `browser` (engine and major version
