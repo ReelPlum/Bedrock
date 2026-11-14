@@ -9,15 +9,17 @@ the Files app, see `docs/icloud.md`). The file format itself is
 
 ## Data formats
 
-The on-device library is IndexedDB database `bedrock`, version 2:
+The on-device library is IndexedDB database `bedrock`, version 3:
 
 | Store | Record |
 |---|---|
 | `notes` (key `id`, index `modified`) | `{ id, title, created, modified, folder, data }`; `data` is the note's `.bedrock` bytes; `folder` is a folder id, or null or missing for the top. |
 | `folders` (key `id`, added in version 2) | `{ id, name, parent, created }`; `parent` is a folder id or null. |
+| `meta` (key `id`, added in version 3) | `{ id, title, created, modified, folder }` of each note in `notes`, written with it in one transaction, so the list never reads note files. |
 | `kv` | Small app state, keyed by name, such as `camera:<note id>` (the view of each note). |
 
 A record without `folder` (written before version 2) is a note at the top.
+Opening a version 2 database copies every note's metadata into `meta`.
 
 ## Requirements
 
@@ -75,3 +77,32 @@ the `.bedrock` file itself, so the main thread never serialises the note.
 - **WHEN** the app opens
 - **THEN** they are listed at the top and nothing is lost
 <!-- test-js: apps/web/tests/folders.test.mjs :: notes saved before folders existed are kept, at the top -->
+
+### Requirement: The notes list SHALL read only metadata, and databases from before SHALL keep working
+
+#### Scenario: A version 2 database
+- **GIVEN** a database written before the `meta` store, with notes in a folder and at the top
+- **WHEN** the app opens it, lists, moves and deletes
+- **THEN** every note is listed with its metadata, its record and bytes are untouched, and moving and deleting keep the list and the notes in step
+<!-- test-js: apps/web/tests/folders.test.mjs :: notes saved before the metadata store (database version 2) are listed, moved and deleted with their files untouched -->
+
+### Requirement: The app SHALL ask the browser to keep its storage
+
+After the first save of a page load (never at start, where Firefox would
+show a prompt), the app asks for persistent storage once, so the notes and
+the cached recognition models are not cleared under storage pressure or by
+Safari's seven-day rule.
+
+#### Scenario: Persistent storage
+- **GIVEN** a browser that has, or has not, kept storage already, or has no storage manager
+- **WHEN** the app asks
+- **THEN** it asks only when not kept yet, and never throws
+<!-- test-js: apps/web/tests/storage.test.mjs :: the browser is asked to keep storage, once kept it is not asked again, and nothing throws -->
+
+### Requirement: Notes that leave the device SHALL be compressed harder, without changing them
+
+#### Scenario: The library export
+- **GIVEN** notes in folders
+- **WHEN** the library is exported
+- **THEN** each note inside is stored as a whole `.bedrock` (with `points.bin`), not deflated a second time
+<!-- test-js: apps/web/tests/folders.test.mjs :: export: the library becomes folders of notes, each with its Obsidian sidecar -->

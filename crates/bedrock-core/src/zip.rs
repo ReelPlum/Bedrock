@@ -18,7 +18,14 @@ use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 /// Fast compression: autosave runs after every stroke, and level 2 is several
 /// times faster than the default 6 for only slightly larger files.
-const DEFLATE_LEVEL: i64 = 2;
+pub const SAVE_LEVEL: i64 = 2;
+
+/// Deflate for a file that leaves the device (Save to Files, the library
+/// export): about a tenth smaller than [`SAVE_LEVEL`], and any unzip tool
+/// still opens it. Entry contents are the same bytes either way. Level 9
+/// is only 1% smaller again but twice as slow (a 9 MB page: 2.2 s at 6,
+/// 4.4 s at 9, natively).
+pub const SHARE_LEVEL: i64 = 6;
 
 #[derive(Debug, PartialEq)]
 pub struct ZipError(pub String);
@@ -34,22 +41,28 @@ pub fn crc32(data: &[u8]) -> u32 {
     crc32fast::hash(data)
 }
 
-/// Write files (name, bytes) into a ZIP archive, deflating each. A name
-/// that ends in `/` is a folder.
+/// Write files (name, bytes) into a ZIP archive, deflating each at
+/// [`SAVE_LEVEL`]. A name that ends in `/` is a folder.
 pub fn write(files: &[(&str, &[u8])]) -> Vec<u8> {
+    write_at(files, SAVE_LEVEL)
+}
+
+/// [`write`] at a deflate level from 1 (fastest) to 9 (smallest).
+pub fn write_at(files: &[(&str, &[u8])], level: i64) -> Vec<u8> {
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
     // 1980-01-01 00:00, the earliest a ZIP can say; we deliberately don't
     // embed clock time.
     let base = SimpleFileOptions::default().last_modified_time(DateTime::default()).unix_permissions(0o644);
     for (name, data) in files {
-        // Pictures are compressed already: deflating megabytes again on
-        // every autosave would only cost time.
-        let packed =
-            [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"].iter().any(|e| name.to_ascii_lowercase().ends_with(e));
+        // Pictures, and notes inside a library export, are compressed
+        // already: deflating them again would only cost time.
+        let packed = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bedrock"]
+            .iter()
+            .any(|e| name.to_ascii_lowercase().ends_with(e));
         let options = if packed || data.is_empty() {
             base.compression_method(CompressionMethod::Stored)
         } else {
-            base.compression_method(CompressionMethod::Deflated).compression_level(Some(DEFLATE_LEVEL))
+            base.compression_method(CompressionMethod::Deflated).compression_level(Some(level))
         };
         // Writing into memory cannot fail; a name the format cannot hold
         // (longer than 65 535 bytes) is left out rather than panicking.
@@ -63,6 +76,28 @@ pub fn write(files: &[(&str, &[u8])]) -> Vec<u8> {
         }
     }
     zip.finish().map(Cursor::into_inner).unwrap_or_default()
+}
+
+/// The same archive written again at `level`: every entry keeps its name,
+/// order and exact bytes, only the compression changes. An archive that is
+/// damaged, or holds anything [`read`] does not give back whole (a folder
+/// entry, a damaged entry), is returned unchanged, so repacking never loses
+/// a byte of content.
+pub fn repack(bytes: &[u8], level: i64) -> Vec<u8> {
+    let Ok(archive) = ZipArchive::new(Cursor::new(bytes)) else { return bytes.to_vec() };
+    let entries = archive.len();
+    match read(bytes) {
+        Ok((files, problems)) if problems.is_empty() && files.len() == entries => {
+            let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+            let out = write_at(&refs, level);
+            // Only if it reads back to exactly the same entries.
+            match read(&out) {
+                Ok((again, p)) if p.is_empty() && again == files => out,
+                _ => bytes.to_vec(),
+            }
+        }
+        _ => bytes.to_vec(),
+    }
 }
 
 /// `(name, bytes)` for each entry.
@@ -166,6 +201,36 @@ mod tests {
         let (files, problems) = read(&z).unwrap();
         assert!(problems.is_empty());
         assert_eq!(files, vec![("School/a.txt".to_string(), b"hi".to_vec())]);
+    }
+
+    #[test]
+    fn repacking_keeps_every_entry_byte_for_byte_and_is_smaller() {
+        let text: String = (0..4000).map(|i| format!("{:.3},", (i as f64 * 0.37).sin() * 100.0)).collect();
+        let files: [(&str, &[u8]); 3] =
+            [("note.json", text.as_bytes()), ("images/a.png", b"\x89PNG raw"), ("preview.svg", text.as_bytes())];
+        let fast = write(&files);
+        let small = repack(&fast, SHARE_LEVEL);
+        assert!(small.len() < fast.len(), "{} < {}", small.len(), fast.len());
+        assert_eq!(read(&small).unwrap(), read(&fast).unwrap());
+        assert_eq!(repack(&fast, SHARE_LEVEL), small, "the same bytes every time");
+    }
+
+    #[test]
+    fn repacking_never_drops_what_it_cannot_read_back() {
+        let mut z = write(&[("a.txt", b"hello world, hello world"), ("b.txt", b"fine")]);
+        z[40] ^= 0xFF;
+        assert_eq!(repack(&z, SHARE_LEVEL), z, "a damaged archive is left as it is");
+        let with_folder = write(&[("School/", b""), ("School/a.txt", b"hi")]);
+        assert_eq!(repack(&with_folder, SHARE_LEVEL), with_folder, "folder entries are kept");
+        assert_eq!(repack(b"not a zip", SHARE_LEVEL), b"not a zip");
+    }
+
+    #[test]
+    fn notes_inside_a_library_export_are_stored_not_compressed_again() {
+        let note = write(&[("note.json", b"{}")]);
+        let z = write(&[("School/Physics.bedrock", &note)]);
+        let mut a = ZipArchive::new(Cursor::new(&z[..])).unwrap();
+        assert_eq!(a.by_name("School/Physics.bedrock").unwrap().compression(), CompressionMethod::Stored);
     }
 
     /// A `.bedrock` written by the hand-written ZIP code this module

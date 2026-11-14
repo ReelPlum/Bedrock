@@ -5,9 +5,17 @@
 // is a folder id, or null at the top). A note names its folder in `folder`
 // (null or missing: the top). An export turns them into real directories
 // (library.js).
+//
+// Version 3: `meta` holds each note's { id, title, created, modified, folder }
+// beside its record in `notes` (which also has the file bytes, `data`), so
+// the notes list and folder deletes never read every note's file. Both are
+// written in one transaction. Opening a version 2 database copies the
+// metadata of every note into `meta`; `notes` records are not changed.
 
 const DB_NAME = 'bedrock';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+
+const metaOf = ({ id, title, created, modified, folder }) => ({ id, title, created, modified, folder: folder || null });
 
 function req(r) {
   return new Promise((resolve, reject) => {
@@ -36,6 +44,17 @@ export class NoteStore {
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
       // Version 2: folders. Notes saved before have no `folder`: the top.
       if (!db.objectStoreNames.contains('folders')) db.createObjectStore('folders', { keyPath: 'id' });
+      // Version 3: metadata beside the notes, copied from the notes there.
+      if (!db.objectStoreNames.contains('meta')) {
+        const meta = db.createObjectStore('meta', { keyPath: 'id' });
+        const cursor = r.transaction.objectStore('notes').openCursor();
+        cursor.onsuccess = () => {
+          const c = cursor.result;
+          if (!c) return;
+          meta.put(metaOf(c.value));
+          c.continue();
+        };
+      }
     };
     const store = new NoteStore();
     store.db = await req(r);
@@ -48,10 +67,8 @@ export class NoteStore {
 
   /** Metadata for all notes, newest first (without the note bytes). */
   async list() {
-    const all = await req(this._tx('notes').getAll());
-    return all
-      .map(({ id, title, created, modified, folder }) => ({ id, title, created, modified, folder: folder || null }))
-      .sort((a, b) => b.modified - a.modified);
+    const all = await req(this._tx('meta').getAll());
+    return all.map(metaOf).sort((a, b) => b.modified - a.modified);
   }
 
   async get(id) {
@@ -60,8 +77,9 @@ export class NoteStore {
 
   /** note: { id, title, created, modified, folder, data: Uint8Array (.bedrock) } */
   async put(note) {
-    const tx = this.db.transaction('notes', 'readwrite');
+    const tx = this.db.transaction(['notes', 'meta'], 'readwrite');
     tx.objectStore('notes').put(note);
+    tx.objectStore('meta').put(metaOf(note));
     await new Promise((resolve, reject) => {
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
@@ -70,15 +88,22 @@ export class NoteStore {
   }
 
   async remove(id) {
-    await req(this._tx('notes', 'readwrite').delete(id));
+    const tx = this.db.transaction(['notes', 'meta'], 'readwrite');
+    tx.objectStore('notes').delete(id);
+    tx.objectStore('meta').delete(id);
+    await done(tx);
   }
 
   /** Put a note in a folder (null: the top). */
   async move(id, folder) {
-    const tx = this.db.transaction('notes', 'readwrite');
+    const tx = this.db.transaction(['notes', 'meta'], 'readwrite');
     const notes = tx.objectStore('notes');
     const rec = await req(notes.get(id));
-    if (rec) notes.put({ ...rec, folder: folder || null });
+    if (rec) {
+      const moved = { ...rec, folder: folder || null };
+      notes.put(moved);
+      tx.objectStore('meta').put(metaOf(moved));
+    }
     await done(tx);
   }
 
@@ -95,9 +120,10 @@ export class NoteStore {
   /** Delete a folder with the folders and notes inside it, in one go.
    *  Returns the ids of the notes deleted. */
   async removeFolder(id) {
-    const tx = this.db.transaction(['folders', 'notes'], 'readwrite');
+    const tx = this.db.transaction(['folders', 'notes', 'meta'], 'readwrite');
     const folders = tx.objectStore('folders');
     const notes = tx.objectStore('notes');
+    const meta = tx.objectStore('meta');
     const all = await req(folders.getAll());
     const gone = new Set([id]);
     for (let grew = true; grew;) {
@@ -105,8 +131,8 @@ export class NoteStore {
       for (const f of all) if (!gone.has(f.id) && gone.has(f.parent)) { gone.add(f.id); grew = true; }
     }
     const deleted = [];
-    for (const n of await req(notes.getAll())) {
-      if (n.folder && gone.has(n.folder)) { notes.delete(n.id); deleted.push(n.id); }
+    for (const n of await req(meta.getAll())) {
+      if (n.folder && gone.has(n.folder)) { notes.delete(n.id); meta.delete(n.id); deleted.push(n.id); }
     }
     for (const f of gone) folders.delete(f);
     await done(tx);
@@ -119,6 +145,21 @@ export class NoteStore {
 
   async setKv(key, value) {
     await req(this._tx('kv', 'readwrite').put(value, key));
+  }
+}
+
+/** Ask the browser to keep this site's storage (the notes, and the cached
+ *  recognition models) instead of clearing it when space runs low or, in
+ *  Safari, after seven days without a visit. The app asks once per page
+ *  load, after the first save, never at start: Firefox shows a prompt.
+ *  Resolves to whether storage is kept; never throws. */
+export async function keepStorage(storage = globalThis.navigator?.storage) {
+  try {
+    if (!storage?.persist) return false;
+    if (storage.persisted && (await storage.persisted())) return true;
+    return !!(await storage.persist());
+  } catch (_) {
+    return false;
   }
 }
 

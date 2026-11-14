@@ -1,0 +1,14 @@
+[package]
+name = "bedrock-pdf"
+description = "PDF import for the Bedrock web app, as its own WebAssembly so the app only downloads it when a PDF is opened."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bedrock-core = { path = "../bedrock-core", features = ["pdf"] }
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"

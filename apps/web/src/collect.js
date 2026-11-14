@@ -389,12 +389,43 @@ function contributor(s) {
   };
 }
 
+/** `text` gzipped by the browser (CompressionStream), or null where it
+ *  can't. */
+export async function gzipText(text) {
+  if (typeof CompressionStream !== 'function') return null;
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Uploads are gzipped (`Content-Encoding: gzip`): a word's ink is about 2.6x
+// smaller. A backend from before gzip uploads refuses them (or a browser
+// blocks the header); when the same batch then goes through as plain JSON,
+// this page sends plain JSON from then on. A batch refused both ways is a
+// real refusal and changes nothing.
+let gzipUploads = true;
+
+/** POSTs `body` (JSON text) to `url`, gzipped when it can. Throws when
+ *  there is no connection. */
+export async function postJson(url, hdrs, body) {
+  const plain = () => fetch(url, { method: 'POST', headers: hdrs, body });
+  const packed = gzipUploads ? await gzipText(body).catch(() => null) : null;
+  if (!packed) return plain();
+  let res = null;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { ...hdrs, 'Content-Encoding': 'gzip' }, body: packed });
+    if (res.status !== 400 && res.status !== 415) return res;
+  } catch (_) { /* no connection, or the header was refused: try plain */ }
+  const again = await plain();
+  if (again.ok) gzipUploads = false;
+  return again;
+}
+
 /** Sends one batch. Returns the ids to take off the queue, or throws
  *  `{ later: true }` when it should be tried again later. */
 async function send(s, batch) {
   let res;
   try {
-    res = await fetch(`${s.api}/v1/samples`, { method: 'POST', headers: headers(s), body: JSON.stringify({ contributor: contributor(s), samples: batch }) });
+    res = await postJson(`${s.api}/v1/samples`, headers(s), JSON.stringify({ contributor: contributor(s), samples: batch }));
   } catch (_) {
     throw { later: true, problem: 'offline' };
   }
