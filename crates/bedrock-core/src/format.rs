@@ -15,6 +15,7 @@ use crate::brush::{Brush, BrushKind};
 use crate::color::Rgba;
 use crate::document::{Document, RecognizedText};
 use crate::input::InputPoint;
+use crate::points_bin;
 use crate::stroke::{InputDevice, Stroke, StrokeId};
 use crate::tessellate;
 use base64::Engine as _;
@@ -26,7 +27,14 @@ use std::f32::consts::FRAC_PI_2;
 use std::fmt;
 
 pub const FORMAT_NAME: &str = "bedrock-note";
+/// The version a bare `note.json` export and the JSON inside an SVG export
+/// are written with: every sample is in the JSON.
 pub const FORMAT_VERSION: u32 = 1;
+/// The version `note.json` inside a `.bedrock` is written with when its
+/// samples are in `points.bin` (strokes without `points`).
+pub const CONTAINER_VERSION: u32 = 2;
+/// The newest version this reader knows.
+pub const READ_VERSION: u32 = 2;
 /// Default per-point channel layout of the flat `points` array.
 pub const CHANNELS: [&str; 6] = ["x", "y", "pressure", "altitude", "azimuth", "t"];
 const METADATA_OPEN: &str = "<metadata id=\"bedrock-note\">";
@@ -98,6 +106,21 @@ pub fn to_json(doc: &Document) -> String {
 }
 
 fn json_with(doc: &Document, recognition: bool) -> String {
+    serde_json::to_string(&Value::Object(json_value(doc, recognition))).expect("json")
+}
+
+/// The decimals each channel of [`CHANNELS`] is saved with.
+const CHANNEL_DECIMALS: [u32; 6] = [POSITION_DECIMALS as u32, POSITION_DECIMALS as u32, 3, 3, 3, 1];
+
+fn json_value(doc: &Document, recognition: bool) -> Map<String, Value> {
+    json_value_with(doc, recognition, None)
+}
+
+/// The note as JSON. With `binary`, each stroke whose samples
+/// [`points_bin`] can hold exactly gets no `points`; its steps are pushed
+/// to `binary` instead, in stroke order.
+fn json_value_with(doc: &Document, recognition: bool, mut binary: Option<&mut Vec<Vec<i64>>>) -> Map<String, Value> {
+    let channels = points_channels();
     let mut root = Map::new();
     root.insert("format".into(), FORMAT_NAME.into());
     root.insert("version".into(), FORMAT_VERSION.into());
@@ -115,15 +138,21 @@ fn json_with(doc: &Document, recognition: bool) -> String {
             let mut points = Vec::with_capacity(s.points.len() * CHANNELS.len());
             for p in &s.points {
                 points.extend_from_slice(&[
-                    round(p.x, POSITION_DECIMALS),
-                    round(p.y, POSITION_DECIMALS),
-                    round(p.pressure as f64, 3),
-                    round(p.altitude as f64, 3),
-                    round(p.azimuth as f64, 3),
-                    round(p.t, 1),
+                    round(p.x, CHANNEL_DECIMALS[0] as i32),
+                    round(p.y, CHANNEL_DECIMALS[1] as i32),
+                    round(p.pressure as f64, CHANNEL_DECIMALS[2] as i32),
+                    round(p.altitude as f64, CHANNEL_DECIMALS[3] as i32),
+                    round(p.azimuth as f64, CHANNEL_DECIMALS[4] as i32),
+                    round(p.t, CHANNEL_DECIMALS[5] as i32),
                 ]);
             }
-            serde_json::to_value(StrokeJson {
+            let steps = binary.as_ref().and_then(|_| points_bin::stroke_steps(&points, &channels));
+            let in_binary = steps.is_some();
+            if let (Some(b), Some(steps)) = (binary.as_mut(), steps) {
+                b.push(steps);
+                points = Vec::new();
+            }
+            let mut v = serde_json::to_value(StrokeJson {
                 id: s.id,
                 brush: s.brush,
                 device: s.device,
@@ -132,7 +161,11 @@ fn json_with(doc: &Document, recognition: bool) -> String {
                 input_scale: round(s.input_scale, 6),
                 points,
             })
-            .expect("stroke serialises")
+            .expect("stroke serialises");
+            if in_binary {
+                v.as_object_mut().expect("a stroke is an object").remove("points");
+            }
+            v
         })
         .collect();
     root.insert("strokes".into(), strokes.into());
@@ -172,11 +205,12 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     for (k, v) in &doc.extra {
         root.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    serde_json::to_string(&Value::Object(root)).expect("json")
+    root
 }
 
-const KNOWN_KEYS: [&str; 16] = [
+const KNOWN_KEYS: [&str; 17] = [
     "format",
+    "pointsFile",
     "version",
     "title",
     "created",
@@ -207,14 +241,17 @@ pub struct Loaded {
 /// failing the whole note: recovering most of a note beats losing all of it.
 pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
     let root: Value = serde_json::from_str(json).map_err(|e| FormatError::Json(e.to_string()))?;
+    from_value(root, Vec::new(), seed)
+}
+
+fn from_value(root: Value, mut warnings: Vec<String>, seed: u64) -> Result<Loaded, FormatError> {
     let obj = root.as_object().ok_or(FormatError::NotABedrockNote)?;
     if obj.get("format").and_then(Value::as_str) != Some(FORMAT_NAME) {
         return Err(FormatError::NotABedrockNote);
     }
-    let mut warnings = Vec::new();
     let mut doc = Document::new(seed);
     if let Some(v) = obj.get("version").and_then(Value::as_u64) {
-        if v > FORMAT_VERSION as u64 {
+        if v > READ_VERSION as u64 {
             warnings.push(format!("note was written by a newer Bedrock (format {v}); unknown data is kept as-is"));
         }
     }
@@ -375,8 +412,12 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn fmt_num(v: f64) -> String {
-    let r = round(v, 2);
-    let s = format!("{r:.2}");
+    fmt_num_at(v, 2)
+}
+
+fn fmt_num_at(v: f64, decimals: usize) -> String {
+    let r = round(v, decimals as i32);
+    let s = format!("{r:.decimals$}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" {
         "0".into()
@@ -385,13 +426,19 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-fn path_data(points: &[crate::geom::Vec2]) -> String {
+/// Decimals of outline points in `preview.svg`: 0.1 world units, a tenth of
+/// a pixel at 100%, is finer than the thumbnail is ever shown, and about a
+/// fifth smaller than 2 decimals. The full SVG export keeps 2. The ink
+/// itself is in `note.json` and `points.bin`, never rounded by this.
+const PREVIEW_DECIMALS: usize = 1;
+
+fn path_data(points: &[crate::geom::Vec2], decimals: usize) -> String {
     let mut d = String::with_capacity(points.len() * 14);
     for (i, p) in points.iter().enumerate() {
         d.push_str(if i == 0 { "M" } else { "L" });
-        d.push_str(&fmt_num(p.x));
+        d.push_str(&fmt_num_at(p.x, decimals));
         d.push(' ');
-        d.push_str(&fmt_num(p.y));
+        d.push_str(&fmt_num_at(p.y, decimals));
     }
     d.push('Z');
     d
@@ -482,7 +529,8 @@ fn svg_with(doc: &Document, embed_data: bool) -> String {
                 continue;
             }
             let opacity = samples.iter().map(|s| s.opacity as f64).sum::<f64>() / samples.len() as f64;
-            let d: String = tessellate::outlines_for(s, &samples).iter().map(|o| path_data(o)).collect();
+            let decimals = if embed_data { 2 } else { PREVIEW_DECIMALS };
+            let d: String = tessellate::outlines_for(s, &samples).iter().map(|o| path_data(o, decimals)).collect();
             out.push_str(&format!("<path id=\"s{}\" d=\"{}\" fill=\"{}\"", s.id, d, s.brush.color.to_hex_rgb()));
             if opacity < 0.999 {
                 out.push_str(&format!(" fill-opacity=\"{}\"", round(opacity, 3)));
@@ -620,7 +668,9 @@ pub const IMAGES_DIR: &str = "images/";
 
 const README: &str = "This is a Bedrock note: an ordinary ZIP archive.\n\n\
 preview.svg      the note as a picture; opens in any web browser\n\
-note.json        every pen stroke with its raw samples (x, y, pressure, tilt, time)\n\
+note.json        every pen stroke: brush, times, and which channels it records\n\
+points.bin       the raw samples of those strokes (x, y, pressure, tilt, time), in a\n\
+                 small binary form described in the format document\n\
 recognized.json  text recognised from the handwriting, linked to stroke ids\n\
 links.md         the note's links as Markdown ([[Note]] and [text](https://...))\n\
 images/          pictures placed on the page, as ordinary image files\n\n\
@@ -656,9 +706,75 @@ pub fn links_markdown(doc: &Document) -> String {
     out
 }
 
-/// Note JSON without the recognition block (which goes to `recognized.json`).
-fn note_json_for_container(doc: &Document) -> String {
-    json_with(doc, false)
+/// Name of the binary samples entry in a `.bedrock` (see [`points_bin`]).
+pub const POINTS_BIN: &str = "points.bin";
+
+fn points_channels() -> Vec<points_bin::Channel> {
+    CHANNELS
+        .iter()
+        .zip(CHANNEL_DECIMALS)
+        .map(|(n, d)| points_bin::Channel { name: n.to_string(), decimals: d })
+        .collect()
+}
+
+/// Note JSON without the recognition block (which goes to `recognized.json`),
+/// and `points.bin`: each stroke's samples move from `note.json` into the
+/// binary file when every value can be stored there exactly, which is
+/// always for what Bedrock writes. A stroke whose values could not keeps
+/// them in `note.json`.
+fn note_json_for_container(doc: &Document) -> (String, Option<Vec<u8>>) {
+    let mut records = Vec::new();
+    let mut root = json_value_with(doc, false, Some(&mut records));
+    let channels = points_channels();
+    let bin = (!records.is_empty()).then(|| {
+        root.insert("version".into(), CONTAINER_VERSION.into());
+        root.insert("pointsFile".into(), POINTS_BIN.into());
+        points_bin::encode(&channels, &records)
+    });
+    (serde_json::to_string(&Value::Object(root)).expect("json"), bin)
+}
+
+/// Put the samples from `points.bin` back into the strokes of `note.json`
+/// that have none, in order, so the rest of reading is the same for every
+/// version. Problems become warnings; a stroke left without samples is then
+/// reported and skipped like any damaged stroke.
+fn attach_points(root: &mut Value, bin: Option<&[u8]>, warnings: &mut Vec<String>) {
+    let Some(obj) = root.as_object_mut() else { return };
+    let Some(file) = obj.get("pointsFile").and_then(Value::as_str).map(str::to_string) else { return };
+    let decoded = match bin.map(points_bin::decode) {
+        Some(Ok(d)) => d,
+        Some(Err(e)) => {
+            warnings.push(format!("{file} is damaged ({e}); its ink could not be read"));
+            return;
+        }
+        None => {
+            warnings.push(format!("{file} is missing; its ink could not be read"));
+            return;
+        }
+    };
+    let names: Vec<String> = match obj.get("channels") {
+        Some(c) => serde_json::from_value(c.clone()).unwrap_or_default(),
+        None => CHANNELS.iter().map(|s| s.to_string()).collect(),
+    };
+    if decoded.channels.iter().map(|c| &c.name).ne(names.iter()) {
+        warnings.push(format!("{file} does not match the channels in note.json; its ink could not be read"));
+        return;
+    }
+    let mut records = decoded.strokes.into_iter();
+    if let Some(Value::Array(strokes)) = obj.get_mut("strokes") {
+        for s in strokes.iter_mut().filter_map(Value::as_object_mut).filter(|s| !s.contains_key("points")) {
+            match records.next() {
+                Some(r) => {
+                    s.insert("points".into(), r.into_iter().map(Value::from).collect::<Vec<_>>().into());
+                }
+                None => break,
+            }
+        }
+    }
+    let left = records.count();
+    if left > 0 {
+        warnings.push(format!("{file} holds {left} more strokes than note.json names; they were left out"));
+    }
 }
 
 /// SVG preview without the embedded data (the container already has it).
@@ -669,19 +785,32 @@ pub fn to_preview_svg(doc: &Document) -> String {
 /// Write a `.bedrock` file (ZIP: note.json, recognized.json, links.md,
 /// preview.svg, README.txt).
 pub fn to_bedrock(doc: &Document) -> Vec<u8> {
-    let note = note_json_for_container(doc);
+    to_bedrock_at(doc, crate::zip::SAVE_LEVEL)
+}
+
+/// [`to_bedrock`] compressed for a file that leaves the device: the same
+/// entries, a little smaller, slower to write.
+pub fn to_bedrock_for_sharing(doc: &Document) -> Vec<u8> {
+    to_bedrock_at(doc, crate::zip::SHARE_LEVEL)
+}
+
+fn to_bedrock_at(doc: &Document, level: i64) -> Vec<u8> {
+    let (note, points) = note_json_for_container(doc);
     let rec = recognition_json(doc);
     let preview = to_preview_svg(doc);
     let links = links_markdown(doc);
-    let mut files: Vec<(&str, &[u8])> = vec![
-        (NOTE_JSON, note.as_bytes()),
+    let mut files: Vec<(&str, &[u8])> = vec![(NOTE_JSON, note.as_bytes())];
+    if let Some(p) = &points {
+        files.push((POINTS_BIN, p));
+    }
+    files.extend([
         (RECOGNIZED_JSON, rec.as_bytes()),
         (LINKS_MD, links.as_bytes()),
         (PREVIEW_SVG, preview.as_bytes()),
         (README_TXT, README.as_bytes()),
-    ];
+    ]);
     files.extend(doc.used_assets());
-    crate::zip::write(&files)
+    crate::zip::write_at(&files, level)
 }
 
 /// Load any supported file: `.bedrock` (ZIP), Bedrock SVG, or note JSON.
@@ -693,7 +822,14 @@ pub fn load_bytes(bytes: &[u8], seed: u64) -> Result<Loaded, FormatError> {
     let (files, problems) = crate::zip::read(bytes).map_err(|e| FormatError::Invalid(e.to_string()))?;
     let find = |n: &str| files.iter().find(|(name, _)| name == n || name.ends_with(&format!("/{n}"))).map(|(_, d)| d);
     let mut loaded = match find(NOTE_JSON) {
-        Some(d) => from_json(&String::from_utf8_lossy(d), seed)?,
+        Some(d) => {
+            let mut root: Value =
+                serde_json::from_str(&String::from_utf8_lossy(d)).map_err(|e| FormatError::Json(e.to_string()))?;
+            let mut warnings = Vec::new();
+            let file = root.get("pointsFile").and_then(Value::as_str).map(str::to_string);
+            attach_points(&mut root, file.as_deref().and_then(&find).map(|d| d.as_slice()), &mut warnings);
+            from_value(root, warnings, seed)?
+        }
         None => {
             // note.json is damaged: fall back to the data embedded in an SVG, if any.
             let svg = find(PREVIEW_SVG).map(|d| String::from_utf8_lossy(d).into_owned());
@@ -900,10 +1036,10 @@ mod tests {
         let (files, problems) = crate::zip::read(&bytes).unwrap();
         assert!(problems.is_empty());
         let names: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec![NOTE_JSON, RECOGNIZED_JSON, LINKS_MD, PREVIEW_SVG, README_TXT]);
+        assert_eq!(names, vec![NOTE_JSON, POINTS_BIN, RECOGNIZED_JSON, LINKS_MD, PREVIEW_SVG, README_TXT]);
         let note = String::from_utf8(files[0].1.clone()).unwrap();
         assert!(!note.contains("\"recognition\""), "recognition lives in its own file");
-        let preview = String::from_utf8(files[3].1.clone()).unwrap();
+        let preview = String::from_utf8(files[4].1.clone()).unwrap();
         assert!(!preview.contains("<metadata"));
         assert_eq!(preview.matches("<path ").count(), d.len());
         let l = load_bytes(&bytes, 3).unwrap();
@@ -911,11 +1047,111 @@ mod tests {
         assert_same(&d, &l.doc);
     }
 
+    fn entry(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+        crate::zip::read(bytes).unwrap().0.into_iter().find(|(n, _)| n == name).map(|(_, d)| d)
+    }
+
+    #[test]
+    fn samples_are_kept_in_points_bin_and_come_back_bit_for_bit() {
+        let d = sample_doc();
+        let bytes = to_bedrock(&d);
+        let note: Value = serde_json::from_slice(&entry(&bytes, NOTE_JSON).unwrap()).unwrap();
+        assert_eq!(note["version"], CONTAINER_VERSION);
+        assert_eq!(note["pointsFile"], POINTS_BIN);
+        assert!(note["strokes"].as_array().unwrap().iter().all(|s| s.get("points").is_none()));
+        assert!(entry(&bytes, POINTS_BIN).is_some());
+        let l = load_bytes(&bytes, 3).unwrap();
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        // Exactly the JSON the note would write with every sample inline.
+        assert_eq!(to_json(&l.doc), to_json(&d));
+        // And the plain exports still hold every sample as JSON, version 1.
+        let plain: Value = serde_json::from_str(&to_json(&l.doc)).unwrap();
+        assert_eq!(plain["version"], FORMAT_VERSION);
+        assert!(plain.get("pointsFile").is_none());
+        assert!(plain["strokes"].as_array().unwrap().iter().all(|s| s["points"].is_array()));
+    }
+
+    #[test]
+    fn a_stroke_points_bin_cannot_hold_exactly_stays_in_note_json() {
+        let mut d = sample_doc();
+        let far = Stroke::new(
+            d.next_id(),
+            Brush::default(),
+            1.0,
+            InputDevice::Pen,
+            vec![InputPoint::new(1e14, 2.0, 0.5).at(0.0), InputPoint::new(1e14 + 1.0, 3.0, 0.5).at(4.0)],
+        );
+        let mut strokes = d.strokes().to_vec();
+        strokes.insert(1, far);
+        d.set_strokes(strokes);
+        let bytes = to_bedrock(&d);
+        let note: Value = serde_json::from_slice(&entry(&bytes, NOTE_JSON).unwrap()).unwrap();
+        let with_points: Vec<bool> =
+            note["strokes"].as_array().unwrap().iter().map(|s| s.get("points").is_some()).collect();
+        assert_eq!(with_points.iter().filter(|p| **p).count(), 1, "only the far stroke: {with_points:?}");
+        assert!(with_points[1]);
+        let l = load_bytes(&bytes, 3).unwrap();
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        assert_eq!(to_json(&l.doc), to_json(&d));
+    }
+
+    #[test]
+    fn a_damaged_points_bin_is_reported_and_never_panics() {
+        let d = sample_doc();
+        let (note, points) = note_json_for_container(&d);
+        let mut points = points.unwrap();
+        points.truncate(points.len() - 3);
+        let bytes = crate::zip::write(&[(NOTE_JSON, note.as_bytes()), (POINTS_BIN, &points)]);
+        let l = load_bytes(&bytes, 0).unwrap();
+        assert!(l.warnings.iter().any(|w| w.contains("points.bin is damaged")), "{:?}", l.warnings);
+        let missing = crate::zip::write(&[(NOTE_JSON, note.as_bytes())]);
+        let l = load_bytes(&missing, 0).unwrap();
+        assert!(l.warnings.iter().any(|w| w.contains("points.bin is missing")), "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn a_note_for_sharing_holds_the_same_entries_and_is_smaller() {
+        let mut d = sample_doc();
+        let many: Vec<Stroke> = (0..60)
+            .map(|i| {
+                let pts = (0..80)
+                    .map(|k| {
+                        InputPoint::new(i as f64 * 7.0 + (k as f64 * 0.3).sin() * 20.0, k as f64 * 1.7, 0.5)
+                            .at(k as f64 * 4.2)
+                    })
+                    .collect();
+                Stroke::new(d.next_id(), Brush::default(), i as f64 * 1000.0, InputDevice::Pen, pts)
+            })
+            .collect();
+        d.set_strokes(many);
+        let fast = to_bedrock(&d);
+        let small = to_bedrock_for_sharing(&d);
+        assert!(small.len() < fast.len(), "{} < {}", small.len(), fast.len());
+        assert_eq!(crate::zip::read(&small).unwrap(), crate::zip::read(&fast).unwrap());
+    }
+
+    #[test]
+    fn the_preview_draws_outlines_to_a_tenth_of_a_unit() {
+        let d = sample_doc();
+        let preview = String::from_utf8(entry(&to_bedrock(&d), PREVIEW_SVG).unwrap()).unwrap();
+        let d_attrs: String = preview.split(" d=\"").skip(1).map(|p| p.split('"').next().unwrap()).collect();
+        assert!(!d_attrs.is_empty());
+        assert!(
+            d_attrs
+                .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+                .all(|n| n.split('.').nth(1).is_none_or(|f| f.len() <= 1)),
+            "{d_attrs}"
+        );
+        assert!(to_svg(&d).contains('.'), "the full SVG export keeps finer outlines");
+    }
+
     #[test]
     fn damaged_recognition_never_loses_ink() {
         let d = sample_doc();
-        let note = note_json_for_container(&d);
-        let bytes = crate::zip::write(&[(NOTE_JSON, note.as_bytes()), (RECOGNIZED_JSON, b"{garbage")]);
+        let (note, points) = note_json_for_container(&d);
+        let points = points.expect("the sample has ink");
+        let bytes =
+            crate::zip::write(&[(NOTE_JSON, note.as_bytes()), (POINTS_BIN, &points), (RECOGNIZED_JSON, b"{garbage")]);
         let l = load_bytes(&bytes, 0).unwrap();
         assert_eq!(l.doc.len(), d.len());
         assert!(l.doc.recognition.is_empty());

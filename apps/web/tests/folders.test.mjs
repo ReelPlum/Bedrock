@@ -200,6 +200,44 @@ test('notes saved before folders existed are kept, at the top', async () => {
   await context.close();
 });
 
+test('notes saved before the metadata store (database version 2) are listed, moved and deleted with their files untouched', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const page = await context.newPage();
+  // A database as the app before version 3 left it: notes with their bytes, folders.
+  await page.goto(`${env.url}manifest.webmanifest`);
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const r = indexedDB.open('bedrock', 2);
+    r.onupgradeneeded = () => {
+      const s = r.result.createObjectStore('notes', { keyPath: 'id' });
+      s.createIndex('modified', 'modified');
+      r.result.createObjectStore('kv');
+      r.result.createObjectStore('folders', { keyPath: 'id' }).put({ id: 'f1', name: 'School', parent: null, created: 1 });
+      s.put({ id: 'old0000000000001', title: 'Physics', created: 1, modified: 5, folder: 'f1', data: new Uint8Array([1, 2, 3]) });
+      s.put({ id: 'old0000000000002', title: 'Shopping', created: 2, modified: 4, data: new Uint8Array([4, 5]) });
+    };
+    r.onsuccess = () => { r.result.close(); resolve(); };
+    r.onerror = () => reject(r.error);
+  }));
+  const { page: app, errors } = await openApp(env, { context });
+  const listed = await app.evaluate(async () => (await bedrock.store.list()).filter((n) => n.id.startsWith('old')));
+  assert.deepEqual(listed, [
+    { id: 'old0000000000001', title: 'Physics', created: 1, modified: 5, folder: 'f1' },
+    { id: 'old0000000000002', title: 'Shopping', created: 2, modified: 4, folder: null },
+  ]);
+  // The note records themselves are as they were, bytes and all.
+  const rec = await app.evaluate(async () => { const r = await bedrock.store.get('old0000000000001'); return { ...r, data: Array.from(r.data) }; });
+  assert.deepEqual(rec, { id: 'old0000000000001', title: 'Physics', created: 1, modified: 5, folder: 'f1', data: [1, 2, 3] });
+  // Moving and deleting keep the list and the notes in step.
+  const after = await app.evaluate(async () => {
+    await bedrock.store.move('old0000000000002', 'f1');
+    const gone = await bedrock.store.removeFolder('f1');
+    return { gone: gone.sort(), left: (await bedrock.store.list()).filter((n) => n.id.startsWith('old')), rec: await bedrock.store.get('old0000000000002') };
+  });
+  assert.deepEqual(after, { gone: ['old0000000000001', 'old0000000000002'], left: [], rec: null });
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test('export: the library becomes folders of notes, each with its Obsidian sidecar', async () => {
   const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 }, acceptDownloads: true });
   // A plain download, as on browsers without a save dialog.
@@ -235,6 +273,10 @@ test('export: the library becomes folders of notes, each with its Obsidian sidec
   // The note inside is a whole .bedrock file.
   const inner = await readZip(files.get('Forces.bedrock'));
   assert.ok(inner.has('note.json') && inner.has('recognized.json'));
+  assert.ok(inner.has('points.bin'), 'the samples are in points.bin');
+  // Stored as it is (method 0), not compressed a second time.
+  const at = zip.indexOf(Buffer.from('School/Forces.bedrock'));
+  assert.equal(zip.readUInt16LE(at - 30 + 8), 0);
   assert.deepEqual(errors, []);
   await context.close();
 });

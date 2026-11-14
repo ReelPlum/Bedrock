@@ -3,6 +3,7 @@
 // records what it is sent.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { gunzipSync } from 'node:zlib';
 import { launch, openApp, installPointerHelpers } from './helpers.mjs';
 
 let env;
@@ -21,7 +22,10 @@ async function fakeBackend(ctx) {
   await ctx.route(`${API}/**`, async (route) => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
-    const entry = { method: req.method(), path: new URL(req.url()).pathname, auth: req.headers().authorization, contributor: req.headers()['x-contributor'], body: req.postDataJSON?.() ?? null };
+    const gzipped = req.headers()['content-encoding'] === 'gzip';
+    const raw = req.postDataBuffer();
+    const sent = raw ? JSON.parse((gzipped ? gunzipSync(raw) : raw).toString()) : null;
+    const entry = { method: req.method(), path: new URL(req.url()).pathname, auth: req.headers().authorization, contributor: req.headers()['x-contributor'], gzipped, body: sent };
     server.requests.push(entry);
     const a = entry.path === '/v1/prompts'
       ? (server.prompts === 'abort' ? 'abort' : { body: server.prompts })
@@ -223,6 +227,50 @@ test('after consent a sample is queued, sent with the code, and taken off the qu
   assert.equal(JSON.stringify(body).includes('brush'), false);
   assert.equal(await waiting(page), 0);
   assert.equal(await page.textContent('#count'), '1 done');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('uploads are gzipped, and hold exactly the JSON the app would send plain', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  await settle(setup.page, () => /^On\./.test(document.getElementById('state').textContent));
+  const { page, errors } = await openTrainer(ctx);
+  await writeOne(page);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  const posts = server.requests.filter((r) => r.path === '/v1/samples');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].gzipped, true);
+  assert.equal(posts[0].body.samples.length, 1);
+  // gzip gives back the text it was given, byte for byte.
+  const text = JSON.stringify({ a: 'ü', n: [1.25, -0.5] });
+  const back = await page.evaluate(async (t) => {
+    const { gzipText } = await import('/src/collect.js');
+    const z = await gzipText(t);
+    return new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  }, text);
+  assert.equal(back, text);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a backend that cannot read gzip gets the same batch as plain JSON, and plain JSON from then on', async () => {
+  const { ctx, server } = await context();
+  // As the backend before gzip uploads: the gzip bytes are not JSON.
+  server.answer = (e) => (e.gzipped ? { status: 400, body: { error: 'bad_json' } } : null);
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  await settle(setup.page, () => /^On\./.test(document.getElementById('state').textContent));
+  const { page, errors } = await openTrainer(ctx);
+  await writeOne(page);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 1);
+  await writeOne(page);
+  await settle(page, async () => (await (await import('/src/collect.js')).status()).sent === 2);
+  const posts = server.requests.filter((r) => r.path === '/v1/samples');
+  assert.deepEqual(posts.map((p) => p.gzipped), [true, false, false]);
+  assert.deepEqual(posts[1].body, posts[0].body, 'the same batch, plain');
+  assert.equal(await waiting(page), 0);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

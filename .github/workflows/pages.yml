@@ -36,7 +36,15 @@ jobs:
         with:
           path: .wasi-sdk
           key: wasi-sdk-${{ runner.os }}-${{ hashFiles('scripts/install-wasi-sdk.sh') }}
+      # binaryen's wasm-opt shrinks the WebAssembly; build-web.sh fails
+      # without it here (BEDROCK_REQUIRE_WASM_OPT) instead of skipping it.
+      - name: Install wasm-opt (binaryen)
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_123/bin" >> "$GITHUB_PATH"
       - name: Build WebAssembly
+        env:
+          BEDROCK_REQUIRE_WASM_OPT: '1'
         run: ./scripts/build-web.sh
       - name: Collect the site
         run: |

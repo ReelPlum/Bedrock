@@ -12,7 +12,7 @@ Bedrock SHALL write `.bedrock` (ZIP), `.svg` and `.json` files that open again t
 #### Scenario: A `.bedrock` file round-trips
 - **GIVEN** a note with strokes, recognised text, links and word groups
 - **WHEN** it is saved as `.bedrock` and opened again
-- **THEN** the archive holds `note.json`, `recognized.json`, `links.md`, `preview.svg` and `README.txt`
+- **THEN** the archive holds `note.json`, `points.bin`, `recognized.json`, `links.md`, `preview.svg` and `README.txt`
 - **AND** the opened note has the same strokes and no warnings
 <!-- test: bedrock_container_roundtrip -->
 
@@ -27,6 +27,58 @@ Bedrock SHALL write `.bedrock` (ZIP), `.svg` and `.json` files that open again t
 - **WHEN** either file's bytes are opened
 - **THEN** the note opens with all its strokes
 <!-- test: svg_and_json_files_load_through_load_bytes -->
+
+### Requirement: Pen samples in a `.bedrock` SHALL be stored in `points.bin`, bit for bit
+
+Inside a `.bedrock`, `note.json` is version 2 with `"pointsFile": "points.bin"`
+and the samples of its strokes are in `points.bin` (`docs/note-format.md`):
+each value as a whole number of its channel's step, the same rounding
+`note.json` uses, so nothing is rounded further. The `.json` and `.svg`
+exports stay version 1 with every sample in the JSON.
+
+#### Scenario: Samples come back bit for bit
+- **GIVEN** a note with strokes of every brush
+- **WHEN** it is saved as `.bedrock` and opened again
+- **THEN** `note.json` is version 2, its strokes have no `points`, `points.bin` is there, and the opened note writes exactly the JSON it was saved from
+<!-- test: samples_are_kept_in_points_bin_and_come_back_bit_for_bit -->
+<!-- test: values_come_back_bit_for_bit -->
+<!-- test: any_rounded_values_round_trip -->
+
+#### Scenario: A value the binary form cannot hold
+- **GIVEN** a stroke with a value that is not a whole number of steps, or too large to hold exactly
+- **WHEN** the note is saved
+- **THEN** that stroke keeps its samples in `note.json` and the others go to `points.bin`, and the note opens unchanged
+<!-- test: a_stroke_points_bin_cannot_hold_exactly_stays_in_note_json -->
+<!-- test: values_that_are_not_exact_steps_are_refused -->
+
+#### Scenario: A damaged or missing `points.bin`
+- **GIVEN** a `.bedrock` whose `points.bin` is cut short, or missing
+- **WHEN** it is opened
+- **THEN** it opens with a warning naming `points.bin`, never a crash
+<!-- test: a_damaged_points_bin_is_reported_and_never_panics -->
+<!-- test: damaged_files_are_errors_not_panics -->
+
+### Requirement: The preview SHALL be light, and a file that leaves the device SHALL be compressed harder
+
+`preview.svg` is a picture made from the ink; its outline points are kept
+to 0.1 units (the full SVG export keeps 0.01). Save to Files and the library
+export deflate at level 6 instead of autosave's 2; entry contents are the
+same bytes.
+
+#### Scenario: Preview outlines
+- **GIVEN** a note
+- **WHEN** it is saved as `.bedrock`
+- **THEN** every number in the preview's outlines has at most one decimal
+<!-- test: the_preview_draws_outlines_to_a_tenth_of_a_unit -->
+
+#### Scenario: Compressed for sharing
+- **GIVEN** a note, or a saved `.bedrock`
+- **WHEN** it is written for sharing, or repacked
+- **THEN** it is smaller and holds exactly the same entries; an archive that cannot be repacked without loss is left as it is
+<!-- test: a_note_for_sharing_holds_the_same_entries_and_is_smaller -->
+<!-- test: repacking_keeps_every_entry_byte_for_byte_and_is_smaller -->
+<!-- test: repacking_never_drops_what_it_cannot_read_back -->
+<!-- test: notes_inside_a_library_export_are_stored_not_compressed_again -->
 
 ### Requirement: Recognised text SHALL live apart from ink and SHALL never cost ink
 
@@ -121,6 +173,13 @@ one written by the version just before it (see the `data-format-changes` spec).
 - **THEN** the picture and the text box are where they were, the pen tuning is kept, and the `.bedrock` and `.svg` files give back the picture's own bytes
 <!-- test: notes_with_pictures_and_text_boxes_still_open -->
 
+#### Scenario: Notes from before `points.bin`
+- **GIVEN** a `.bedrock` written by commit 90c0a6c, with every sample in `note.json`, and every older fixture
+- **WHEN** each is opened, and saved again (now with `points.bin`) and opened
+- **THEN** it opens without warnings with every sample, and comes back writing exactly the same JSON
+<!-- test: notes_from_before_points_bin_still_open_and_resave_bit_for_bit -->
+<!-- test: every_old_note_resaves_with_points_bin_bit_for_bit -->
+
 ### Requirement: Pictures and text boxes SHALL be stored as plain files and plain text
 
 A picture SHALL be stored in the `.bedrock` archive as the original image
@@ -165,3 +224,12 @@ SHALL NOT be saved.
 <!-- test: highlighter_paths_come_first -->
 <!-- test: cdata_terminator_in_text_is_escaped -->
 <!-- test: number_formatting -->
+
+## Open source used
+
+[leb128](https://crates.io/crates/leb128) 0.2 (MIT or Apache-2.0) reads and
+writes the integers of `points.bin`: the LEB128 encoding of WebAssembly and
+DWARF, so the format names a standard any language can read. gimli-rs
+organisation, since 2016, about 90 million downloads, released June 2026.
+Pcodec, Protocol Buffers, CBOR and zstd inside the ZIP were considered; the
+reasons are in `openspec/changes/cut-bandwidth-and-storage/proposal.md`.
