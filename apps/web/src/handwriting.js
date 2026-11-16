@@ -23,6 +23,7 @@ const PAD_PX = 12;
 // progress) while a word waits is stuck: it is stopped and a fresh one
 // takes the next word.
 const HANG_MS = 60_000;
+export const WAITING_FOR_CONNECTION = 'Waiting for a connection to download the handwriting model';
 
 /** The text of the first of `urls` that can be fetched, unzipped if it is
  *  gzip, or null. Some hosts already undo the gzip (Content-Encoding), so
@@ -53,6 +54,9 @@ export class Handwriting {
     this.enabled = true;
     this.spelling = true;
     this.engine = null; // null: the built-in worker, created on first use
+    // Offline, a model that was never downloaded cannot load: the word waits
+    // (not counted as a failed try) and is read once the device is online.
+    this.online = () => globalThis.navigator?.onLine !== false;
     this.workers = new Map(); // 'all' -> the recogniser Worker
     this.pending = new Map(); // request id -> { resolve, reject }
     this.inFlight = new Set(); // word ids being recognised
@@ -184,12 +188,22 @@ export class Handwriting {
       }
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
+      if (!this.online()) {
+        this._setStatus(word.id, WAITING_FOR_CONNECTION);
+        this.onStatus({ offline: true, error: msg });
+        return;
+      }
       this.failed.set(`${quality}:${word.id}`, this._tries(quality, word.id) + 1);
       this._setStatus(word.id, `Failed: ${msg}`);
       this.onStatus({ error: msg });
     } finally {
       this.inFlight.delete(word.id);
     }
+  }
+
+  /** Back online: read the words that waited for a connection. */
+  retryWaiting() {
+    if ([...this.status.values()].includes(WAITING_FOR_CONNECTION)) this.schedule();
   }
 
   _setStatus(id, text) {

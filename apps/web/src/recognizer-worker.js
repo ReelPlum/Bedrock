@@ -22,7 +22,9 @@
 // sessions directly with greedy decoding.
 //
 // Everything runs on the device. Libraries are loaded on first use and each
-// model is downloaded once, then cached by the browser.
+// model is downloaded once, then cached by the browser: Transformers.js keeps
+// the models and its runtime in `transformers-cache`, and the service worker
+// keeps Transformers.js itself (sw.js), so reading works offline after that.
 //
 // Messages in:  { id, kind: 'text' | 'math', image: Blob, quality?: 'fast' | 'careful' }
 // Messages out: { id, text, engine } | { id, error }
@@ -48,6 +50,11 @@ const loaders = {};
 export async function libraries() {
   if (!lib) {
     lib = await import(TRANSFORMERS);
+    // Models come from the Hugging Face Hub and are kept in the browser's
+    // cache after the first download, so they load offline. There are no
+    // models on Bedrock's own host: not asking there saves a request per
+    // file, and offline it would only ever get an error.
+    if (lib.env) lib.env.allowLocalModels = false;
     const wasm = lib.env?.backends?.onnx?.wasm;
     if (wasm) wasm.numThreads = 1; // no cross-origin isolation, and less memory
   }
