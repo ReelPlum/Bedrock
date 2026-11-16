@@ -275,7 +275,13 @@ async function main() {
     onTextChanged: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); },
     onWordStatus: () => recognizerView?.update(),
     onStatus: (m) => {
-      if (m.status === 'loading' && !modelToastShown) {
+      if (m.offline) {
+        // Not an error: the model downloads once there is a connection.
+        if (!handwriting.offlineShown) {
+          handwriting.offlineShown = true;
+          toast('No connection, so handwriting is read once you are back online. Writing and saving work as usual.', 6000);
+        }
+      } else if (m.status === 'loading' && !modelToastShown) {
         modelToastShown = true;
         toast('Downloading the handwriting model. This happens once; it then runs on this device.', 6000);
       } else if (m.error && !handwriting.errorShown) {
@@ -1625,9 +1631,18 @@ async function main() {
   if (startNote && store && (await store.get(startNote))) await openNote(startNote);
   else await newNote();
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  // Offline (see the web-app-delivery spec): the service worker keeps the
+  // app's files (not inside a host, which has its own copy), the browser is
+  // asked not to clear notes and models when space runs low, and what waited
+  // for a connection goes as soon as there is one again.
+  if ('serviceWorker' in navigator && window.isSecureContext && !host) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+  if (!host) navigator.storage?.persist?.().catch(() => {});
+  window.addEventListener('online', () => {
+    handwriting.retryWaiting();
+    autoSender.flush().catch(() => {});
+  });
 
   // Handy for debugging and for the automated browser tests.
   window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
