@@ -1,10 +1,12 @@
 // Hold a handwritten word to open its menu: make it a link (or open or
 // remove one), or correct what the recogniser read. Holding a lasso
 // selection opens the same menu for the selected ink, which can also be
-// made one word (whatever the automatic word splitting thinks), duplicated
+// made one word (whatever the automatic word splitting thinks), duplicated,
+// recoloured (Color shows the writer's swatches and the + for a new one),
 // or deleted; linking or correcting a selection makes it one word first.
 
 import { LINK_TYPES, linkType } from './links.js';
+import { SwatchPicker } from './swatch-picker.js';
 
 /** How much a held stroke grows as it lifts, and how long that takes. */
 const LIFT_SCALE = 1.06;
@@ -13,7 +15,7 @@ const LIFT_MS = 160;
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback, onDuplicate } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback, onDuplicate, palette, onPaletteChange } = {}) {
     this.el = el;
     this.canvas = canvas;
     this.stage = stage;
@@ -24,6 +26,11 @@ export class WordMenu {
     // Called when the writer confirms or corrects a reading:
     // `{ strokes, kind, label, labelSource, reading, engine }`.
     this.onFeedback = onFeedback || (() => {});
+    // The writer's swatches: `palette(highlighter)` is the array of colours
+    // for highlighter or other ink (the + adds to it in place), and
+    // `onPaletteChange()` is called after it changed.
+    this.palette = palette || (() => ['#1c1c1e', '#2f6bff', '#e53935', '#2e7d32', '#8e24aa']);
+    this.onPaletteChange = onPaletteChange || (() => {});
     this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
     const $ = (id) => el.querySelector(`#${id}`);
@@ -85,6 +92,18 @@ export class WordMenu {
         this.onChange();
         this.onDuplicate();
       }
+    });
+    // Color: the writer's swatches; tapping one gives it to the selected
+    // strokes. The + picks a new colour, adds it to the swatches (one per
+    // opening, as in the toolbar) and gives it to them too.
+    $('wm-color').addEventListener('click', () => this._show('color'));
+    this._colorPalette = null;
+    new SwatchPicker($('wm-color-input'), {
+      palette: () => this._colorPalette || this.palette(false),
+      commit: (c) => {
+        this.onPaletteChange();
+        this._recolor(c);
+      },
     });
     $('wm-delete').addEventListener('click', () => {
       if (this.canvas.delete_selection()) this.onChange();
@@ -219,6 +238,7 @@ export class WordMenu {
     $('wm-ungroup').hidden = !selection?.grouped;
     $('wm-delete').hidden = !selection;
     $('wm-duplicate').hidden = !selection;
+    $('wm-color').hidden = !n;
     // Pictures only: nothing to read or link, just duplicate or delete (move and resize
     // them with the lasso).
     if (selection && !n) {
@@ -289,6 +309,8 @@ export class WordMenu {
     $('wm-main').hidden = view !== 'main';
     $('wm-link-form').hidden = view !== 'link';
     $('wm-correct-form').hidden = view !== 'correct';
+    $('wm-color-view').hidden = view !== 'color';
+    if (view === 'color') this._renderSwatches();
     if (view === 'link') {
       const l = this.word.link;
       const types = $('wm-link-type');
@@ -306,6 +328,37 @@ export class WordMenu {
       $('wm-correct-text').focus();
     }
     if (!this.el.hidden) this._place();
+  }
+
+  /** The swatches for the selection: highlighter colours when it is all
+   *  highlighter ink, else the ink colours. */
+  _renderSwatches() {
+    const sel = JSON.parse(this.canvas.selection_json());
+    const palette = this.palette(!!sel.highlighter);
+    this._colorPalette = palette;
+    const now = (sel.color || '').toLowerCase();
+    const box = this.$('wm-swatches');
+    box.replaceChildren(...palette.map((c) => {
+      const sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'swatch';
+      sw.setAttribute('role', 'radio');
+      sw.setAttribute('aria-label', `Color ${c}`);
+      sw.setAttribute('aria-checked', String(c.toLowerCase() === now));
+      const dot = document.createElement('span');
+      dot.style.background = c;
+      sw.append(dot);
+      sw.addEventListener('click', () => this._recolor(c));
+      return sw;
+    }));
+    this.$('wm-color-input').value = /^#[0-9a-f]{6}$/i.test(now) ? now : palette[0] || '#1c1c1e';
+  }
+
+  /** Give the selected strokes `color` (one undo step) and close. */
+  _recolor(color) {
+    this.close();
+    if (this.canvas.recolor_selection(color)) this.onChange();
+    this.requestFrame();
   }
 
   /** Link (or unlink, with '') the word, or the whole selection. */
