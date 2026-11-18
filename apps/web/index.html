@@ -200,8 +200,16 @@
       <button type="button" id="wm-drawing">Not a word</button>
       <button type="button" id="wm-group" hidden>Make it one word</button>
       <button type="button" id="wm-ungroup" hidden>Split back into words</button>
+      <button type="button" id="wm-color" hidden>Color</button>
       <button type="button" id="wm-duplicate" hidden>Duplicate</button>
       <button type="button" id="wm-delete" class="wm-danger" hidden>Delete</button>
+    </div>
+    <div class="wm-colors" id="wm-color-view" hidden>
+      <div class="wm-swatches" id="wm-swatches" role="radiogroup" aria-label="Color for the selection"></div>
+      <label class="swatch add" id="wm-color-add" title="New colour: pick one to add it to your colours and give it to the selection">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>
+        <input type="color" id="wm-color-input" aria-label="Pick a new colour">
+      </label>
     </div>
     <form class="wm-form" id="wm-link-form" hidden novalidate>
       <select id="wm-link-type" aria-label="Link to"></select>

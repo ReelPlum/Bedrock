@@ -803,6 +803,21 @@ impl Engine {
         true
     }
 
+    /// Give the selected strokes `color` (one undo step); pictures keep
+    /// theirs. The recoloured strokes stay selected. False if no selected
+    /// stroke changed.
+    pub fn recolor_selection(&mut self, color: crate::color::Rgba) -> bool {
+        let ids = self.selection();
+        let renamed = self.doc.recolor(&ids, color);
+        if renamed.is_empty() {
+            return false;
+        }
+        let map: std::collections::HashMap<StrokeId, StrokeId> = renamed.into_iter().collect();
+        self.selection = ids.iter().map(|id| map.get(id).copied().unwrap_or(*id)).collect();
+        self.dirty = true;
+        true
+    }
+
     /// Copy the selection `offset_css` css px down and to the right of
     /// itself (one undo step) and select the copy, so it can be dragged
     /// away at once. False if nothing is selected.
@@ -1420,6 +1435,34 @@ mod tests {
         assert_eq!(e.doc.len(), 1);
         assert_eq!(e.doc.images().len(), 1);
         assert_eq!(e.doc.strokes()[0].id, a);
+    }
+
+    #[test]
+    fn recolor_selection_changes_only_selected_strokes_and_keeps_them_selected() {
+        use crate::color::Rgba;
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 100.0), (100.0, 100.0), 0.0);
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 400.0), (100.0, 400.0), 100.0);
+        let pic = e.insert_image("images/a.png", Some(vec![1]), 50.0, 50.0);
+        let (a, other) = (e.doc.strokes()[0].id, e.doc.strokes()[1].id);
+        let before = e.doc.strokes()[0].brush.color;
+        e.tool = Tool::Lasso;
+        e.select(vec![a, pic]);
+        let bounds = e.selection_bounds();
+        let blue = Rgba::rgb(0x2f, 0x6b, 0xff);
+        assert!(e.recolor_selection(blue));
+        assert_eq!(e.doc.strokes()[0].brush.color, blue);
+        assert_eq!(e.doc.strokes()[1].brush.color, before);
+        assert_eq!(e.doc.strokes()[1].id, other);
+        let sel = e.selection();
+        assert_eq!(sel.len(), 2, "the recoloured stroke and the picture stay selected");
+        assert!(sel.contains(&e.doc.strokes()[0].id) && sel.contains(&pic));
+        assert_eq!(e.selection_bounds(), bounds, "nothing moved");
+        assert!(!e.recolor_selection(blue), "already that colour");
+        e.undo();
+        assert_eq!(e.doc.strokes()[0].brush.color, before);
+        e.clear_selection();
+        assert!(!e.recolor_selection(blue), "nothing selected");
     }
 
     #[test]
