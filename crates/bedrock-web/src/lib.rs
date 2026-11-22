@@ -622,6 +622,11 @@ impl Canvas {
             "handle": handle,
             "word": word,
             "grouped": grouped,
+            // Every selected stroke is highlighter ink: its menu offers the
+            // highlighter colours.
+            // The selected strokes' colour (`#rrggbb`) when they all share one.
+            "color": common_color(doc, &set),
+            "highlighter": !ids.is_empty() && doc.strokes().iter().filter(|s| set.contains(&s.id)).all(|s| s.brush.kind == bedrock_core::brush::BrushKind::Highlighter),
         })
         .to_string()
     }
@@ -731,6 +736,16 @@ impl Canvas {
     /// Delete the selected strokes (one undo step).
     pub fn delete_selection(&mut self) -> bool {
         self.engine.delete_selection()
+    }
+
+    /// Give the selected strokes a colour (`#rrggbb`), one undo step;
+    /// pictures keep theirs and the strokes stay selected. False if the
+    /// colour is invalid or no selected stroke changed.
+    pub fn recolor_selection(&mut self, color: &str) -> bool {
+        match Rgba::parse(color) {
+            Some(c) => self.engine.recolor_selection(c),
+            None => false,
+        }
     }
 
     /// Copy the selection a little down and to the right of itself (one
@@ -1160,4 +1175,19 @@ impl NoteMirror {
     pub fn export_bedrock(&self) -> Vec<u8> {
         format::to_bedrock(self.inner.doc())
     }
+}
+
+/// The colour of some strokes as `#rrggbb` (`#rrggbbaa` if not opaque) when
+/// they all have the same one, else null.
+fn common_color(
+    doc: &bedrock_core::document::Document,
+    ids: &std::collections::HashSet<bedrock_core::stroke::StrokeId>,
+) -> serde_json::Value {
+    let mut colors = doc.strokes().iter().filter(|s| ids.contains(&s.id)).map(|s| s.brush.color);
+    let Some(first) = colors.next() else { return serde_json::Value::Null };
+    if colors.any(|c| c != first) {
+        return serde_json::Value::Null;
+    }
+    let hex = first.to_hex();
+    serde_json::Value::String(if first.a == 255 { hex[..7].to_string() } else { hex })
 }

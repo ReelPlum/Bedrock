@@ -2556,3 +2556,98 @@ test('holding a stroke lifts it: it grows around its middle and casts a shadow; 
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('lasso: Color in the selection menu shows the swatches and the +, and gives the colour to the selected strokes in one undo', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    bedrock.minimap.visible = false;
+    const c = bedrock.canvas;
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const colors = () => JSON.parse(c.export_json()).strokes.map((s) => s.brush.color.slice(0, 7));
+    const lassoAround = (id, x0, y0, x1, y1) => {
+      const loop = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0 + 2, y0 + 4]];
+      t.ev('pointerdown', id, 'pen', ...loop[0], { pressure: 0.5 });
+      for (const p of loop.slice(1)) t.ev('pointermove', id, 'pen', ...p, { pressure: 0.5 });
+      t.ev('pointerup', id, 'pen', ...loop[4], { pressure: 0 });
+    };
+    const hold = async (id, x, y) => {
+      t.ev('pointerdown', id, 'pen', x, y, { pressure: 0.5 });
+      await sleep(700);
+      t.ev('pointerup', id, 'pen', x, y, { pressure: 0 });
+      await t.frame();
+    };
+    await t.line(300, 200, 500, 200);
+    await t.line(300, 400, 500, 400);
+    const out = { before: colors() };
+    document.querySelector('[data-tool="lasso"]').click();
+    lassoAround(10, 280, 170, 520, 230); // the first line only
+    await hold(11, 400, 200);
+    out.colorShown = !$('wm-color').hidden;
+    $('wm-color').click();
+    out.viewShown = !$('wm-color-view').hidden && $('wm-main').hidden;
+    const swatches = () => [...$('wm-swatches').querySelectorAll('.swatch')];
+    out.swatches = swatches().map((s) => s.getAttribute('aria-label'));
+    out.toolbarSwatches = [...document.querySelectorAll('#colors .swatch')].map((s) => s.getAttribute('aria-label'));
+    out.checked = swatches().find((s) => s.getAttribute('aria-checked') === 'true')?.getAttribute('aria-label');
+    out.plusInMenu = $('wm-color-add').contains($('wm-color-input')) && $('word-menu').contains($('wm-color-add'));
+    swatches().find((s) => s.getAttribute('aria-label') === 'Color #e53935').click();
+    await t.frame();
+    out.menuClosed = $('word-menu').hidden;
+    out.red = colors();
+    out.stillSelected = JSON.parse(c.selection_json()).strokes.length;
+    out.brush = JSON.parse(localStorage.getItem('bedrock.settings.v1')).brushes.pen.color;
+    c.undo();
+    out.undone = colors();
+    c.redo();
+    // The +: a new colour joins the swatches and goes to the selection.
+    lassoAround(15, 280, 170, 520, 230);
+    await hold(12, 400, 200);
+    out.colorShownAgain = !$('wm-color').hidden;
+    $('wm-color').click();
+    const ci = $('wm-color-input');
+    ci.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ci.focus();
+    for (const v of ['#101010', '#00aa88']) {
+      ci.value = v;
+      ci.dispatchEvent(new Event('input'));
+      ci.dispatchEvent(new Event('change'));
+    }
+    out.whileOpen = colors();
+    ci.blur();
+    await t.frame();
+    out.picked = colors();
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1'));
+    out.saved = s.palettes.ink;
+    out.toolbarHasIt = [...document.querySelectorAll('#colors .swatch')].some((b) => b.getAttribute('aria-label') === 'Color #00aa88');
+    // Highlighter ink gets the highlighter swatches.
+    document.querySelector('[data-brush="highlighter"]').click();
+    await t.line(300, 600, 500, 600);
+    document.querySelector('[data-tool="lasso"]').click();
+    lassoAround(13, 280, 570, 520, 630);
+    await hold(14, 400, 600);
+    $('wm-color').click();
+    out.highlighterSwatches = swatches().map((b) => b.getAttribute('aria-label'));
+    $('wm-close').click();
+    return out;
+  });
+  assert.equal(r.before[0], r.before[1]);
+  assert.ok(r.colorShown, 'the selection menu has Color');
+  assert.ok(r.viewShown, 'Color shows the swatches in place of the menu');
+  assert.deepEqual(r.swatches, r.toolbarSwatches, 'the same swatches as the toolbar');
+  assert.equal(r.checked, `Color ${r.before[0]}`, 'the selection\'s colour is marked');
+  assert.ok(r.plusInMenu, 'with the + for a new colour');
+  assert.ok(r.menuClosed);
+  assert.deepEqual(r.red, ['#e53935', r.before[1]], 'only the selected stroke changes');
+  assert.equal(r.stillSelected, 1, 'and stays selected');
+  assert.equal(r.brush, r.before[0], 'the pen keeps its colour');
+  assert.deepEqual(r.undone, r.before, 'one undo');
+  assert.ok(r.colorShownAgain);
+  assert.deepEqual(r.whileOpen, ['#e53935', r.before[1]], 'nothing changes while the picker is open');
+  assert.deepEqual(r.picked, ['#00aa88', r.before[1]]);
+  assert.ok(r.saved.includes('#00aa88') && !r.saved.includes('#101010'), JSON.stringify(r.saved));
+  assert.ok(r.toolbarHasIt, 'the new swatch is in the toolbar too');
+  assert.deepEqual(r.highlighterSwatches, ['#ffe14d', '#9be37a', '#ff8fc8', '#7cc6ff', '#ffb35c'].map((c) => `Color ${c}`));
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

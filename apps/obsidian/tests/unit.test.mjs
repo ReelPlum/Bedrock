@@ -8,7 +8,7 @@ import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, i
 import { libraryFiles } from '../../web/src/library.js';
 import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
-import { installWebApp, webAppUrl } from '../src/assets.js';
+import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
 import { packWebApp } from '../build.mjs';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
@@ -391,31 +391,56 @@ test('bridge events get the app\'s answer, or null when it does not answer', asy
   assert.equal(await new HostBridge(() => null, {}).send('flush'), null, 'no iframe yet');
 });
 
-test('the web app is unpacked once per version', async () => {
-  const written = new Map();
-  const adapter = {
-    exists: async (p) => written.has(p) || [...written.keys()].some((k) => k.startsWith(`${p}/`)),
-    mkdir: async () => {},
-    read: async (p) => written.get(p),
-    write: async (p, d) => { written.set(p, d); },
-    writeBinary: async (p, d) => { written.set(p, new Uint8Array(d)); },
-    getResourcePath: (p) => `app://local/${p}?1234`,
+test('the canvas pages are written with their files handed over as blob: URLs, never loaded by address', async () => {
+  const made = [];
+  const revoked = [];
+  const urls = {
+    createObjectURL: (blob) => { made.push(blob); return `blob:test/${made.length}`; },
+    revokeObjectURL: (u) => revoked.push(u),
   };
-  const bundle = { hash: 'v1', files: { 'index.html': btoa('<p>hi</p>'), 'pkg/x.wasm': btoa('\0asm') } };
-  assert.equal(await installWebApp(adapter, 'plug/web', bundle), true);
-  assert.equal(new TextDecoder().decode(written.get('plug/web/index.html')), '<p>hi</p>');
-  assert.deepEqual([...written.get('plug/web/pkg/x.wasm')], [0, 97, 115, 109]);
-  assert.equal(await installWebApp(adapter, 'plug/web', bundle), false);
-  assert.equal(await installWebApp(adapter, 'plug/web', { ...bundle, hash: 'v2' }), true);
-  assert.equal(webAppUrl(adapter, 'plug/web', 'v2'), 'app://local/plug/web/index.html?host=obsidian&v=v2');
+  const bundle = {
+    hash: 'v1',
+    pages: { app: `<head>${GLOBALS_MARK}</head><body>${MODULE_MARK}</body>`, welcome: `<head>${GLOBALS_MARK}</head>${MODULE_MARK}` },
+    modules: { app: 'app();', welcome: 'welcome();' },
+    workers: { 'src/save-worker.js': 'save();' },
+    files: { 'pkg/bedrock_web_bg.wasm': btoa('\0asm'), 'dict/en.aff': btoa('SET UTF-8 </script>') },
+  };
+  const app = new InlineApp(bundle, { urls });
+  const html = app.page('app');
+  const assets = JSON.parse(html.match(/BEDROCK_ASSETS = (\{.*?\});/)[1]);
+  assert.deepEqual(Object.keys(assets).sort(), ['dict/en.aff', 'pkg/bedrock_web_bg.wasm', 'src/save-worker.js']);
+  assert.match(html, /BEDROCK_HOST = "obsidian"; globalThis.BEDROCK_PROBE = false;/);
+  assert.match(html, /<script type="module" src="blob:test\/\d+"><\/script><\/body>/);
+  assert.doesNotMatch(html, /bedrock:(globals|module)/);
+  const blobOf = (u) => made[Number(u.split('/').pop()) - 1];
+  const wasm = blobOf(assets['pkg/bedrock_web_bg.wasm']);
+  assert.equal(wasm.type, 'application/wasm');
+  assert.deepEqual([...new Uint8Array(await wasm.arrayBuffer())], [0, 97, 115, 109]);
+  const worker = await blobOf(assets['src/save-worker.js']).text();
+  assert.match(worker, /^globalThis\.BEDROCK_ASSETS = \{"pkg\/bedrock_web_bg\.wasm":"blob:test\/1"/, 'the worker is told where the WebAssembly is');
+  assert.ok(worker.endsWith('save();'));
+  assert.match(app.page('welcome', { probe: true }), /BEDROCK_PROBE = true;/);
+  assert.equal(made.length, 5, 'blob: URLs are made once');
+  app.revoke();
+  assert.equal(revoked.length, 5);
+  assert.throws(() => app.page('nope'), /no nope page/);
 });
 
 test('the plugin packs the current web app, host adapter and WebAssembly included', async () => {
   const b = await packWebApp();
-  for (const f of ['index.html', 'style.css', 'src/main.js', 'src/host.js', 'src/word-menu.js', 'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) {
-    assert.ok(b.files[f], `${f} is packed`);
+  assert.deepEqual(Object.keys(b.pages), ['app', 'welcome']);
+  for (const page of Object.values(b.pages)) {
+    assert.ok(page.includes(GLOBALS_MARK) && page.includes(MODULE_MARK));
+    assert.doesNotMatch(page, /<(?:script|link)[^>]+(?:src|href)="(?!https?:)/, 'nothing is loaded by its address');
   }
-  assert.ok(!Object.keys(b.files).some((f) => f.startsWith('tests/')), 'tests are not shipped');
+  assert.match(b.pages.app, /<style>[\s\S]*\.toolbar/, 'the stylesheet is inline');
+  assert.match(b.pages.app, /bedrockErrors/, 'errors.js is inline');
+  assert.match(b.modules.app, /HostStore/, 'the host adapter is bundled into the app module');
+  assert.match(b.modules.app, /BEDROCK_ASSETS/);
+  assert.doesNotMatch(b.modules.app, /^import .* from ['"]\./m, 'one module, no imports of neighbours');
+  assert.deepEqual(Object.keys(b.workers), ['src/save-worker.js', 'src/recognizer-worker.js']);
+  for (const f of ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  assert.match(b.modules.app, /bedrock_pdf_bg\.wasm/, 'PDF import finds its WebAssembly among the handed over files');
   assert.equal(b.hash, (await packWebApp()).hash, 'the version hash is stable');
 });
 
@@ -464,12 +489,6 @@ test('the canvas sends its error reports through the plugin', async () => {
   assert.deepEqual(sent, [{ id: 'x' }]);
   const none = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {} });
   await assert.rejects(none.handlers['send-report']({ report: { id: 'x' } }), /not switched on/);
-});
-
-test('the welcome page address sits next to the web app', async () => {
-  const { welcomeUrl } = await import('../src/consent.js');
-  assert.equal(welcomeUrl('app://local/v/web/index.html?host=obsidian&v=abc'), 'app://local/v/web/welcome/index.html?host=obsidian&v=abc');
-  assert.equal(welcomeUrl('/index.html'), '/welcome/index.html');
 });
 
 test('slow reads, writes and index updates are logged with what was running', async () => {

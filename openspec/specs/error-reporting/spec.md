@@ -104,7 +104,7 @@ person chose are shown but not logged.
 <!-- test-js: apps/web/tests/errors.test.mjs :: an error while writing shows a quiet notice; Details shows the report and Send sends it -->
 
 #### Scenario: Plugin problems
-- **GIVEN** the plugin fails to unpack the canvas
+- **GIVEN** the plugin runs into a problem of its own (it cannot write a note)
 - **WHEN** it tells the person
 - **THEN** the Notice has a Report button, the problem is logged, and "Report a problem with Bedrock" is a command
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: a plugin problem is shown with Report and logged; reports go out through requestUrl, from the plugin and from the canvas -->

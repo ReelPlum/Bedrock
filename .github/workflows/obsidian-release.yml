@@ -1,0 +1,84 @@
+name: Obsidian plugin release
+
+# Publishes the Obsidian plugin as a GitHub release when a plugin version is
+# tagged: `0.2.0` for a release, `0.2.0-beta.1` for a beta (a GitHub
+# pre-release, which BRAT can install). Obsidian and BRAT download main.js,
+# manifest.json and styles.css from the release whose tag is the version.
+#
+# Only the plugin makes GitHub releases in this repository. BRAT treats the
+# newest-numbered release as the plugin's latest, so a release of another
+# app would hide the plugin. See apps/obsidian/README.md, "Releasing".
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Fails before the long build if the tag and manifest.json disagree.
+      - name: Check the tag against manifest.json and versions.json
+        working-directory: apps/obsidian
+        run: node release.mjs check "$GITHUB_REF_NAME"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.130
+      - uses: actions/cache@v4
+        with:
+          path: .wasi-sdk
+          key: wasi-sdk-${{ runner.os }}-${{ hashFiles('scripts/install-wasi-sdk.sh') }}
+      # binaryen's wasm-opt shrinks the WebAssembly the plugin carries;
+      # build-web.sh fails without it here instead of skipping it.
+      - name: Install wasm-opt (binaryen)
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_123/bin" >> "$GITHUB_PATH"
+      - name: Build WebAssembly
+        env:
+          BEDROCK_REQUIRE_WASM_OPT: '1'
+        run: ./scripts/build-web.sh
+      - name: Build the plugin
+        working-directory: apps/obsidian
+        run: |
+          npm install --no-package-lock
+          npm run build
+      - name: Unit tests
+        working-directory: apps/obsidian
+        run: node --test tests/unit.test.mjs tests/release.test.mjs
+      - name: Stamp the release version into manifest.json
+        id: plan
+        working-directory: apps/obsidian
+        run: node release.mjs stamp "$GITHUB_REF_NAME" dist
+      - name: Attest the release files
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            apps/obsidian/dist/main.js
+            apps/obsidian/dist/manifest.json
+            apps/obsidian/dist/styles.css
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.plan.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}" \
+            apps/obsidian/dist/main.js apps/obsidian/dist/manifest.json apps/obsidian/dist/styles.css

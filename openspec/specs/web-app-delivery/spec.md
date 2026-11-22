@@ -41,10 +41,10 @@ opened, and the spelling dictionary only while spelling is on. Measured on
 13 November 2026: 781 KB compressed at start before, 587 KB after.
 
 #### Scenario: wasm-opt in CI
-- **GIVEN** the CI and Pages workflows
+- **GIVEN** the CI, Pages and Obsidian plugin release workflows
 - **WHEN** they build the WebAssembly
 - **THEN** they install binaryen and the build fails without `wasm-opt`
-<!-- test-js: apps/web/tests/site.test.mjs :: CI and the Pages workflow install wasm-opt and fail without it -->
+<!-- test-js: apps/web/tests/site.test.mjs :: CI, the Pages workflow and the plugin release install wasm-opt and fail without it -->
 
 #### Scenario: Only what is used is downloaded
 - **GIVEN** the app with spelling off

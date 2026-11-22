@@ -27,10 +27,17 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Registering the view
 - **GIVEN** the plugin is enabled
 - **WHEN** Obsidian loads it
-- **THEN** the `.bedrock` view, commands and settings are registered, and the packed web app is unpacked once per version
-<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: registers the .bedrock view, commands and settings, and unpacks the web app -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the web app is unpacked once per version -->
+- **THEN** the `.bedrock` view, commands and settings are registered, the web app's pages travel inside `main.js` (with both WebAssembly modules, the app's and PDF import's, which the web app downloads only when a PDF is opened), and nothing is written into the plugin folder
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: registers the .bedrock view, commands and settings, and writes nothing into the plugin folder -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: the plugin packs the current web app, host adapter and WebAssembly included -->
+
+#### Scenario: The canvas loads no files (Obsidian refuses them)
+- **GIVEN** Obsidian refuses every file request made from a page inside a view
+- **WHEN** a note or the launch gate is opened
+- **THEN** the page is written into the iframe with its stylesheet and scripts inline, its module, workers, WebAssembly and word list are handed over as `blob:` URLs, and the canvas starts, saves and reads the word list without one request
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the canvas starts inside Obsidian without loading a single file (Obsidian refuses them) -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas pages are written with their files handed over as blob: URLs, never loaded by address -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: at start, the plugin asks for the invite code and consent in a window, and closes it once agreed -->
 
 #### Scenario: New notes
 - **GIVEN** an open file

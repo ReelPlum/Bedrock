@@ -21,8 +21,8 @@ test('the Pages workflow publishes every part of the web app', () => {
 
 // Bug: build-web.sh skipped wasm-opt when it was not installed, and CI never
 // installed it, so the published WebAssembly was never optimised.
-test('CI and the Pages workflow install wasm-opt and fail without it', () => {
-  for (const name of ['pages.yml', 'ci.yml']) {
+test('CI, the Pages workflow and the plugin release install wasm-opt and fail without it', () => {
+  for (const name of ['pages.yml', 'ci.yml', 'obsidian-release.yml']) {
     const yml = readFileSync(new URL(`../../../.github/workflows/${name}`, import.meta.url), 'utf8');
     assert.match(yml, /binaryen-version_\d+-x86_64-linux\.tar\.gz/, `${name} installs binaryen`);
     assert.match(yml, /BEDROCK_REQUIRE_WASM_OPT: '1'/, `${name} requires wasm-opt`);
