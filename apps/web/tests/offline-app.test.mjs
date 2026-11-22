@@ -35,8 +35,13 @@ async function site() {
 
 async function open(page, url) {
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  // Where each error came from goes to the log, so a failure on CI names it.
+  page.on('pageerror', (e) => { errors.push(e.message); console.log(`page error: ${e.stack}`); });
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    errors.push(m.text());
+    console.log(`console error: ${m.text()} at ${JSON.stringify(m.location())}`);
+  });
   await page.goto(url);
   await page.waitForFunction(() => window.bedrock && window.bedrock.ready, null, { timeout: 20000 });
   await installPointerHelpers(page);
@@ -180,6 +185,10 @@ test('offline without the model, words wait (not given up) and are read when the
       return { text: 'hello', engine: 'fake' };
     };
   });
+  // Offline after one visit: going offline while the service worker is
+  // still downloading the app fails its install ("Failed to fetch"), which
+  // a slow CI runner showed.
+  await waitForOfflineCopy(page);
   await ctx.setOffline(true);
   const word = async () => {
     for (let k = 0; k < 4; k++) {
