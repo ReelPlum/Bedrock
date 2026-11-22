@@ -173,7 +173,7 @@
   /** Opens the panel that shows the report and sends it. */
   async function open(opts = {}) {
     try {
-      const m = await import(new URL('report-panel.js', here).href);
+      const m = window.bedrockReportPanel || await import(new URL('report-panel.js', here).href);
       return m.open({ stage: ready() ? 'running' : 'startup', ...opts });
     } catch (e) {
       // A page from two versions may not load the panel either: still let
