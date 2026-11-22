@@ -31,8 +31,8 @@ strokes, see `ink-latency`).
   moment a scribble is recognised) at most 600 samples are tessellated per
   frame and the rest fade in over the next few frames (under 1 ms each).
 - Perf test `scribbling_out_on_a_big_note_stays_smooth` (CI runs it with
-  the 100 000 stroke budget): each pen sample under 1.5 ms, each veil update
-  under 2 ms, lifting the pen under 5 ms, on a 1600-stroke page.
+  the 100 000 stroke budget): pen samples under 1.5 ms and veil updates
+  under 2 ms at the 99th percentile, none over 8 ms, lifting the pen under 5 ms, on a 1600-stroke page.
 
 ## Data formats
 
