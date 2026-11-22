@@ -56,7 +56,6 @@ export const JOB_LIMITS = {
   read: 2000,
   write: 2000,
   index: 3000,
-  unpack: 10000,
 };
 
 const MESSAGES = {

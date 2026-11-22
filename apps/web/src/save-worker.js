@@ -9,9 +9,10 @@
 //   { export: true }  also reply with the .bedrock bytes as `data`
 // Replies carry `hash` (the copy's fingerprint) or `error`.
 import init, { NoteMirror } from '../pkg/bedrock_web.js';
+import { asset } from './assets.js';
 
 let mirror = null;
-const ready = init().then(() => { mirror = new NoteMirror(); });
+const ready = init({ module_or_path: asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)) }).then(() => { mirror = new NoteMirror(); });
 
 self.onmessage = async (e) => {
   const m = e.data;
