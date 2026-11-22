@@ -9,7 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installPointerHelpers } from '../../web/tests/helpers.mjs';
+import { installPointerHelpers, withoutBuiltInApi } from '../../web/tests/helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -46,7 +46,7 @@ let server;
 let browser;
 before(async () => {
   server = await serve();
-  browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+  browser = withoutBuiltInApi(await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] }));
 });
 after(async () => { await browser?.close(); server?.close(); });
 

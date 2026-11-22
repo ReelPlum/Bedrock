@@ -104,9 +104,14 @@ The address is built into the app (`DEFAULT_API` in
 `apps/web/src/collect.js`) and people cannot change it: `/train` has no
 field for it, and a stored address is ignored. Only a page served from this
 computer (`localhost` or `127.0.0.1`, for development and the tests) may
-use a stored address instead. `DEFAULT_API` is empty until the backend is
-deployed, and until then `/train` says saving is not available yet and the
-pages are practice only.
+use a stored address instead. The address is
+`https://bedrock-collect.reelplum.workers.dev`. With an empty `DEFAULT_API`,
+`/train` says saving is not available yet and the pages are practice only.
+
+The browser tests never reach the real backend: every page they open sets
+`bedrockNoBuiltInApi` (honoured only on this computer), which acts as if no
+address were built in, and a test that needs a backend stores the address
+of a pretend one.
 
 ## Tests
 
