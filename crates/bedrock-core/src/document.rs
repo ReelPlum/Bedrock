@@ -473,6 +473,37 @@ impl Document {
         ids.iter().filter_map(|id| map.get(id).copied().or_else(|| self.image(*id).map(|i| i.id))).collect()
     }
 
+    /// Give strokes a new colour, as one undo step. Like [`Document::translate`],
+    /// recoloured strokes get new ids (so caches keyed by id draw them again)
+    /// and keep their place in the stacking order, recognised text, link and
+    /// word grouping. Strokes already that colour, pictures and unknown ids
+    /// are left alone. Returns `(old id, new id)` for each recoloured stroke.
+    pub fn recolor(&mut self, ids: &[StrokeId], color: crate::color::Rgba) -> Vec<(StrokeId, StrokeId)> {
+        let wanted: HashSet<StrokeId> = ids.iter().copied().collect();
+        let olds: Vec<(usize, Stroke)> = self
+            .strokes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| wanted.contains(&s.id) && s.brush.color != color)
+            .map(|(i, s)| (i, s.clone()))
+            .collect();
+        if olds.is_empty() {
+            return Vec::new();
+        }
+        let new_ids = self.next_ids(olds.len());
+        let (mut removed, mut added, mut renamed) = (Vec::new(), Vec::new(), Vec::new());
+        for ((i, old), id) in olds.into_iter().zip(new_ids) {
+            let mut new = old.clone();
+            new.id = id;
+            new.brush.color = color;
+            renamed.push((old.id, id));
+            removed.push((i, old));
+            added.push((i, new));
+        }
+        self.apply_and_record(Op::Replace { removed, added, renamed: renamed.clone() });
+        renamed
+    }
+
     /// Copy strokes and pictures `delta` away from where they are, as one
     /// undo step. The copies get new ids and go on top: stroke copies above
     /// all ink, picture copies above all pictures, each in the order the
@@ -981,6 +1012,50 @@ mod tests {
         assert_eq!(d.live_groups(), vec![vec![ia, ib]]);
         d.redo();
         assert_eq!(d.recognition[0].strokes, new);
+    }
+
+    #[test]
+    fn recoloring_keeps_place_text_link_and_group_in_one_undo() {
+        use crate::color::Rgba;
+        let mut d = Document::new(1);
+        let a = stroke(&mut d, 0.0);
+        let b = stroke(&mut d, 5.0);
+        let c = stroke(&mut d, 50.0);
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        let before = a.brush.color;
+        d.add_stroke(a);
+        d.add_stroke(b);
+        d.add_stroke(c);
+        d.links.push(Link {
+            strokes: vec![ia, ib],
+            target: "https://example.com".into(),
+            kind: "url".into(),
+            text: None,
+        });
+        d.group(&[ia, ib]);
+        d.take_changes();
+        let red = Rgba::rgb(0xe5, 0x39, 0x35);
+        let renamed = d.recolor(&[ia, ib], red);
+        let new: Vec<StrokeId> = renamed.iter().map(|(_, n)| *n).collect();
+        assert_eq!(renamed.iter().map(|(o, _)| *o).collect::<Vec<_>>(), vec![ia, ib]);
+        assert_eq!(
+            d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![new[0], new[1], ic],
+            "same stacking order"
+        );
+        assert_eq!(d.strokes()[0].brush.color, red);
+        assert_eq!(d.strokes()[1].brush.color, red);
+        assert_eq!(d.strokes()[2].brush.color, before, "the unselected stroke keeps its colour");
+        assert_eq!(d.links[0].strokes, new);
+        assert_eq!(d.live_groups(), vec![new.clone()]);
+        // Already that colour: nothing to do, no undo step.
+        assert!(d.recolor(&new, red).is_empty());
+        d.undo();
+        assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), vec![ia, ib, ic]);
+        assert!(d.strokes().iter().all(|s| s.brush.color == before), "one undo brings the old colours back");
+        assert_eq!(d.links[0].strokes, vec![ia, ib]);
+        d.redo();
+        assert_eq!(d.strokes()[0].brush.color, red);
     }
 
     #[test]

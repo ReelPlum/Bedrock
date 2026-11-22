@@ -5,6 +5,7 @@ import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
 import { SelectionView } from './selection-view.js';
+import { SwatchPicker } from './swatch-picker.js';
 import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
 import { NoteStore, randomSeed, newNoteId } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
@@ -315,6 +316,9 @@ async function main() {
     // with a pen, which would let go of it).
     onDuplicate: () => { if (settings.tool !== 'lasso') selectTool('lasso', { noToggle: true }); },
     requestFrame: () => input.requestFrame(),
+    // Color in the selection menu shows the toolbar's swatches.
+    palette: (highlighter) => settings.palettes[highlighter ? 'highlighter' : 'ink'],
+    onPaletteChange: () => { saveSettings(); applyTool(); },
     onFeedback: (word, info) => wordSharer.checked(word, info).catch(() => {}),
     // What the recogniser made of a word, for the word's menu.
     describe: (w) => {
@@ -833,62 +837,23 @@ async function main() {
   function setColorEditing(on) {
     colorsEl.classList.toggle('editing', on);
   }
-  // One opening of the picker makes at most one swatch. Browsers disagree on
-  // when `change` fires (Safari fires it on every move in the wheel), so the
-  // colour is only previewed while the picker is open and committed when it
-  // closes: the input loses focus, the next tap elsewhere, Escape/Enter, the
-  // page hiding, or the picker sitting still for a moment. A commit within the
-  // same opening changes the swatch it made instead of adding another.
-  const colorInput = $('color-input');
-  let pick = null; // { color: pending colour or null, palette, owned: colour of the swatch this opening made }
-  let pickTimer = 0;
-  function commitPick() {
-    clearTimeout(pickTimer);
-    if (!pick || !pick.color) return;
-    const c = pick.color.toLowerCase();
-    pick.color = null;
-    const palette = currentPalette();
-    const at = (col) => palette.findIndex((p) => p.toLowerCase() === col);
-    const mine = pick.palette === palette && pick.owned ? at(pick.owned) : -1;
-    if (at(c) >= 0) {
-      // Already a swatch: just select it, and drop the one this opening made.
-      if (mine >= 0 && at(c) !== mine) palette.splice(mine, 1);
-      pick.owned = mine >= 0 && at(c) === mine ? c : null;
-    } else if (mine >= 0) {
-      palette[mine] = c;
-      pick.owned = c;
-    } else {
-      palette.push(c);
-      pick.owned = c;
-    }
-    pick.palette = palette;
-    currentBrush().color = c;
-    saveSettings();
-    applyTool();
-  }
-  function previewPick(value) {
-    if (!pick) pick = { color: null, palette: null, owned: null };
-    pick.color = value;
-    selectTool(settings.brush, { noToggle: true });
-    currentBrush().color = value;
-    saveSettings();
-    applyTool();
-  }
-  colorInput.addEventListener('click', () => {
-    commitPick();
-    pick = { color: null, palette: null, owned: null };
-    setColorEditing(false);
+  // The + adds one swatch per opening (see swatch-picker.js); the colour
+  // previews on the brush while the picker is open.
+  new SwatchPicker($('color-input'), {
+    palette: currentPalette,
+    onOpen: () => setColorEditing(false),
+    preview: (value) => {
+      selectTool(settings.brush, { noToggle: true });
+      currentBrush().color = value;
+      saveSettings();
+      applyTool();
+    },
+    commit: (c) => {
+      currentBrush().color = c;
+      saveSettings();
+      applyTool();
+    },
   });
-  colorInput.addEventListener('input', (e) => { clearTimeout(pickTimer); previewPick(e.target.value); });
-  colorInput.addEventListener('change', (e) => {
-    previewPick(e.target.value);
-    clearTimeout(pickTimer);
-    pickTimer = setTimeout(commitPick, 700);
-  });
-  colorInput.addEventListener('blur', commitPick);
-  colorInput.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Enter') commitPick(); });
-  document.addEventListener('pointerdown', (e) => { if (e.target !== colorInput) commitPick(); }, true);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) commitPick(); });
 
   // ----- size presets: three per brush; the slider edits the selected one ------
   function renderPresets(erasing, b) {

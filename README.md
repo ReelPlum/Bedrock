@@ -51,7 +51,9 @@ crates/bedrock-core   Platform independent engine: input, brushes, geometry, era
                       undo, gestures, scene batching, the note format. Fully unit tested.
 crates/bedrock-web    WebAssembly bindings and the WebGL2 renderer.
 apps/web              The web app (HTML/CSS/JS shell around the Rust canvas) and its browser tests.
-apps/obsidian         The Obsidian plugin: runs apps/web unchanged in a view (see its README).
+apps/obsidian         The Obsidian plugin: runs apps/web unchanged in a view. Install it with
+                      BRAT from this repository (see its README, "Installing with BRAT").
+manifest.json         The Obsidian plugin manifest, with versions.json (at the root for Obsidian and BRAT).
 docs/                 Note format spec, JSON Schema, iCloud plan.
 scripts/              Build scripts.
 ```
