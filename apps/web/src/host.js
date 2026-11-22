@@ -16,7 +16,9 @@
 import { linkType } from './links.js';
 
 const params = new URLSearchParams(location.search);
-const name = params.get('host');
+// The plugin's own page has no address to carry `?host=`: it sets
+// BEDROCK_HOST instead (apps/obsidian/src/inline-app.js).
+const name = params.get('host') || globalThis.BEDROCK_HOST || null;
 
 /** A request/response channel to the parent window. */
 function channel(target) {

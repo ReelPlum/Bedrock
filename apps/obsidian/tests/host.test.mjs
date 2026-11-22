@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installPointerHelpers, withoutBuiltInApi } from '../../web/tests/helpers.mjs';
+import { packWebApp } from '../build.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -23,10 +24,14 @@ const TYPES = {
 
 /** The web app at / (and at /web/, where the plugin's sources import
  *  shared modules from), the plugin's sources under /obsidian/. */
-function serve() {
+function serve(bundle) {
   const server = createServer(async (req, res) => {
     try {
       const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+      if (path === '/bundle.json') {
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        return res.end(bundle);
+      }
       const [root, rel] = path.startsWith('/obsidian/') ? [HERE, path.slice('/obsidian'.length)]
         : path.startsWith('/web/') ? [WEB, path.slice('/web'.length)] : [WEB, path];
       let file = normalize(join(root, rel));
@@ -45,16 +50,39 @@ function serve() {
 let server;
 let browser;
 before(async () => {
-  server = await serve();
+  server = await serve(JSON.stringify(await packWebApp()));
   browser = withoutBuiltInApi(await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] }));
 });
 after(async () => { await browser?.close(); server?.close(); });
+
+/** Obsidian cancels every file request made from a page inside a view
+ *  (net::ERR_BLOCKED_BY_CLIENT): only its own window may load files. The
+ *  harness does the same, so every test runs the canvas as Obsidian lets
+ *  it. Returns what was refused. */
+async function blockLikeObsidian(page) {
+  const refused = [];
+  await page.route(`http://127.0.0.1:${server.address().port}/**`, (route) => {
+    let frame = null;
+    try { frame = route.request().frame(); } catch { /* a worker's request */ }
+    if (frame === page.mainFrame()) return route.continue();
+    refused.push(new URL(route.request().url()).pathname);
+    return route.abort('blockedbyclient');
+  });
+  return refused;
+}
+
+/** The iframe of `selector` in the harness, once it has a page. */
+async function frameOf(page, selector) {
+  const el = await page.waitForSelector(selector);
+  return el.contentFrame();
+}
 
 async function openHost() {
   const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 } });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  page.refused = await blockLikeObsidian(page);
   await page.goto(`http://127.0.0.1:${server.address().port}/obsidian/tests/harness.html`);
   await page.waitForFunction(() => window.host);
   return { page, ctx, errors };
@@ -63,7 +91,7 @@ async function openHost() {
 /** Open a vault file; returns the app's frame, with pointer helpers. */
 async function openFile(page, path) {
   await page.evaluate((p) => host.open(p), path);
-  const frame = page.frames().find((f) => f !== page.mainFrame());
+  const frame = await frameOf(page, '#frame');
   await frame.waitForFunction(() => window.bedrock?.ready, null, { timeout: 20000 });
   await installPointerHelpers(frame);
   // The recogniser reads every word as "Newtn" (no models in tests).
@@ -95,6 +123,30 @@ async function until(target, fn, arg, timeout = 10000) {
     await new Promise((r) => setTimeout(r, 50));
   }
 }
+
+// Bug: installed with BRAT, a note opened to an empty view (black on the
+// iPad; bare unstyled buttons on a Mac): Obsidian refused the canvas's
+// style.css, errors.js and main.js with net::ERR_BLOCKED_BY_CLIENT.
+test('the canvas starts inside Obsidian without loading a single file (Obsidian refuses them)', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Blocked.bedrock');
+  const state = await frame.evaluate(async () => {
+    await bedrock.handwriting.loadDictionary();
+    return {
+      styled: getComputedStyle(document.getElementById('toolbar')).position,
+      dictionary: bedrock.handwriting.dictionaryReady,
+    };
+  });
+  assert.notEqual(state.styled, 'static', 'the stylesheet is applied');
+  assert.equal(state.dictionary, true, 'the word list is read');
+  await writeWord(frame);
+  await frame.evaluate(() => bedrock.saveNow());
+  await until(page, async () => (await host.files('Blocked.bedrock')).strokes === 4);
+  assert.equal(await frame.evaluate(() => bedrock.backgroundSaving), true, 'the save worker runs');
+  assert.deepEqual(page.refused, [], 'nothing was asked of the plugin folder');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
 
 test('a new note in the vault: drawn, saved into the file, and indexed for search', async () => {
   const { page, ctx, errors } = await openHost();
@@ -372,6 +424,7 @@ async function openHostWithServer(state = null) {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  page.refused = await blockLikeObsidian(page);
   await page.goto(`http://127.0.0.1:${server.address().port}/obsidian/tests/harness.html`);
   await page.waitForFunction(() => window.host);
   return { page, ctx, errors };
@@ -381,7 +434,7 @@ test('at start, the plugin asks for the invite code and consent in a window, and
   const { page, ctx, errors } = await openHostWithServer();
   await page.evaluate(() => { window.launched = host.launch(); });
   await page.waitForSelector('#consent-window iframe');
-  const welcome = page.frames().find((f) => f.url().includes('/welcome/index.html') && !f.url().includes('probe'));
+  const welcome = await frameOf(page, '#consent-window iframe');
   await welcome.waitForFunction(() => document.getElementById('launch-gate')?.open);
   assert.equal(await welcome.getAttribute('#launch-gate a', 'href'), 'https://reelplum.github.io/Bedrock/terms/', 'inside Obsidian the terms open on the website');
   await welcome.fill('#gate-code', CODE);
@@ -396,8 +449,9 @@ test('at start, the plugin asks for the invite code and consent in a window, and
   assert.equal(s.set.shareWords, true);
   // A note opened now has no gate over it.
   await openFile(page, 'Gate.bedrock');
-  const frame = page.frames().find((f) => f.url().includes('/index.html?host=obsidian'));
+  const frame = await frameOf(page, '#frame');
   assert.equal(await frame.evaluate(() => !!document.getElementById('launch-gate')), false);
+  assert.deepEqual(page.refused, [], 'the welcome page loaded nothing from the plugin folder either');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

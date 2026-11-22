@@ -25,11 +25,19 @@ export const LAUNCH_GATE = true;
  *  Saving stays off while it is empty. */
 export const DEFAULT_API = 'https://bedrock-collect.reelplum.workers.dev';
 
+/** The host name of the server the page came from. A page that a host
+ *  wrote into its iframe (the Obsidian plugin's, `about:srcdoc`) has none
+ *  of its own: it is the host page's, which its origin tells. */
+export function pageHost(g = globalThis) {
+  if (g.location?.hostname) return g.location.hostname;
+  try { return new URL(g.origin).hostname; } catch (_) { return ''; }
+}
+
 /** Where samples go: always `DEFAULT_API`, except on a page served from
  *  this computer (development and tests), which may use a stored address,
  *  and may set `bedrockNoBuiltInApi` before the page loads to act as if
  *  no address were built in, so tests never reach the real backend. */
-export function apiAddress(stored, host = globalThis.location?.hostname) {
+export function apiAddress(stored, host = pageHost()) {
   const local = host === 'localhost' || host === '127.0.0.1';
   if (local && typeof stored === 'string' && stored) return stored;
   return local && globalThis.bedrockNoBuiltInApi === true ? '' : DEFAULT_API;
@@ -38,7 +46,7 @@ export function apiAddress(stored, host = globalThis.location?.hostname) {
  *  used: the gate is on and a safe server address is built in. A page
  *  served from this computer may switch it off (tests of the optional
  *  mode set `bedrockNoLaunchGate` before the page loads). */
-export function gateRequired(s = loadState(), host = globalThis.location?.hostname) {
+export function gateRequired(s = loadState(), host = pageHost()) {
   const local = host === 'localhost' || host === '127.0.0.1';
   if (local && globalThis.bedrockNoLaunchGate === true) return false;
   return LAUNCH_GATE && isSafeApi(s.api);
@@ -46,7 +54,7 @@ export function gateRequired(s = loadState(), host = globalThis.location?.hostna
 
 /** True when the gate has to be shown now: required, and no current
  *  consent with a code, or the server turned the code down. */
-export function gateNeeded(s = loadState(), host = globalThis.location?.hostname) {
+export function gateNeeded(s = loadState(), host = pageHost()) {
   return gateRequired(s, host) && (!isReady(s) || s.problem === 'code');
 }
 

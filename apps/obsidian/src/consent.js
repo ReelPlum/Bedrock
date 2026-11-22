@@ -5,7 +5,10 @@
 // canvas reads them: the web app's local storage. Free of Obsidian imports
 // so it can be tested on its own.
 //
-// 1. A hidden iframe loads the page with `probe`, which answers `consent`
+// The page is written into each iframe (`page(probe)`, inline-app.js), as
+// Obsidian refuses file requests from inside the app's windows.
+//
+// 1. A hidden iframe gets the page with `probe`, which answers `consent`
 //    with `{ needed }` and shows nothing.
 // 2. If needed, `open({ mount, onClose })` shows a window (an Obsidian Modal), and
 //    `mount(el)` puts the page in it. When the person agrees, the page
@@ -18,30 +21,25 @@ import { HostBridge } from './bridge.js';
 
 const PROBE_MS = 15_000;
 
-/** The address of the welcome page next to the unpacked web app. */
-export function welcomeUrl(appUrl) {
-  return appUrl.replace(/index\.html(\?|$)/, 'welcome/index.html$1');
-}
-
 /**
  * Resolves to `not-needed`, `agreed`, `closed` (the window was closed
  * without agreeing) or `no-answer` (the page did not load).
  *
  * @param {object} o
  * @param {Document} o.doc the document to put the hidden iframe in
- * @param {string} o.url the welcome page (`welcomeUrl`), with `?host=…`
+ * @param {(probe: boolean) => string} o.page the welcome page's HTML, for
+ *        an iframe's srcdoc (`probe`: only ask whether consent is needed)
  * @param {(w: { mount: (el: HTMLElement) => void, onClose: () => void }) => { close(): void }} o.open
  *        show a window: call `mount` with its content element when it
  *        opens, and `onClose` whenever it closes
  */
-export function askAtLaunch({ doc, url, open, probeMs = PROBE_MS }) {
-  const join = (extra) => `${url}${url.includes('?') ? '&' : '?'}${extra}`;
+export function askAtLaunch({ doc, page, open, probeMs = PROBE_MS }) {
   const win = doc.defaultView;
-  const frameIn = (parent, src, hidden) => {
+  const frameIn = (parent, probe, hidden) => {
     const f = doc.createElement('iframe');
     f.className = 'bedrock-welcome-frame';
     if (hidden) f.style.display = 'none';
-    f.src = src;
+    f.srcdoc = page(probe);
     parent.append(f);
     return f;
   };
@@ -70,7 +68,7 @@ export function askAtLaunch({ doc, url, open, probeMs = PROBE_MS }) {
         };
         const shown = open({
           mount: (el) => {
-            frame = frameIn(el, url, false);
+            frame = frameIn(el, false, false);
             bridge = new HostBridge(() => frame?.contentWindow, {
               consent: async ({ needed: still } = {}) => {
                 if (!still) { finish('agreed'); setTimeout(() => shown.close(), 0); }
@@ -85,6 +83,6 @@ export function askAtLaunch({ doc, url, open, probeMs = PROBE_MS }) {
       },
     });
     probeBridge.listen(win);
-    probe = frameIn(doc.body, join('probe=1'), true);
+    probe = frameIn(doc.body, true, true);
   });
 }

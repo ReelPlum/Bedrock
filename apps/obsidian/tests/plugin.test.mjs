@@ -64,22 +64,17 @@ async function loaded() {
   const env = makeApp();
   const plugin = new Plugin(env.app, { id: 'bedrock-notes', dir: '.obsidian/plugins/bedrock-notes', version: '0.1.0' });
   await plugin.onload();
-  await plugin.webAppReady;
   return { ...env, plugin };
 }
 
-test('registers the .bedrock view, commands and settings, and unpacks the web app', async () => {
+test('registers the .bedrock view, commands and settings, and writes nothing into the plugin folder', async () => {
   const { plugin, written } = await loaded();
   assert.deepEqual(Object.keys(plugin.views), ['bedrock-note']);
   assert.deepEqual(plugin.extensions, { bedrock: 'bedrock-note' });
   assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'report-problem', 'reindex']);
   assert.equal(plugin.settingTabs.length, 1);
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/index.html'), 'web app unpacked');
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/src/host.js'));
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/pkg/bedrock_web_bg.wasm'));
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/welcome/index.html'), 'the launch gate page');
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/welcome/welcome.js'));
-  assert.ok(written.get('.obsidian/plugins/bedrock-notes/web/src/consent.js'));
+  assert.deepEqual([...written.keys()], [], 'the canvas is not unpacked: Obsidian would not let the view load it');
+  for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
 });
 
 test('new notes are empty .bedrock files next to the open file, never overwriting one', async () => {

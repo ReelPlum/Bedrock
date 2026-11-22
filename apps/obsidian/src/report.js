@@ -61,7 +61,7 @@ export class ErrorLog {
   }
 }
 
-/** Times the plugin's own jobs (read, write, index, unpack); a job far
+/** Times the plugin's own jobs (read, write, index); a job far
  *  over its usual time is logged in `log` as a slow moment. */
 export function pluginWatcher(log, { mobile = false } = {}) {
   return new PerfWatcher({ record: (e) => log.slow(e), facts: () => ({ doing: mobile ? 'mobile' : 'desktop' }) });
