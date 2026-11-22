@@ -113,6 +113,50 @@ The browser tests need `../web/pkg` (run `./scripts/build-web.sh`) and
 Playwright's Chromium, like the web app's tests. `tests/harness.html` plays
 Obsidian with an in-memory vault.
 
+## Installing with BRAT
+
+Until the plugin is in Obsidian's directory, install it with
+[BRAT](https://github.com/TfTHacker/obsidian42-brat), on desktop or iPad:
+
+1. In Obsidian, Settings > Community plugins: turn off Restricted mode, then
+   Browse, find "BRAT", install and enable it.
+2. In BRAT's settings choose "Add beta plugin" (or run its command "Add a
+   beta plugin for testing") and paste `https://github.com/ReelPlum/Bedrock`.
+   Pick "Latest version" to follow new releases, or a specific version to
+   stay on it.
+3. Enable "Bedrock" under Community plugins. With BRAT's "Auto-update
+   plugins at startup" on, it updates when Obsidian starts.
+
+"Latest version" follows the newest release, betas included (BRAT is a
+beta tester's tool). Pick a specific version to stay off betas.
+
+## Releasing
+
+`manifest.json` and `versions.json` live at the repository root, where
+Obsidian and BRAT look for them; the build copies `manifest.json` into
+`dist/`. A tag publishes a release with `.github/workflows/obsidian-release.yml`:
+
+- **A release:** bump `version` in `/manifest.json`, add the same version to
+  `/versions.json` with its `minAppVersion`, merge, then tag that commit
+  with the bare version: `git tag 0.2.0 && git push origin 0.2.0`.
+- **A beta:** tag the version with a suffix, without committing it to
+  `manifest.json`: `git tag 0.2.0-beta.1 && git push origin 0.2.0-beta.1`.
+  It becomes a GitHub pre-release, and the released `manifest.json` carries
+  `0.2.0-beta.1`, as BRAT and Obsidian want the tag and the version to match.
+
+The workflow first checks the tag and manifest (`node release.mjs check
+<tag>`; the rules are tested in `tests/release.test.mjs`), then builds the
+WebAssembly and the plugin, attests the three files and publishes them.
+
+**Only the plugin makes GitHub releases in this repository.** Obsidian
+looks up the release by its exact tag, but BRAT takes the newest-numbered
+release as the plugin's latest, reading any digits in a tag as a version,
+so a GitHub release such as `web-2.0.0` would hide the plugin. Other apps
+ship elsewhere (the web app on GitHub Pages, the iPad app through the App
+Store) and may mark versions with plain git tags like `web-2.0.0` or
+`ipad-1.0.0`, which BRAT never reads. If another app ever needs downloads
+on GitHub, give it its own release repository.
+
 ## Not done yet
 
 - Tried only against these tests, not yet inside the Obsidian app on a
@@ -122,7 +166,7 @@ Obsidian with an in-memory vault.
   Obsidian differs, the note still opens, only not at the place.
 - Text read from pictures has no strokes, so it cannot be jumped to until
   the note format gives such text a picture and a box.
-- Publishing to Obsidian's plugin directory needs `manifest.json` at the root
-  of a GitHub repository: either a small release repository that CI fills
-  from `apps/obsidian/dist`, or the directory's newer source-path option.
+- Not yet in Obsidian's community plugin directory (community.obsidian.md).
+  Until then it installs with BRAT, below. Submitting needs a `LICENSE`, and
+  the directory's build check has to be able to build the WebAssembly.
 - Plugins cannot receive the Apple Pencil's double tap or squeeze.

@@ -17,6 +17,9 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB = resolve(HERE, '../web');
 const DIST = join(HERE, 'dist');
+// manifest.json lives at the repository root, where Obsidian and BRAT look
+// for it; the build copies it into dist/.
+export const MANIFEST = resolve(HERE, '../../manifest.json');
 
 // What the web app needs at runtime (no tests, service worker or manifest).
 const WEB_FILES = ['index.html', 'style.css', 'src', 'welcome', 'pkg', 'dict/en.aff', 'dict/en.dic.gz', 'icons/icon.svg'];
@@ -68,7 +71,8 @@ export async function buildPlugin({ outdir = DIST } = {}) {
       },
     }],
   });
-  for (const f of ['manifest.json', 'styles.css']) await cp(join(HERE, f), join(outdir, f));
+  await cp(MANIFEST, join(outdir, 'manifest.json'));
+  await cp(join(HERE, 'styles.css'), join(outdir, 'styles.css'));
   return { outdir, hash: bundle.hash, files: Object.keys(bundle.files).length };
 }
 
@@ -78,7 +82,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   console.log(`dist/main.js ${(size / 1e6).toFixed(1)} MB, web app ${r.hash} (${r.files} files)`);
   const i = process.argv.indexOf('--vault');
   if (i > 0) {
-    const manifest = JSON.parse(await readFile(join(HERE, 'manifest.json'), 'utf8'));
+    const manifest = JSON.parse(await readFile(MANIFEST, 'utf8'));
     const target = join(resolve(process.argv[i + 1]), '.obsidian/plugins', manifest.id);
     await mkdir(target, { recursive: true });
     for (const f of ['main.js', 'manifest.json', 'styles.css']) await cp(join(r.outdir, f), join(target, f));
