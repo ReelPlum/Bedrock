@@ -323,6 +323,34 @@ test('bug: the word menu moves above the iPad keyboard, and back when it goes', 
   await ctx.close();
 });
 
+// Bug: on the iPad, typing in a text box low on the page (here a reading in
+// "Show and correct what the recogniser reads") happened under the keyboard,
+// out of sight: only the word menu kept clear of it.
+test('bug: any text box being typed in slides into sight above the iPad keyboard, and back after', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Physics.bedrock');
+  for (let k = 0; k < 9; k++) await writeWord(frame, 300 + (k % 3) * 160, 140 + Math.floor(k / 3) * 140);
+  await frame.evaluate(async () => {
+    bedrock.recognizerView.visible = true;
+    await bedrock.recognizerView.refresh();
+  });
+  const box = () => frame.evaluate(() => {
+    const inputs = [...document.querySelectorAll('#recognizer-view .rv-text')];
+    return { n: inputs.length, bottom: inputs.at(-1).getBoundingClientRect().bottom };
+  });
+  const before = await box();
+  assert.ok(before.n >= 6 && before.bottom > 768 - 320, `the last reading starts where the keyboard will be (${before.bottom})`);
+  await frame.evaluate(() => [...document.querySelectorAll('#recognizer-view .rv-text')].at(-1).focus());
+  await page.evaluate(() => host.keyboard(320));
+  await until(frame, () => [...document.querySelectorAll('#recognizer-view .rv-text')].at(-1).getBoundingClientRect().bottom <= 768 - 320);
+  // Done typing: the page slides back.
+  await frame.evaluate(() => document.activeElement.blur());
+  await page.evaluate(() => host.keyboard(0));
+  await until(frame, () => document.body.getBoundingClientRect().top === 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('correcting what the recogniser read updates the search index', async () => {
   const { page, ctx, errors } = await openHost();
   const frame = await openFile(page, 'Physics.bedrock');
