@@ -19,7 +19,7 @@ report version 2, the slow entries in `bedrock.errors.v1` and the setting
 | `apps/web/src/errors.js` | `bedrockErrors.slow`: logs slow moments, merges repeats, the "Bedrock seems slow" notice. |
 | `apps/web/src/error-report.js` | Builds version 2 when a report holds slow moments or is automatic. |
 | `apps/web/src/main.js`, `input.js`, `handwriting.js` | Feed frames to the watcher; time `save`, `open`, `library`, `import-pdf` and `recognize`; the menu setting. |
-| `apps/obsidian/src/report.js`, `session.js`, `main.js` | The plugin times `read`, `write`, `index` and `unpack`, and adds its slow moments to the canvas's automatic reports. |
+| `apps/obsidian/src/report.js`, `session.js`, `main.js` | The plugin times `read`, `write` and `index`, and adds its slow moments to the canvas's automatic reports. |
 
 ## Open source used
 
@@ -43,7 +43,7 @@ frames Bedrock already draws (`input.js`).
 | `latency` | Over one stroke (at least 8 frames), the slowest 5% of frames came over 3 frame intervals and over 25 ms after their pen event (50 ms at 60 frames a second, 25 ms at 120) |
 | `stutter` | One frame came over 100 ms after the pen or finger moved |
 | `slow_tap` | A tap or key took over 200 ms to answer (Event Timing) |
-| `long_job` | A job over its limit: `save` 2 s, `open` 3 s, `library` 2 s, `recognize` 8 s, `import-pdf` 60 s; in the plugin `read` 2 s, `write` 2 s, `index` 3 s, `unpack` 10 s |
+| `long_job` | A job over its limit: `save` 2 s, `open` 3 s, `library` 2 s, `recognize` 8 s, `import-pdf` 60 s; in the plugin `read` 2 s, `write` 2 s, `index` 3 s |
 
 The same `what` and message within 30 s adds to one entry (count, the
 slowest `ms`, and that moment's snapshot).

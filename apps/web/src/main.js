@@ -16,6 +16,12 @@ import { WordSharer } from './share-words.js';
 import { showGate, gateStyles } from './consent.js';
 import { perf, AutoSender } from './perf.js';
 import { buildReport, context as reportContext, sendReport } from './report-panel.js';
+import * as reportPanel from './report-panel.js';
+import { asset, handedOver } from './assets.js';
+
+// errors.js (a classic script) opens the report panel with this when the
+// module cannot be loaded by its address (inside the Obsidian plugin).
+window.bedrockReportPanel = reportPanel;
 
 const $ = (id) => document.getElementById(id);
 
@@ -171,7 +177,7 @@ let startFailed = false;
 
 async function main() {
   askAtLaunch();
-  await init();
+  await init({ module_or_path: asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)) });
   const stage = $('stage');
   let canvas;
   try {
@@ -360,7 +366,7 @@ async function main() {
       waiting.clear();
     };
     try {
-      worker = new Worker(new URL('./save-worker.js', import.meta.url), { type: 'module' });
+      worker = new Worker(asset('src/save-worker.js', () => new URL('./save-worker.js', import.meta.url)), { type: 'module' });
       worker.onmessage = (e) => {
         const resolve = waiting.get(e.data.seq);
         waiting.delete(e.data.seq);
@@ -1380,7 +1386,7 @@ async function main() {
   // Performance reports sent by themselves: off until the person reads
   // what is sent and agrees (perf.js, openspec/specs/performance).
   perf.configure({
-    appBase: new URL('../', import.meta.url).href,
+    appBase: handedOver() ? 'blob:' : new URL('../', import.meta.url).href,
     facts: () => ({
       doing: canvas.is_drawing() ? 'writing' : input.active.size > 0 ? 'moving' : 'idle',
       tool: currentTool(),

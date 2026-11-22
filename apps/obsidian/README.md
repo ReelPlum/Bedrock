@@ -45,13 +45,29 @@ cd apps/obsidian && npm install && npm run build    # dist/main.js, manifest.jso
 node build.mjs --vault ~/path/to/vault        # build and install into a vault for trying it out
 ```
 
-`build.mjs` packs the web app's runtime files (HTML, CSS, modules,
-WebAssembly, word list) into `main.js`, because Obsidian's plugin directory
-installs only `main.js`, `manifest.json` and `styles.css`. On start the plugin
-unpacks them into its own folder (`.obsidian/plugins/bedrock-notes/web/`,
-only when the version changed) and the view loads them from there, so the
-browser features the web app relies on (module workers, WebAssembly, WebGL2,
-Pointer Events with Pencil pressure and tilt) work exactly as in Safari.
+`build.mjs` packs the web app into `main.js`, because Obsidian's plugin
+directory installs only `main.js`, `manifest.json` and `styles.css`.
+
+**The canvas never loads a file.** Obsidian refuses every file request made
+from a page inside a view (`net::ERR_BLOCKED_BY_CLIENT`: its webRequest
+filter lets only Obsidian's own window load `app://` files), and on the iPad
+such a page did not load at all. So nothing is unpacked into the plugin
+folder. Instead (`src/inline-app.js`):
+
+- each page (`index.html`, and `welcome/index.html` for the launch gate) is
+  packed with its stylesheet and `errors.js` inline, and written into the
+  view's iframe as `srcdoc`. That makes it a page of Obsidian's own origin;
+- each module graph (the app, the welcome page, the two workers) is bundled
+  into one file by esbuild, since a `blob:` module cannot import its
+  neighbours, and handed over as a `blob:` URL;
+- the WebAssembly and the word list are `blob:` URLs too, found by the app
+  through `globalThis.BEDROCK_ASSETS` (`apps/web/src/assets.js`), and
+  `globalThis.BEDROCK_HOST` tells the app it runs in the plugin.
+
+The browser features the web app relies on (module workers, WebAssembly,
+WebGL2, Pointer Events with Pencil pressure and tilt) work as in Safari. As
+the page shares Obsidian's origin, the app's `localStorage` keys (all
+`bedrock.*`) sit beside Obsidian's.
 
 ## How the view and the app talk
 
@@ -105,8 +121,9 @@ where it was.
 ## Tests
 
 ```sh
-npm test    # unit tests (vault, index notes, ZIP, bridge, unpacking) and
-            # browser tests of the real app in an iframe with the plugin's bridge
+npm test    # unit tests (vault, index notes, ZIP, bridge, packed pages) and
+            # browser tests of the real app in an iframe with the plugin's bridge,
+            # refusing every file request from the iframe as Obsidian does
 ```
 
 The browser tests need `../web/pkg` (run `./scripts/build-web.sh`) and
@@ -159,8 +176,10 @@ on GitHub, give it its own release repository.
 
 ## Not done yet
 
-- Tried only against these tests, not yet inside the Obsidian app on a
-  desktop or an iPad. In particular the shape of what search hands
+- The first BRAT beta (0.1.0-beta.1) showed an empty view in Obsidian on a
+  Mac and an iPad, because the canvas loaded its files by address (see "The
+  canvas never loads a file" above). Since that fix it has run only against
+  these tests, which refuse file requests the way Obsidian does. In particular the shape of what search hands
   `openFile` (`eState.match`), and of a link's `eState.subpath`, are not part
   of Obsidian's documented API; the tests play them as described above. If
   Obsidian differs, the note still opens, only not at the place.
