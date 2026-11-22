@@ -119,7 +119,8 @@ export class WordMenu {
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
     // Tapping elsewhere closes it.
     document.addEventListener('pointerdown', (e) => {
-      if (!this.el.hidden && !this.el.contains(e.target)) this.close();
+      // The link picker opens over the menu, which waits for its answer.
+      if (!this.el.hidden && !this.el.contains(e.target) && !e.target.closest?.('#link-picker')) this.close();
     }, true);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !this.el.hidden) this.close(); });
   }

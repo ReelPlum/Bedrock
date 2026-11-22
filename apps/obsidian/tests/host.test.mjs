@@ -171,6 +171,7 @@ test('a new note in the vault: drawn, saved into the file, and indexed for searc
 
 test('making a link opens the vault note picker, and the link reaches the file, the index and Obsidian', async () => {
   const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.vault.create('Ideas.md', '# Ideas'));
   const frame = await openFile(page, 'Physics.bedrock');
   await writeWord(frame);
   const r = await frame.evaluate(async () => {
@@ -181,8 +182,10 @@ test('making a link opens the vault note picker, and the link reaches the file, 
     $('wm-link').click();
     out.types = [...document.querySelectorAll('#wm-link-type option')].map((o) => o.value);
     out.type = $('wm-link-type').value;
-    // The picker answers asynchronously; its note goes into the box, and
+    // The picker lists the vault; the chosen note goes into the box, and
     // Save makes the link and closes the menu.
+    for (let i = 0; i < 100 && !document.querySelector('#link-picker .lp-file'); i++) await new Promise((res) => setTimeout(res, 20));
+    document.querySelector('#link-picker .lp-file[data-path="Ideas.md"]').click();
     for (let i = 0; i < 100 && !$('wm-link-target').value; i++) await new Promise((res) => setTimeout(res, 20));
     out.box = $('wm-link-target').value;
     document.querySelector('#wm-link-form .wm-save').click();
@@ -201,7 +204,7 @@ test('making a link opens the vault note picker, and the link reaches the file, 
   assert.equal(r.linkNow, 'Links to [[Ideas]]');
   await until(page, () => host.calls.some((c) => c[0] === 'open'));
   const calls = await page.evaluate(() => host.calls);
-  assert.deepEqual(calls, [['pick', '', 'Physics.bedrock'], ['open', 'Ideas', 'Physics.bedrock']]);
+  assert.deepEqual(calls, [['list', 'Physics.bedrock'], ['open', 'Ideas', 'Physics.bedrock']]);
   await until(page, async () => (await host.files('Physics.bedrock')).index?.includes('[[Ideas'));
   const f = await page.evaluate(() => host.files('Physics.bedrock'));
   assert.match(f.links, /- \[\[Ideas\|Newtn\]\]/, 'links.md in the file, for any reader');
@@ -213,7 +216,6 @@ test('making a link opens the vault note picker, and the link reaches the file, 
 test('closing the picker leaves the link form open, with Browse to try again and the other kinds of link', async () => {
   const { page, ctx, errors } = await openHost();
   const frame = await openFile(page, 'Physics.bedrock');
-  await page.evaluate(() => host.setPick(null));
   await writeWord(frame);
   const r = await frame.evaluate(async () => {
     const $ = (id) => document.getElementById(id);
@@ -221,7 +223,9 @@ test('closing the picker leaves the link form open, with Browse to try again and
     bedrock.wordMenu.open(word());
     $('wm-link').click();
     await new Promise((res) => setTimeout(res, 200));
-    const out = { form: !$('wm-link-form').hidden, browse: !$('wm-link-browse').hidden, link: word().link ?? null };
+    document.querySelector('#link-picker .lp-close').click();
+    await new Promise((res) => setTimeout(res, 50));
+    const out = { picker: !$('link-picker').hidden, form: !$('wm-link-form').hidden, browse: !$('wm-link-browse').hidden, link: word().link ?? null };
     // Switching to a website hides Browse; typing an address still works.
     $('wm-link-type').value = 'url';
     $('wm-link-type').dispatchEvent(new Event('change'));
@@ -231,8 +235,8 @@ test('closing the picker leaves the link form open, with Browse to try again and
     out.urlLink = word().link;
     return out;
   });
-  assert.deepEqual(r, { form: true, browse: true, link: null, browseForUrl: false, urlLink: { type: 'url', target: 'https://example.com/' } });
-  assert.deepEqual(await page.evaluate(() => host.calls.map((c) => c[0])), ['pick']);
+  assert.deepEqual(r, { picker: false, form: true, browse: true, link: null, browseForUrl: false, urlLink: { type: 'url', target: 'https://example.com/' } });
+  assert.deepEqual(await page.evaluate(() => host.calls.map((c) => c[0])), ['list']);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -258,38 +262,117 @@ async function clickIn(page, frame, selector) {
   await page.mouse.click(b.left + b.width / 2, b.top + b.height / 2);
 }
 
-// Bug: choosing a note in Obsidian's picker never showed it in the link box:
-// the pick linked the word at once and closed the menu, so the writer never
-// saw which note was chosen. And the box was focused as the picker opened,
-// which on the iPad brought up the keyboard for nothing.
-test("bug: the note chosen in Obsidian's picker goes into the link box, and Save makes the link", async () => {
-  const { page, ctx, errors } = await openHost();
-  const frame = await openFile(page, 'Physics.bedrock');
-  await page.evaluate(() => host.setPicker('modal'));
-  await writeWord(frame);
+/** Open the link picker for the first word with real taps. */
+async function openPicker(page, frame) {
   await holdWord(page, frame);
+  await clickIn(page, frame, '#wm-link');
+  await frame.waitForSelector('#link-picker .lp-tree');
+}
+
+// Bug: "the searching / browsing when linking is still not working". The
+// picker was Obsidian's search popup, in Obsidian's window outside the
+// canvas: on the iPad a note picked there never reached the link box, and it
+// showed no folders.
+test("the link picker shows the vault's folders and files; tapping a note puts its link in the box", async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(async () => {
+    await host.vault.create('Ideas.md', '# Ideas');
+    await host.vault.create('Projects/Plan.md', '# Plan');
+    await host.vault.create('Projects/Old/Notes.md', '# Notes');
+    await host.vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(4));
+  });
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await until(page, () => host.vault.files.has('Bedrock index/Physics.md'));
   // On the iPad a focused text box brings up the keyboard: not while the
   // picker is what the writer is looking at.
   await frame.evaluate(() => {
     window.boxFocused = false;
     document.getElementById('wm-link-target').addEventListener('focus', () => { window.boxFocused = true; });
   });
-  await clickIn(page, frame, '#wm-link');
-  await page.click('#picker .suggestion-item >> text=Ideas');
-  await frame.waitForFunction(() => document.getElementById('wm-link-target').value === 'Ideas');
+  await openPicker(page, frame);
+  const rows = () => frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-tree button')].map((b) => b.dataset.path));
+  assert.deepEqual(await rows(), ['Papers', 'Projects', 'Ideas.md'], 'folders first, closed; not the note itself or its index note');
+  await frame.click('#link-picker .lp-folder[data-path="Projects"]');
+  assert.deepEqual(await rows(), ['Papers', 'Projects', 'Projects/Old', 'Projects/Plan.md', 'Ideas.md']);
+  await frame.click('#link-picker .lp-file[data-path="Projects/Plan.md"]');
   const r = await frame.evaluate(() => ({
+    picker: !document.getElementById('link-picker').hidden,
     form: !document.getElementById('wm-link-form').hidden,
+    box: document.getElementById('wm-link-target').value,
     boxFocused: window.boxFocused,
     link: JSON.parse(bedrock.canvas.words_json())[0].link ?? null,
   }));
-  assert.deepEqual(r, { form: true, boxFocused: false, link: null }, 'the chosen note waits in the box for Save');
+  assert.deepEqual(r, { picker: false, form: true, box: 'Projects/Plan', boxFocused: false, link: null }, 'the chosen note waits in the box for Save');
+  // Browse again: the filter finds a file in any folder.
+  await clickIn(page, frame, '#wm-link-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.fill('#link-picker .lp-filter', 'note');
+  assert.deepEqual(await rows(), ['Projects/Old/Notes.md']);
+  await frame.click('#link-picker .lp-file[data-path="Projects/Old/Notes.md"]');
   await clickIn(page, frame, '#wm-link-form .wm-save');
   const after = await frame.evaluate(() => ({
     closed: document.getElementById('word-menu').hidden,
     link: JSON.parse(bedrock.canvas.words_json())[0].link ?? null,
   }));
-  assert.deepEqual(after, { closed: true, link: { type: 'note', target: 'Ideas' } });
-  assert.deepEqual(await page.evaluate(() => host.calls), [['pick', '', 'Physics.bedrock']]);
+  assert.deepEqual(after, { closed: true, link: { type: 'note', target: 'Projects/Old/Notes' } });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the link picker opens a PDF to link one of its pages, or the whole file', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(4)));
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await openPicker(page, frame);
+  await frame.click('#link-picker .lp-folder[data-path="Papers"]');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-page[data-page="3"]');
+  // The pages are the plugin's pictures of them.
+  await frame.waitForFunction(() => [...document.querySelectorAll('#link-picker .lp-page img')].every((i) => i.complete && i.naturalWidth > 0));
+  assert.deepEqual(await frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-page')].map((b) => b.textContent)), ['Page 1', 'Page 2', 'Page 3']);
+  await frame.click('#link-picker .lp-page[data-page="2"]');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), 'Papers/Paper.pdf#page=2');
+  // Or the whole file.
+  await clickIn(page, frame, '#wm-link-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.click('#link-picker .lp-whole');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), 'Papers/Paper.pdf');
+  await clickIn(page, frame, '#wm-link-form .wm-save');
+  assert.deepEqual(await frame.evaluate(() => JSON.parse(bedrock.canvas.words_json())[0].link), { type: 'note', target: 'Papers/Paper.pdf' });
+  const pages = await page.evaluate(() => host.calls.filter((c) => c[0] === 'pdf-page').map((c) => c[2]));
+  assert.deepEqual([...new Set(pages)].sort(), [1, 2, 3]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the link picker opens another Bedrock note to link one of its words, or the whole note', async () => {
+  const { page, ctx, errors } = await openHost();
+  // Another handwritten note, with a word in it.
+  let frame = await openFile(page, 'Maths.bedrock');
+  await writeWord(frame, 200, 200);
+  await frame.evaluate(() => bedrock.saveNow());
+  await until(page, async () => (await host.files('Maths.bedrock')).strokes === 4);
+  const mathsStrokes = await frame.evaluate(() => JSON.parse(bedrock.canvas.words_json())[0].strokes);
+  frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await openPicker(page, frame);
+  await frame.click('#link-picker .lp-file[data-path="Maths.bedrock"]');
+  await frame.waitForSelector('#link-picker .lp-word');
+  const marks = await frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-word')].map((m) => ({ stroke: m.dataset.stroke, label: m.getAttribute('aria-label') })));
+  assert.equal(marks.length, 1);
+  assert.ok(mathsStrokes.includes(marks[0].stroke), 'the mark names a stroke of that word');
+  assert.equal(marks[0].label, 'Link to “Newtn”');
+  await frame.click('#link-picker .lp-word');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), `Maths.bedrock#^${marks[0].stroke}`);
+  // Or the whole note.
+  await clickIn(page, frame, '#wm-link-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.click('#link-picker .lp-file[data-path="Maths.bedrock"]');
+  await frame.click('#link-picker .lp-whole');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), 'Maths.bedrock');
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -299,10 +382,11 @@ test("bug: the note chosen in Obsidian's picker goes into the link box, and Save
 test('bug: the word menu moves above the iPad keyboard, and back when it goes', async () => {
   const { page, ctx, errors } = await openHost();
   const frame = await openFile(page, 'Physics.bedrock');
-  await page.evaluate(() => host.setPick(null));
   await writeWord(frame, 300, 380);
   await holdWord(page, frame);
   await clickIn(page, frame, '#wm-link');
+  // Back from the picker to the link form, to type the link.
+  await frame.click('#link-picker .lp-close');
   const menu = () => frame.evaluate(() => {
     const m = document.getElementById('word-menu').getBoundingClientRect();
     const box = document.getElementById('wm-link-target').getBoundingClientRect();
