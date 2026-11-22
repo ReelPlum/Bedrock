@@ -29,7 +29,7 @@ async function site() {
     async down() {
       await new Promise((r) => { server.close(r); server.closeAllConnections(); });
     },
-    close() { server.close(); server.closeAllConnections(); },
+    close() { if (server.listening) server.close(); server.closeAllConnections(); },
   };
 }
 
@@ -66,9 +66,12 @@ async function stroke(page, y) {
   }, y);
 }
 
-test('with no connection the app opens, and notes are written, saved, listed and opened again', async () => {
+test('with no connection the app opens, and notes are written, saved, listed and opened again', { timeout: 120_000 }, async (t) => {
   const s = await site();
+  // Closed even when the test fails, or the open server keeps the test run alive.
+  t.after(() => s.close());
   const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  t.after(() => ctx.close().catch(() => {}));
   const page = await ctx.newPage();
   const errors = await open(page, s.url);
   await waitForOfflineCopy(page);
@@ -99,15 +102,17 @@ test('with no connection the app opens, and notes are written, saved, listed and
   assert.equal(await page.evaluate(() => bedrock.handwriting.dictionaryReady), true, 'the spell checker loads offline');
   assert.deepEqual(errors.filter((e) => !/net::ERR_INTERNET_DISCONNECTED|Failed to load resource/.test(e)), []);
   await ctx.close();
-  s.close();
 });
 
-test('handwriting is read offline once its model was downloaded', async () => {
+test('handwriting is read offline once its model was downloaded', { timeout: 120_000 }, async (t) => {
   // The real Transformers.js and its ONNX Runtime, from the "CDN", and a
   // tiny formula model with the real file names (see app.test.mjs).
   const { TRANSFORMERS_JS } = await import('./fetch-libs.mjs');
   const s = await site();
+  // Closed even when the test fails, or the open server keeps the test run alive.
+  t.after(() => s.close());
   const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  t.after(() => ctx.close().catch(() => {}));
   const asked = [];
   await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@*/dist/**', async (route) => {
     const file = new URL(route.request().url()).pathname.split('/').pop();
@@ -157,12 +162,14 @@ test('handwriting is read offline once its model was downloaded', async () => {
   assert.ok(!offline.error, `read offline: ${offline.error} (asked the network for ${offlineAsked})`);
   assert.equal(offline.text.replace(/\s/g, ''), '\\frac{a}{b}');
   await ctx.close();
-  s.close();
 });
 
-test('offline without the model, words wait (not given up) and are read when the connection is back', async () => {
+test('offline without the model, words wait (not given up) and are read when the connection is back', { timeout: 120_000 }, async (t) => {
   const s = await site();
+  // Closed even when the test fails, or the open server keeps the test run alive.
+  t.after(() => s.close());
   const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  t.after(() => ctx.close().catch(() => {}));
   const page = await ctx.newPage();
   const errors = await open(page, s.url);
   await page.evaluate(() => {
@@ -206,5 +213,4 @@ test('offline without the model, words wait (not given up) and are read when the
   await page.waitForFunction(() => JSON.parse(bedrock.canvas.words_json())[0]?.text === 'hello', null, { timeout: 5000 });
   assert.deepEqual(errors, []);
   await ctx.close();
-  s.close();
 });
