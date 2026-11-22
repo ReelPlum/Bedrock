@@ -21,9 +21,9 @@ export const CONSENT_VERSION = 3;
  *  only takes effect once `DEFAULT_API` is set: with no server there is
  *  nothing to check a code against. */
 export const LAUNCH_GATE = true;
-/** The backend's address, fixed in the app: people cannot change it. Empty
- *  until the backend is deployed, and saving stays off until it is set. */
-export const DEFAULT_API = '';
+/** The backend's address, fixed in the app: people cannot change it.
+ *  Saving stays off while it is empty. */
+export const DEFAULT_API = 'https://bedrock-collect.reelplum.workers.dev';
 
 /** The host name of the server the page came from. A page that a host
  *  wrote into its iframe (the Obsidian plugin's, `about:srcdoc`) has none
@@ -34,10 +34,13 @@ export function pageHost(g = globalThis) {
 }
 
 /** Where samples go: always `DEFAULT_API`, except on a page served from
- *  this computer (development and tests), which may use a stored address. */
+ *  this computer (development and tests), which may use a stored address,
+ *  and may set `bedrockNoBuiltInApi` before the page loads to act as if
+ *  no address were built in, so tests never reach the real backend. */
 export function apiAddress(stored, host = pageHost()) {
   const local = host === 'localhost' || host === '127.0.0.1';
-  return local && typeof stored === 'string' && stored ? stored : DEFAULT_API;
+  if (local && typeof stored === 'string' && stored) return stored;
+  return local && globalThis.bedrockNoBuiltInApi === true ? '' : DEFAULT_API;
 }
 /** True when the app must ask for the code and consent before it can be
  *  used: the gate is on and a safe server address is built in. A page

@@ -9,7 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installPointerHelpers } from '../../web/tests/helpers.mjs';
+import { installPointerHelpers, withoutBuiltInApi } from '../../web/tests/helpers.mjs';
 import { packWebApp } from '../build.mjs';
 
 const require = createRequire(import.meta.url);
@@ -51,7 +51,7 @@ let server;
 let browser;
 before(async () => {
   server = await serve(JSON.stringify(await packWebApp()));
-  browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+  browser = withoutBuiltInApi(await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] }));
 });
 after(async () => { await browser?.close(); server?.close(); });
 
