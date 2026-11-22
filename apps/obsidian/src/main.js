@@ -4,9 +4,9 @@
 
 import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
 import bundle from 'virtual:web-app';
-import { installWebApp, webAppUrl } from './assets.js';
+import { InlineApp } from './inline-app.js';
 import { HostBridge } from './bridge.js';
-import { askAtLaunch, welcomeUrl } from './consent.js';
+import { askAtLaunch } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
@@ -164,7 +164,6 @@ class BedrockView extends FileView {
   canAcceptExtension(ext) { return ext === EXTENSION; }
 
   async onLoadFile(file) {
-    await this.plugin.webAppReady;
     const plugin = this.plugin;
     this.appReady = false;
     this.session = createSession({
@@ -183,7 +182,9 @@ class BedrockView extends FileView {
     this.frame = frame;
     this.bridge = new HostBridge(() => frame.contentWindow, this.session.handlers);
     this.bridge.listen(frame.ownerDocument.defaultView);
-    frame.src = webAppUrl(this.app.vault.adapter, plugin.webDir, bundle.hash);
+    // The page is written into the frame, not loaded from the plugin
+    // folder: Obsidian refuses file requests from inside a view.
+    frame.srcdoc = plugin.webApp.page('app');
   }
 
   async onUnloadFile() {
@@ -214,10 +215,9 @@ export default class BedrockPlugin extends Plugin {
     const data = (await this.loadData()) || {};
     this.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     this.cameras = data.cameras || {};
-    this.webDir = normalizePath(`${this.manifest.dir}/web`);
-    this.webAppReady = this.perf.job('unpack', () => installWebApp(this.app.vault.adapter, this.webDir, bundle)).catch((e) => {
-      this.problem(`Bedrock could not unpack its canvas: ${e}`, e);
-    });
+    // The canvas's pages and files, handed to it from memory (inline-app.js).
+    this.webApp = new InlineApp(bundle);
+    this.register(() => this.webApp.revoke());
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
     this.kv = {
       get: (key) => this.cameras[key],
@@ -337,12 +337,10 @@ export default class BedrockPlugin extends Plugin {
    *  as soon as Obsidian has started (consent.js). Resolves to how it
    *  went, or null where there is no window (tests without a DOM). */
   async askConsent() {
-    await this.webAppReady;
     if (typeof document === 'undefined') return null;
-    const url = welcomeUrl(webAppUrl(this.app.vault.adapter, this.webDir, bundle.hash));
     this.consent = askAtLaunch({
       doc: document,
-      url,
+      page: (probe) => this.webApp.page('welcome', { probe }),
       open: (w) => { const m = new ConsentModal(this.app, w); m.open(); return m; },
     });
     return this.consent;

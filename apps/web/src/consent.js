@@ -18,7 +18,7 @@ const SETTINGS_KEY = 'bedrock.settings.v1';
  *  public website, since the app's own files there are not a web page. */
 export const SITE = 'https://reelplum.github.io/Bedrock/';
 export function termsUrl(loc = globalThis.location) {
-  const inHost = new URLSearchParams(loc?.search || '').has('host');
+  const inHost = new URLSearchParams(loc?.search || '').has('host') || !!globalThis.BEDROCK_HOST;
   return inHost ? `${SITE}terms/` : new URL('../terms/', import.meta.url).href;
 }
 

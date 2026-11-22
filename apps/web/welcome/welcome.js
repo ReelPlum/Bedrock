@@ -6,14 +6,15 @@
 import * as collect from '../src/collect.js';
 import { showGate, gateStyles } from '../src/consent.js';
 
-const inHost = new URLSearchParams(location.search).has('host') && window.parent !== window;
+const query = new URLSearchParams(location.search);
+const inHost = (query.has('host') || !!globalThis.BEDROCK_HOST) && window.parent !== window;
 let seq = 0;
 const tell = (needed) => {
   if (inHost) window.parent.postMessage({ bedrock: 1, seq: `w${++seq}`, method: 'consent', args: { needed } }, '*');
   else if (!needed) location.replace('../');
 };
 
-const probe = new URLSearchParams(location.search).has('probe');
+const probe = query.has('probe') || !!globalThis.BEDROCK_PROBE;
 if (!collect.gateNeeded()) {
   tell(false);
 } else if (probe) {
