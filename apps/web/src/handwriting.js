@@ -14,6 +14,7 @@
 
 import { MODELS } from './models.js';
 import { perf } from './perf.js';
+import { asset } from './assets.js';
 
 const IDLE_MS = 700; // recognise once the pen has rested this long
 const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
@@ -78,7 +79,7 @@ export class Handwriting {
   /** Load the spell-check dictionary: a Hunspell `.aff` file of rules and
    *  a `.dic` file of words, each gzip (decompressed by the browser) or
    *  plain text where a host can't serve .gz files. */
-  async loadDictionary(aff = ['dict/en.aff'], dic = ['dict/en.dic.gz', 'dict/en.dic']) {
+  async loadDictionary(aff = [asset('dict/en.aff')], dic = [asset('dict/en.dic.gz'), 'dict/en.dic']) {
     try {
       const [rules, words] = await Promise.all([fetchText(aff), fetchText(dic)]);
       if (rules == null || words == null) return false;
@@ -207,7 +208,7 @@ export class Handwriting {
   _worker(slot = 'all') {
     let w = this.workers.get(slot);
     if (w) return w;
-    w = new Worker(new URL('./recognizer-worker.js', import.meta.url), { type: 'module' });
+    w = new Worker(asset('src/recognizer-worker.js', () => new URL('./recognizer-worker.js', import.meta.url)), { type: 'module' });
     w.onmessage = (e) => {
       const m = e.data;
       this._watch();

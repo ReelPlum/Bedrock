@@ -309,6 +309,10 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .wm-reading { font-size: 13px; color: var(--muted); padding: 0 10px 6px; overflow-wrap: anywhere; }
 .wm-reading b { color: var(--ink); font-weight: 600; }
 .wm-link-now { font-size: 12px; color: var(--accent); padding: 0 10px 4px; overflow-wrap: anywhere; }
+.wm-colors { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 6px; max-width: 280px; }
+.wm-swatches { display: contents; }
+.wm-colors .swatch { width: 34px; height: 34px; }
+.wm-colors .swatch span { width: 26px; height: 26px; }
 .wm-form { display: flex; flex-direction: column; gap: 8px; padding: 2px; }
 .wm-form input, .wm-form select {
   font: 15px -apple-system, system-ui, sans-serif; padding: 8px 10px; border-radius: 9px;

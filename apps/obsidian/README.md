@@ -45,13 +45,29 @@ cd apps/obsidian && npm install && npm run build    # dist/main.js, manifest.jso
 node build.mjs --vault ~/path/to/vault        # build and install into a vault for trying it out
 ```
 
-`build.mjs` packs the web app's runtime files (HTML, CSS, modules,
-WebAssembly, word list) into `main.js`, because Obsidian's plugin directory
-installs only `main.js`, `manifest.json` and `styles.css`. On start the plugin
-unpacks them into its own folder (`.obsidian/plugins/bedrock-notes/web/`,
-only when the version changed) and the view loads them from there, so the
-browser features the web app relies on (module workers, WebAssembly, WebGL2,
-Pointer Events with Pencil pressure and tilt) work exactly as in Safari.
+`build.mjs` packs the web app into `main.js`, because Obsidian's plugin
+directory installs only `main.js`, `manifest.json` and `styles.css`.
+
+**The canvas never loads a file.** Obsidian refuses every file request made
+from a page inside a view (`net::ERR_BLOCKED_BY_CLIENT`: its webRequest
+filter lets only Obsidian's own window load `app://` files), and on the iPad
+such a page did not load at all. So nothing is unpacked into the plugin
+folder. Instead (`src/inline-app.js`):
+
+- each page (`index.html`, and `welcome/index.html` for the launch gate) is
+  packed with its stylesheet and `errors.js` inline, and written into the
+  view's iframe as `srcdoc`. That makes it a page of Obsidian's own origin;
+- each module graph (the app, the welcome page, the two workers) is bundled
+  into one file by esbuild, since a `blob:` module cannot import its
+  neighbours, and handed over as a `blob:` URL;
+- the WebAssembly and the word list are `blob:` URLs too, found by the app
+  through `globalThis.BEDROCK_ASSETS` (`apps/web/src/assets.js`), and
+  `globalThis.BEDROCK_HOST` tells the app it runs in the plugin.
+
+The browser features the web app relies on (module workers, WebAssembly,
+WebGL2, Pointer Events with Pencil pressure and tilt) work as in Safari. As
+the page shares Obsidian's origin, the app's `localStorage` keys (all
+`bedrock.*`) sit beside Obsidian's.
 
 ## How the view and the app talk
 
@@ -105,24 +121,71 @@ where it was.
 ## Tests
 
 ```sh
-npm test    # unit tests (vault, index notes, ZIP, bridge, unpacking) and
-            # browser tests of the real app in an iframe with the plugin's bridge
+npm test    # unit tests (vault, index notes, ZIP, bridge, packed pages) and
+            # browser tests of the real app in an iframe with the plugin's bridge,
+            # refusing every file request from the iframe as Obsidian does
 ```
 
 The browser tests need `../web/pkg` (run `./scripts/build-web.sh`) and
 Playwright's Chromium, like the web app's tests. `tests/harness.html` plays
 Obsidian with an in-memory vault.
 
+## Installing with BRAT
+
+Until the plugin is in Obsidian's directory, install it with
+[BRAT](https://github.com/TfTHacker/obsidian42-brat), on desktop or iPad:
+
+1. In Obsidian, Settings > Community plugins: turn off Restricted mode, then
+   Browse, find "BRAT", install and enable it.
+2. In BRAT's settings choose "Add beta plugin" (or run its command "Add a
+   beta plugin for testing") and paste `https://github.com/ReelPlum/Bedrock`.
+   Pick "Latest version" to follow new releases, or a specific version to
+   stay on it.
+3. Enable "Bedrock" under Community plugins. With BRAT's "Auto-update
+   plugins at startup" on, it updates when Obsidian starts.
+
+"Latest version" follows the newest release, betas included (BRAT is a
+beta tester's tool). Pick a specific version to stay off betas.
+
+## Releasing
+
+`manifest.json` and `versions.json` live at the repository root, where
+Obsidian and BRAT look for them; the build copies `manifest.json` into
+`dist/`. A tag publishes a release with `.github/workflows/obsidian-release.yml`:
+
+- **A release:** bump `version` in `/manifest.json`, add the same version to
+  `/versions.json` with its `minAppVersion`, merge, then tag that commit
+  with the bare version: `git tag 0.2.0 && git push origin 0.2.0`.
+- **A beta:** tag the version with a suffix, without committing it to
+  `manifest.json`: `git tag 0.2.0-beta.1 && git push origin 0.2.0-beta.1`.
+  It becomes a GitHub pre-release, and the released `manifest.json` carries
+  `0.2.0-beta.1`, as BRAT and Obsidian want the tag and the version to match.
+
+The workflow first checks the tag and manifest (`node release.mjs check
+<tag>`; the rules are tested in `tests/release.test.mjs`), then builds the
+WebAssembly and the plugin, attests the three files and publishes them.
+
+**Only the plugin makes GitHub releases in this repository.** Obsidian
+looks up the release by its exact tag, but BRAT takes the newest-numbered
+release as the plugin's latest, reading any digits in a tag as a version,
+so a GitHub release such as `web-2.0.0` would hide the plugin. Other apps
+ship elsewhere (the web app on GitHub Pages, the iPad app through the App
+Store) and may mark versions with plain git tags like `web-2.0.0` or
+`ipad-1.0.0`, which BRAT never reads. If another app ever needs downloads
+on GitHub, give it its own release repository.
+
 ## Not done yet
 
-- Tried only against these tests, not yet inside the Obsidian app on a
-  desktop or an iPad. In particular the shape of what search hands
+- The first BRAT beta (0.1.0-beta.1) showed an empty view in Obsidian on a
+  Mac and an iPad, because the canvas loaded its files by address (see "The
+  canvas never loads a file" above). Since that fix it has run only against
+  these tests, which refuse file requests the way Obsidian does. In particular the shape of what search hands
   `openFile` (`eState.match`), and of a link's `eState.subpath`, are not part
   of Obsidian's documented API; the tests play them as described above. If
   Obsidian differs, the note still opens, only not at the place.
 - Text read from pictures has no strokes, so it cannot be jumped to until
   the note format gives such text a picture and a box.
-- Publishing to Obsidian's plugin directory needs `manifest.json` at the root
-  of a GitHub repository: either a small release repository that CI fills
-  from `apps/obsidian/dist`, or the directory's newer source-path option.
+- Not yet in Obsidian's community plugin directory (community.obsidian.md).
+  Until then it installs with BRAT, below. Submitting needs a `LICENSE`, and
+  the directory's build check has to be able to build the WebAssembly.
 - Plugins cannot receive the Apple Pencil's double tap or squeeze.
