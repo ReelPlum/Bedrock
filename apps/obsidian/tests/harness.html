@@ -19,6 +19,7 @@ import { readZip, text } from '/obsidian/src/zip.js';
 import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
 import { askAtLaunch } from '/obsidian/src/consent.js';
 import { InlineApp } from '/obsidian/src/inline-app.js';
+import { watchKeyboard } from '/obsidian/src/keyboard.js';
 
 const webApp = new InlineApp(await (await fetch('/bundle.json')).json());
 
@@ -31,6 +32,39 @@ let bridge = null;
 let session = null;
 let file = null;
 let pickAnswer = 'Ideas';
+let picker = 'answer';
+let keyboard = null;
+
+/** Obsidian's note picker as it really behaves: a prompt over the whole
+ *  window that takes the focus away from the canvas (Modal.open blurs the
+ *  active element and focuses its own input), lists the notes, and on a
+ *  click closes first and chooses after (SuggestModal.selectSuggestion). */
+function obsidianPicker(notes) {
+  return new Promise((resolve) => {
+    document.activeElement?.blur();
+    const bg = document.createElement('div');
+    bg.id = 'picker';
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;flex-direction:column;align-items:center;padding-top:80px';
+    const input = document.createElement('input');
+    input.placeholder = 'Link to a note…';
+    bg.append(input);
+    let chosen = null;
+    for (const name of notes) {
+      const item = document.createElement('div');
+      item.className = 'suggestion-item';
+      item.textContent = name;
+      item.style.cssText = 'background:#fff;padding:12px;width:300px';
+      item.addEventListener('click', () => {
+        bg.remove();
+        setTimeout(() => resolve(chosen), 0);
+        chosen = name;
+      });
+      bg.append(item);
+    }
+    document.body.append(bg);
+    input.focus();
+  });
+}
 
 window.host = {
   vault,
@@ -54,6 +88,15 @@ window.host = {
   },
   calls,
   setPick(v) { pickAnswer = v; },
+  /** 'modal': the note picker is a prompt to click in, as in Obsidian. */
+  setPicker(kind) { picker = kind; },
+  /** The iPad's on-screen keyboard, as Obsidian reports it: it covers the
+   *  bottom `height` px of the window without resizing anything, sets
+   *  --keyboard-height and fires keyboardWillShow / keyboardWillHide. */
+  keyboard(height) {
+    document.documentElement.style.setProperty('--keyboard-height', `${height}px`);
+    window.dispatchEvent(new Event(height ? 'keyboardWillShow' : 'keyboardWillHide'));
+  },
   get session() { return session; },
   get bridge() { return bridge; },
   /** Open a vault file in the iframe, as the plugin's view does. */
@@ -67,13 +110,20 @@ window.host = {
       file: () => file,
       indexer,
       kv: { get: (k) => cameras.get(k), set: async (k, v) => { cameras.set(k, v); } },
-      pickNote: async (query, source) => { calls.push(['pick', query, source]); return pickAnswer; },
+      pickNote: async (query, source) => {
+        calls.push(['pick', query, source]);
+        return picker === 'modal' ? obsidianPicker(['Ideas', 'Maths.bedrock']) : pickAnswer;
+      },
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
-      onReady: () => ready(),
+      onReady: () => { tellInset(keyboard.covered()); ready(); },
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
     bridge.listen(window);
+    // As the plugin's view does: tell the app how much of it is covered.
+    const tellInset = (bottom) => bridge.send('inset', { bottom }, 1000).catch(() => null);
+    keyboard?.stop();
+    keyboard = watchKeyboard(window, frame, tellInset);
     frame.srcdoc = webApp.page('app');
     await isReady;
   },

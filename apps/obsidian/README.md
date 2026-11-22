@@ -87,6 +87,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | view | `flush` | the app saves now (sent before the view closes) |
 | view | `reload` | the file changed elsewhere (sync, another window): the app reloads it |
 | view | `show { strokes }` | the app brings those strokes (each as its whole word) into view and flashes a frame around them; `false` if none is on the page any more |
+| view | `inset { bottom }` | the bottom `bottom` CSS px of the frame are hidden (the iPad's keyboard, which covers Obsidian without resizing it; `src/keyboard.js`): the word menu stays above them |
 
 Requests carry `seq`; answers carry `reply` (the request's `seq`) and
 `result` or `error`.

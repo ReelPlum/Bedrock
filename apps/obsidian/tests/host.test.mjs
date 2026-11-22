@@ -181,8 +181,11 @@ test('making a link opens the vault note picker, and the link reaches the file, 
     $('wm-link').click();
     out.types = [...document.querySelectorAll('#wm-link-type option')].map((o) => o.value);
     out.type = $('wm-link-type').value;
-    // The picker answers asynchronously; the link is saved and the menu closes.
-    for (let i = 0; i < 100 && !word().link; i++) await new Promise((res) => setTimeout(res, 20));
+    // The picker answers asynchronously; its note goes into the box, and
+    // Save makes the link and closes the menu.
+    for (let i = 0; i < 100 && !$('wm-link-target').value; i++) await new Promise((res) => setTimeout(res, 20));
+    out.box = $('wm-link-target').value;
+    document.querySelector('#wm-link-form .wm-save').click();
     out.link = word().link;
     out.closed = $('word-menu').hidden;
     bedrock.wordMenu.open(word());
@@ -192,6 +195,7 @@ test('making a link opens the vault note picker, and the link reaches the file, 
   });
   assert.deepEqual(r.types, ['url', 'note'], 'Obsidian notes can be linked inside Obsidian');
   assert.equal(r.type, 'note', 'a new link starts as a link to a note');
+  assert.equal(r.box, 'Ideas');
   assert.deepEqual(r.link, { type: 'note', target: 'Ideas' });
   assert.ok(r.closed);
   assert.equal(r.linkNow, 'Links to [[Ideas]]');
@@ -229,6 +233,92 @@ test('closing the picker leaves the link form open, with Browse to try again and
   });
   assert.deepEqual(r, { form: true, browse: true, link: null, browseForUrl: false, urlLink: { type: 'url', target: 'https://example.com/' } });
   assert.deepEqual(await page.evaluate(() => host.calls.map((c) => c[0])), ['pick']);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+/** Hold the first word with the mouse, as a finger or pen would, until its
+ *  menu opens. The frame fills the harness from its top left corner. */
+async function holdWord(page, frame) {
+  const at = await frame.evaluate(() => {
+    const [x0, y0, x1, y1] = JSON.parse(bedrock.canvas.words_json())[0].bounds;
+    const [ox, oy, zoom] = bedrock.canvas.camera();
+    const r = document.getElementById('stage').getBoundingClientRect();
+    return { x: r.left + ((x0 + x1) / 2 - ox) * zoom, y: r.top + ((y0 + y1) / 2 - oy) * zoom };
+  });
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await frame.waitForFunction(() => !document.getElementById('word-menu').hidden);
+  await page.mouse.up();
+}
+
+/** Click an element of the app's frame with the mouse. */
+async function clickIn(page, frame, selector) {
+  const b = await frame.evaluate((s) => document.querySelector(s).getBoundingClientRect().toJSON(), selector);
+  await page.mouse.click(b.left + b.width / 2, b.top + b.height / 2);
+}
+
+// Bug: choosing a note in Obsidian's picker never showed it in the link box:
+// the pick linked the word at once and closed the menu, so the writer never
+// saw which note was chosen. And the box was focused as the picker opened,
+// which on the iPad brought up the keyboard for nothing.
+test("bug: the note chosen in Obsidian's picker goes into the link box, and Save makes the link", async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Physics.bedrock');
+  await page.evaluate(() => host.setPicker('modal'));
+  await writeWord(frame);
+  await holdWord(page, frame);
+  // On the iPad a focused text box brings up the keyboard: not while the
+  // picker is what the writer is looking at.
+  await frame.evaluate(() => {
+    window.boxFocused = false;
+    document.getElementById('wm-link-target').addEventListener('focus', () => { window.boxFocused = true; });
+  });
+  await clickIn(page, frame, '#wm-link');
+  await page.click('#picker .suggestion-item >> text=Ideas');
+  await frame.waitForFunction(() => document.getElementById('wm-link-target').value === 'Ideas');
+  const r = await frame.evaluate(() => ({
+    form: !document.getElementById('wm-link-form').hidden,
+    boxFocused: window.boxFocused,
+    link: JSON.parse(bedrock.canvas.words_json())[0].link ?? null,
+  }));
+  assert.deepEqual(r, { form: true, boxFocused: false, link: null }, 'the chosen note waits in the box for Save');
+  await clickIn(page, frame, '#wm-link-form .wm-save');
+  const after = await frame.evaluate(() => ({
+    closed: document.getElementById('word-menu').hidden,
+    link: JSON.parse(bedrock.canvas.words_json())[0].link ?? null,
+  }));
+  assert.deepEqual(after, { closed: true, link: { type: 'note', target: 'Ideas' } });
+  assert.deepEqual(await page.evaluate(() => host.calls), [['pick', '', 'Physics.bedrock']]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// Bug: on the iPad the keyboard came up over the link box. It covers the
+// bottom of Obsidian without resizing the view, so the canvas never knew.
+test('bug: the word menu moves above the iPad keyboard, and back when it goes', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Physics.bedrock');
+  await page.evaluate(() => host.setPick(null));
+  await writeWord(frame, 300, 380);
+  await holdWord(page, frame);
+  await clickIn(page, frame, '#wm-link');
+  const menu = () => frame.evaluate(() => {
+    const m = document.getElementById('word-menu').getBoundingClientRect();
+    const box = document.getElementById('wm-link-target').getBoundingClientRect();
+    const word = JSON.parse(bedrock.canvas.words_json())[0].bounds;
+    const [, oy, zoom] = bedrock.canvas.camera();
+    return { top: m.top, bottom: m.bottom, box: box.bottom, wordTop: (word[1] - oy) * zoom };
+  });
+  const before = await menu();
+  assert.ok(before.bottom > 768 - 320, `the menu starts below the word, where the keyboard will be (${before.bottom})`);
+  await page.evaluate(() => host.keyboard(320));
+  await until(frame, () => document.getElementById('word-menu').getBoundingClientRect().bottom <= 768 - 320);
+  const up = await menu();
+  assert.ok(up.box <= 768 - 320, 'the link box is above the keyboard');
+  assert.ok(up.bottom <= up.wordTop, 'above the word, which stays in sight');
+  await page.evaluate(() => host.keyboard(0));
+  await until(frame, () => document.getElementById('word-menu').getBoundingClientRect().top > 380);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

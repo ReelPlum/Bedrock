@@ -6,6 +6,7 @@ import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSet
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
 import { HostBridge } from './bridge.js';
+import { watchKeyboard } from './keyboard.js';
 import { askAtLaunch } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
@@ -133,6 +134,7 @@ class BedrockView extends FileView {
     this.frame = null;
     this.bridge = null;
     this.session = null;
+    this.keyboard = null;
     // Ink to show once the canvas has loaded the note (a search hit, a link).
     this.pending = null;
     this.appReady = false;
@@ -153,6 +155,11 @@ class BedrockView extends FileView {
     const strokes = this.pending;
     this.pending = null;
     this.bridge.send('show', { strokes }).catch(() => null);
+  }
+
+  /** How much of the bottom of the canvas is hidden (by the keyboard). */
+  tellInset(bottom) {
+    if (this.appReady && this.bridge) this.bridge.send('inset', { bottom }, 1000).catch(() => null);
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -176,12 +183,15 @@ class BedrockView extends FileView {
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
-      onReady: () => { this.appReady = true; this.showPending(); },
+      onReady: () => { this.appReady = true; this.showPending(); this.tellInset(this.keyboard?.covered() || 0); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
     this.frame = frame;
     this.bridge = new HostBridge(() => frame.contentWindow, this.session.handlers);
     this.bridge.listen(frame.ownerDocument.defaultView);
+    // The iPad's keyboard covers the bottom of the view without resizing it:
+    // tell the canvas, so its menus stay above the keyboard.
+    this.keyboard = watchKeyboard(frame.ownerDocument.defaultView, frame, (bottom) => this.tellInset(bottom));
     // The page is written into the frame, not loaded from the plugin
     // folder: Obsidian refuses file requests from inside a view.
     frame.srcdoc = plugin.webApp.page('app');
@@ -190,6 +200,8 @@ class BedrockView extends FileView {
   async onUnloadFile() {
     // Save what was drawn last before the iframe goes away.
     await this.bridge?.send('flush', {}, 3000).catch(() => null);
+    this.keyboard?.stop();
+    this.keyboard = null;
     this.bridge?.close();
     this.frame?.remove();
     this.frame = this.bridge = this.session = null;
