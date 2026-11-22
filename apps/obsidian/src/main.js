@@ -2,7 +2,7 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
+import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
 import { HostBridge } from './bridge.js';
@@ -246,6 +246,14 @@ export default class BedrockPlugin extends Plugin {
     this.registerExtensions([EXTENSION], VIEW_TYPE);
 
     this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
+    // Holding a folder (iPad) or right-clicking it (desktop): a new note in it.
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!(file instanceof TFolder)) return;
+      menu.addItem((item) => item
+        .setTitle('New Bedrock note')
+        .setIcon('pen-tool')
+        .onClick(() => this.newNote(file.path)));
+    }));
     this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
     this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
@@ -404,9 +412,12 @@ export default class BedrockPlugin extends Plugin {
     });
   }
 
-  async newNote() {
+  /** Makes an empty note and opens it: in `inFolder` when given (a
+   *  folder's menu), otherwise in the folder for new notes or beside the
+   *  open file. */
+  async newNote(inFolder) {
     const active = this.app.workspace.getActiveFile();
-    const folder = this.settings.newNoteFolder || active?.parent?.path || '';
+    const folder = inFolder ?? (this.settings.newNoteFolder || active?.parent?.path || '');
     const dir = folder && folder !== '/' ? `${folder}/` : '';
     let path;
     for (let n = 0; ; n++) {

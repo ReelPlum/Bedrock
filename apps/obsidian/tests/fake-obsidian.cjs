@@ -7,6 +7,21 @@ class Events {
 }
 
 class TFile {}
+class TFolder {
+  constructor(path) { this.path = path; this.children = []; }
+  isRoot() { return this.path === '/'; }
+}
+
+/** A context menu: records its items, as `menu.items`. */
+class Menu {
+  constructor() { this.items = []; }
+  addItem(fn) {
+    const item = { setTitle(t) { this.title = t; return this; }, setIcon(i) { this.icon = i; return this; }, setSection(s) { this.section = s; return this; }, onClick(f) { this.click = f; return this; } };
+    fn(item);
+    this.items.push(item);
+    return this;
+  }
+}
 
 class Plugin {
   constructor(app, manifest) {
@@ -71,4 +86,4 @@ requestUrl.answer = () => ({ status: 200, json: {} });
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+module.exports = { Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
