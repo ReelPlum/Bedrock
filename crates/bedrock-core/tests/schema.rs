@@ -61,6 +61,8 @@ fn full_note() -> Document {
     d.group(&ids[..2]);
     d.set_link(&ids[..2], "https://example.com", "url");
     d.set_kind(&ids[2..3], "math");
+    d.add_note_link("Lectures/Week 3.pdf#page=4", "note", Some("Week 3, page 4"));
+    d.add_tag("physics/forces");
     let rect = Rect::new(Vec2::new(0.0, 50.0), Vec2::new(40.0, 80.0));
     d.add_image("images/0123456789abcdef0123456789abcdef.png", Some(vec![1, 2, 3]), rect);
     d.add_text("typed\ntext", rect);

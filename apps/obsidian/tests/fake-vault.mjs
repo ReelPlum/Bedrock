@@ -18,6 +18,7 @@ export class FakeVault {
       name,
       basename: dot > 0 ? name.slice(0, dot) : name,
       extension: dot > 0 ? name.slice(dot + 1) : '',
+      parent: { path: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '/' },
       stat: { ctime: now, mtime: now, size: 0 },
       data,
     };
@@ -76,6 +77,20 @@ export class FakeVault {
   async delete(f) {
     this.log.push(['delete', f.path]);
     this.files.delete(f.path);
+  }
+
+  /** Move a file, as Obsidian's Vault.rename and FileManager.renameFile
+   *  do: the same file object, with its new path and names. */
+  async rename(f, newPath) {
+    if (this.files.has(newPath)) throw new Error('Destination file already exists!');
+    this.log.push(['rename', f.path, newPath]);
+    this.files.delete(f.path);
+    const name = newPath.split('/').pop();
+    const dot = name.lastIndexOf('.');
+    Object.assign(f, { path: newPath, name, basename: dot > 0 ? name.slice(0, dot) : name, extension: dot > 0 ? name.slice(dot + 1) : '' });
+    f.parent = { path: newPath.includes('/') ? newPath.split('/').slice(0, -1).join('/') : '/' };
+    this.files.set(newPath, f);
+    return f;
   }
 
   /** Test helper: change a file as another device would. */

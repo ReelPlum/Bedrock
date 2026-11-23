@@ -2,7 +2,9 @@
 
 Handwritten Bedrock notes inside an Obsidian vault, on desktop and iPad.
 `.bedrock` files open in a Bedrock view; new ones come from the ribbon pen
-icon or the "New handwritten note" command.
+icon, the "New handwritten note" command, or "New Bedrock note" in a
+folder's menu (hold the folder on iPad, right-click it on desktop), which
+makes the note in that folder.
 
 - **Link to vault files.** Hold a handwritten word and choose "Make a link…":
   the vault's folders and files open over the canvas (with a filter). Tap a
@@ -27,6 +29,18 @@ icon or the "New handwritten note" command.
   setting is (no second copy in `Bedrock index/`), the sidecar opens the
   note beside it, moves with the note when it is renamed, and is fixed up
   once if the folder was not dropped into the vault's root.
+- **A handwritten note about a page.** Right-click in a note (a long press
+  on the iPad), or open a note's or PDF's ⋯ menu (also the tab header and
+  the file explorer), and choose "New handwritten note linking here"; a
+  right-click inside a PDF offers it too, and so does the command palette.
+  The new note ("Lecture 3 notes", or "Week 3 page 4 notes" for a PDF) is
+  made next to the page and opens at once, linking to it: to the note, or to
+  the PDF page in view (`[[Week 3.pdf#page=4]]`). The link belongs to the
+  whole note, not to any ink, so the page lists the note in its backlinks.
+- **Tags and links of the whole note.** "Tags and links…" in the canvas's
+  menu adds and removes the note's tags (shown in the index note's front
+  matter, so Obsidian's tag pane and search find them) and links that belong
+  to no handwriting (a vault file or PDF page from the picker, or a website).
 - **Link to a word.** Hold a word and choose "Copy a link to here". Pasted
   into any note, the link (`[[Physics.bedrock#^9f2c4e1a7b3d5f60]]`) opens the
   handwriting at that word.
@@ -80,6 +94,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | From | Message | Answer |
 |---|---|---|
 | app | `ready` | the app has started |
+| app | `start` | what a new note starts with: `{ noteLinks: [{ target, type, text }] }` for a note made by "New handwritten note linking here" (once; the app adds the link and saves at once), else `null` |
 | app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
 | app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes |
@@ -88,11 +103,13 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
 | app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
 | app | `open-link { type, target }` | opens the note in Obsidian |
+| app | `rename { title }` | the name typed in the canvas header is done (Enter, or leaving the box): the plugin renames the file to it in its folder with `fileManager.renameFile` (so links follow), unless the name is empty or another file has it; `{ name }`, the file's name after |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
 | app | `send-report { report }` | posts an error report the person chose to send ("Share with the Bedrock team"), or an automatic performance report (`sent: "auto"`, which gets the plugin's own slow moments and a `mobile` fact added), with `requestUrl`; `{ id }` |
 | view | `flush` | the app saves now (sent before the view closes) |
 | view | `reload` | the file changed elsewhere (sync, another window): the app reloads it |
 | view | `show { strokes }` | the app brings those strokes (each as its whole word) into view and flashes a frame around them; `false` if none is on the page any more |
+| view | `renamed { name }` | the file was renamed or moved (in Obsidian, or by `rename`): the header shows `name`, and the next save stores it as the note's title |
 | view | `inset { bottom }` | the bottom `bottom` CSS px of the frame are hidden (the iPad's keyboard, which covers Obsidian without resizing it; `src/keyboard.js`): the word menu stays above them, and a text box being typed in slides into sight (`apps/web/src/keep-in-view.js`) |
 
 Requests carry `seq`; answers carry `reply` (the request's `seq`) and

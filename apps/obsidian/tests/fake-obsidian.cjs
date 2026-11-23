@@ -7,6 +7,10 @@ class Events {
 }
 
 class TFile {}
+class TFolder {
+  constructor(path) { this.path = path; this.children = []; }
+  isRoot() { return this.path === '/'; }
+}
 
 class Plugin {
   constructor(app, manifest) {
@@ -24,6 +28,7 @@ class Plugin {
   registerView(type, make) { this.views[type] = make; }
   registerExtensions(exts, type) { for (const e of exts) this.extensions[e] = type; }
   registerEvent() {}
+  registerDomEvent(target, name, fn) { (this.domEvents ||= []).push({ target, name, fn }); }
   register(fn) { (this.cleanups ||= []).push(fn); }
   unload() { for (const fn of this.cleanups || []) fn(); }
   addCommand(c) { this.commands.push(c); }
@@ -45,6 +50,20 @@ Modal.opened = [];
 /** Obsidian's PDF.js; tests set `loadPdfJs.lib`. */
 async function loadPdfJs() { return loadPdfJs.lib; }
 loadPdfJs.lib = null;
+
+/** Records its items as `{ title, icon, section, click }`. */
+class MenuItem {
+  setTitle(t) { this.title = t; return this; }
+  setIcon(i) { this.icon = i; return this; }
+  setSection(s) { this.section = s; return this; }
+  onClick(fn) { this.click = fn; return this; }
+}
+class Menu {
+  constructor() { this.items = []; Menu.made.push(this); }
+  addItem(fn) { const i = new MenuItem(); fn(i); this.items.push(i); return this; }
+  showAtMouseEvent(e) { this.shownAt = e; return this; }
+}
+Menu.made = [];
 
 class FileView { constructor(leaf) { this.leaf = leaf; } }
 
@@ -68,4 +87,4 @@ requestUrl.answer = () => ({ status: 200, json: {} });
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+module.exports = { Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };

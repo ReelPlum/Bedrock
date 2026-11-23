@@ -6,7 +6,7 @@ import { FakeVault } from './fake-vault.mjs';
 import { readZip, text } from '../src/zip.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteForIndex, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
 import { libraryFiles } from '../../web/src/library.js';
-import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
+import { createSession, fileNameFor, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
 import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
@@ -78,6 +78,33 @@ test('index note holds the handwriting text and the links', async () => {
   assert.match(md, /## Text\n\nNewton second law\n/);
   assert.match(md, /## Links\n\n- \[\[Ideas\]\]\n- \[site\]\(<https:\/\/example.com>\)/);
   assert.equal(noteOfIndex(md), 'Physics/Forces.bedrock');
+});
+
+test("the index note carries the note's tags and the links of the whole note", async () => {
+  const bytes = zip({
+    // A text box holding `"tags":[` is escaped in JSON, so only the note's own list counts.
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [], texts: [{ text: '"tags":["no"]' }], noteLinks: [{ target: 'Lectures/Week 3.pdf#page=4', type: 'note', text: 'Week 3, page 4' }], tags: ['physics/forces', 'Exam-prep', 'bedrock', 'not a tag', '2026', 'true', 'physics/forces'] }),
+    'recognized.json': recognized('Newton'),
+    'links.md': '# Links in this note\n\n- [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]\n- [[Ideas]]\n',
+  });
+  const t = await readNoteText(bytes);
+  assert.deepEqual(t.tags, ['physics/forces', 'Exam-prep', 'true'], 'only real tags, once, and bedrock is already there');
+  const md = indexMarkdown('Physics/Forces.bedrock', t);
+  assert.match(md, /^---\nbedrock: "Physics\/Forces.bedrock"\ntags: \[bedrock, physics\/forces, Exam-prep, "true"\]\n---\n/);
+  assert.match(md, /## Links\n\n- \[\[Lectures\/Week 3\.pdf#page=4\|Week 3, page 4\]\]\n- \[\[Ideas\]\]\n/, 'the note link first, then the words\' links');
+  assert.equal(noteOfIndex(md), 'Physics/Forces.bedrock');
+  // A damaged list costs the tags, nothing else.
+  const damaged = await readNoteText(zip({ 'note.json': '{"format":"bedrock-note","tags":[1,', 'recognized.json': recognized('Newton') }));
+  assert.deepEqual([damaged.tags, damaged.words], [[], ['Newton']]);
+});
+
+test('index notes from before tags: an untagged note indexes the same, and old index notes still open their note', async () => {
+  const { readFileSync } = await import('node:fs');
+  const old = readFileSync(new URL('./fixtures/index-before-tags.md', import.meta.url), 'utf8');
+  const noteBytes = readFileSync(new URL('../../../crates/bedrock-core/tests/fixtures/old-formats/v1-before-note-links.bedrock', import.meta.url));
+  assert.equal(noteOfIndex(old), 'School/Before note links.bedrock');
+  assert.equal(indexMarkdown('School/Before note links.bedrock', await readNoteText(new Uint8Array(noteBytes))), old,
+    'a note without tags or note links gets the very same index note as before');
 });
 
 test('handwriting that looks like Markdown links does not become a link', () => {
@@ -365,6 +392,57 @@ test('the app can ask for a link to a word; only real stroke ids are accepted', 
   assert.deepEqual(copied, [['9f2c4e1a7b3d5f60', 'Physics/Forces.bedrock']]);
   // A host without a clipboard just says no.
   assert.equal(await session(vault, file).s.handlers['copy-link']({ stroke: 'ab' }), false);
+});
+
+test("a new note's starting link is handed to its canvas once", async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Lecture 3 notes.bedrock', new ArrayBuffer(0));
+  let start = { noteLinks: [{ target: 'Lecture 3', type: 'note', text: 'Lecture 3' }] };
+  const { s } = session(vault, file, { start: () => { const v = start; start = null; return v; } });
+  assert.deepEqual(await s.handlers.start(), { noteLinks: [{ target: 'Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  assert.equal(await s.handlers.start(), null);
+  assert.equal(await session(vault, file).s.handlers.start(), null, 'a host without starting links');
+});
+
+test('a title becomes a file name Obsidian can link to', () => {
+  assert.equal(fileNameFor('Forces'), 'Forces');
+  assert.equal(fileNameFor('  Forces and   motion '), 'Forces and motion');
+  assert.equal(fileNameFor('Week 3: forces/motion'), 'Week 3 forces motion');
+  assert.equal(fileNameFor('a\\b*c?d"e<f>g|h#i^j[k]l'), 'a b c d e f g h i j k l');
+  assert.equal(fileNameFor('...hidden'), 'hidden', 'no hidden files');
+  assert.equal(fileNameFor('Chapter 1...'), 'Chapter 1', 'Windows drops trailing dots');
+  assert.equal(fileNameFor('tab\there'), 'tab here');
+  assert.equal(fileNameFor('Ünïcødé 名前'), 'Ünïcødé 名前');
+  assert.equal(fileNameFor(' / : '), '');
+  assert.equal(fileNameFor(''), '');
+  assert.equal(fileNameFor(null), '');
+  assert.equal(fileNameFor('x'.repeat(300)).length, 120);
+});
+
+test('the app can ask to rename the note; empty and unchanged names rename nothing', async () => {
+  const vault = new FakeVault();
+  const f = await vault.createBinary('Physics/Forces.bedrock', note(['Newton']));
+  const asked = [];
+  const s = createSession({
+    vault, file: () => f, indexer: null, kv: { get() {}, set: async () => {} },
+    rename: async (name) => { asked.push(name); return name === 'Taken' ? f.basename : name; },
+  });
+  assert.deepEqual(await s.handlers.rename({ title: 'Week 3: motion' }), { name: 'Week 3 motion' });
+  assert.deepEqual(await s.handlers.rename({ title: 'Taken' }), { name: 'Forces' }, 'a refused rename answers the file name');
+  assert.deepEqual(await s.handlers.rename({ title: '  ' }), { name: 'Forces' });
+  assert.deepEqual(await s.handlers.rename({ title: 'Forces' }), { name: 'Forces' });
+  assert.deepEqual(await s.handlers.rename({}), { name: 'Forces' });
+  assert.deepEqual(asked, ['Week 3 motion', 'Taken'], 'empty and unchanged names are not asked for');
+  const none = createSession({ vault, file: () => f, indexer: null, kv: { get() {}, set: async () => {} } });
+  assert.deepEqual(await none.handlers.rename({ title: 'Other' }), { name: 'Forces' }, 'a host that cannot rename keeps the name');
+});
+
+test('renaming an empty note makes no index note', async () => {
+  const vault = new FakeVault();
+  const ix = new Indexer(vault);
+  await vault.createBinary('Handwritten note.bedrock', new ArrayBuffer(0));
+  await ix.rename('Handwritten note.bedrock', 'Forces.bedrock', new ArrayBuffer(0));
+  assert.deepEqual(vault.getFiles().map((f) => f.path).filter((p) => p.endsWith('.md')), []);
 });
 
 test('session camera is kept per file; the link picker and links get the note path', async () => {

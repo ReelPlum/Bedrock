@@ -52,12 +52,24 @@ function makeApp() {
     onLayoutReady: (fn) => fn(),
     openLinkText: () => {},
   });
+  // Obsidian's FileManager: renames the file (and would update links to
+  // it), then the vault tells everyone, as Obsidian does.
+  const renamed = [];
+  const fileManager = {
+    async renameFile(f, newPath) {
+      const oldPath = f.path;
+      await vault.rename(f, newPath);
+      renamed.push([oldPath, newPath]);
+      await vault.trigger('rename', f, oldPath);
+    },
+  };
   const app = {
     vault,
     workspace,
+    fileManager,
     metadataCache: { fileToLinktext: (f, source, omitMd) => (omitMd && f.extension === 'md' ? f.path.slice(0, -3) : f.path) },
   };
-  return { app, vault, written, opened };
+  return { app, vault, written, opened, renamed };
 }
 
 async function loaded() {
@@ -71,7 +83,7 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   const { plugin, written } = await loaded();
   assert.deepEqual(Object.keys(plugin.views), ['bedrock-note']);
   assert.deepEqual(plugin.extensions, { bedrock: 'bedrock-note' });
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'report-problem', 'reindex']);
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex']);
   assert.equal(plugin.settingTabs.length, 1);
   assert.deepEqual([...written.keys()], [], 'the canvas is not unpacked: Obsidian would not let the view load it');
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
@@ -92,6 +104,117 @@ test('new notes are empty .bedrock files next to the open file, never overwritin
   await plugin.commands.find((c) => c.id === 'new-note').callback();
   assert.deepEqual(opened, ['Physics/Handwritten note.bedrock', 'Physics/Handwritten note 1.bedrock']);
   assert.equal(vault.files.get('Physics/Handwritten note.bedrock').data.byteLength, 0);
+});
+
+/** A PDF open in Obsidian's viewer, its pages `count` tall pages of 1000px
+ *  with the view scrolled to `scroll`: just the DOM pdfPageInView reads. */
+function pdfLeaf(file, count, scroll) {
+  const view = { top: 0, bottom: 800, left: 0, right: 600 };
+  const pages = Array.from({ length: count }, (_, i) => ({
+    dataset: { pageNumber: String(i + 1) },
+    getBoundingClientRect: () => ({ top: i * 1000 - scroll, bottom: (i + 1) * 1000 - scroll, left: 0, right: 600 }),
+    closest(sel) { return sel.startsWith('.page') ? this : null; },
+  }));
+  const containerEl = {
+    getBoundingClientRect: () => view,
+    querySelectorAll: () => pages,
+    contains: (el) => el === containerEl || pages.includes(el),
+    closest: () => null,
+  };
+  return { view: { file, containerEl, getViewType: () => 'pdf' }, pages };
+}
+
+test('a note or PDF offers "New handwritten note linking here": named after the page, it starts with a link to it', async () => {
+  const { plugin, vault, app, opened } = await loaded();
+  const lecture = await vault.create('Lectures/Lecture 3.md', '# Lecture 3');
+  const pdf = await vault.createBinary('Lectures/Week 3.pdf', new ArrayBuffer(0));
+  const index = await vault.create('Bedrock index/Forces.md', 'index');
+  const menuOf = async (event, ...args) => {
+    const menu = new fake.Menu();
+    await app.workspace.trigger(event, menu, ...args);
+    return menu.items.filter((i) => i.title === 'New handwritten note linking here');
+  };
+
+  // Right-click (a long press on the iPad) in a Markdown note.
+  const [fromEditor] = await menuOf('editor-menu', {}, { file: lecture });
+  assert.ok(fromEditor, 'the editor menu offers it');
+  await fromEditor.click();
+  assert.deepEqual(opened, ['Lectures/Lecture 3 notes.bedrock'], 'made next to the page, named after it, and opened');
+  assert.equal(vault.files.get('Lectures/Lecture 3 notes.bedrock').data.byteLength, 0, 'an empty file: the canvas writes the first save');
+  const file = vault.files.get('Lectures/Lecture 3 notes.bedrock');
+  assert.deepEqual(plugin.takeStart(file), { noteLinks: [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  assert.equal(plugin.takeStart(file), null, 'handed to the canvas once');
+
+  // A PDF's menu (its tab's ⋯, a right-click on it) links the page in view.
+  const leaf = pdfLeaf(pdf, 6, 3300);
+  const [fromTab] = await menuOf('file-menu', pdf, 'more-options', leaf);
+  await fromTab.click();
+  const pdfNote = vault.files.get('Lectures/Week 3 page 4 notes.bedrock');
+  assert.ok(pdfNote, `named after the page: ${opened.at(-1)}`);
+  assert.deepEqual(plugin.takeStart(pdfNote).noteLinks, [{ target: 'Lectures/Week 3.pdf#page=4', type: 'note', text: 'Week 3, page 4' }]);
+
+  // Right-clicking inside the PDF links the page under the pointer.
+  app.workspace.getLeavesOfType = (type) => (type === 'pdf' ? [leaf] : []);
+  const right = { fn: (ev) => plugin.pdfContextMenu(ev) };
+  const e = { target: leaf.pages[1], defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  fake.Menu.made.length = 0;
+  right.fn(e);
+  assert.ok(e.defaultPrevented, 'our menu is shown');
+  const [pageItem] = fake.Menu.made[0].items;
+  assert.equal(fake.Menu.made[0].shownAt, e);
+  await pageItem.click();
+  assert.ok(vault.files.get('Lectures/Week 3 page 2 notes.bedrock'), 'the page that was right-clicked');
+  // A right-click Obsidian already answered is left alone.
+  fake.Menu.made.length = 0;
+  right.fn({ target: leaf.pages[0], defaultPrevented: true, preventDefault() {} });
+  assert.equal(fake.Menu.made.length, 0);
+
+  // From the file explorer, a PDF that is not open links the whole file;
+  // index notes, handwritten notes and other files are not offered.
+  app.workspace.getLeavesOfType = () => [];
+  const [fromExplorer] = await menuOf('file-menu', pdf, 'file-explorer');
+  await fromExplorer.click();
+  const whole = vault.files.get('Lectures/Week 3 notes.bedrock');
+  assert.deepEqual(plugin.takeStart(whole).noteLinks, [{ target: 'Lectures/Week 3.pdf', type: 'note', text: 'Week 3' }]);
+  assert.equal((await menuOf('file-menu', index, 'file-explorer')).length, 0, 'not on index notes');
+  assert.equal((await menuOf('file-menu', whole, 'file-explorer')).length, 0, 'not on handwritten notes');
+
+  // The same again never overwrites: the next name is free.
+  await (await menuOf('editor-menu', {}, { file: lecture }))[0].click();
+  assert.equal(opened.at(-1), 'Lectures/Lecture 3 notes 1.bedrock');
+
+  // And from the command palette, for the note in front.
+  app.workspace.getMostRecentLeaf = () => ({ view: { file: lecture } });
+  const command = plugin.commands.find((c) => c.id === 'new-linked-note');
+  assert.equal(command.checkCallback(true), true);
+  app.workspace.getMostRecentLeaf = () => ({ view: { file: index } });
+  assert.equal(command.checkCallback(true), false, 'not for an index note');
+});
+
+test('holding (or right-clicking) a folder offers a new Bedrock note in that folder', async () => {
+  const { plugin, vault, app, opened } = await loaded();
+  await vault.createFolder('Physics');
+  // The folder for new notes and the open file do not matter: the folder held does.
+  plugin.settings.newNoteFolder = 'Inbox';
+  app.workspace.active = { parent: { path: 'Maths' } };
+  const menuFor = async (file) => {
+    const menu = new fake.Menu();
+    await app.workspace.trigger('file-menu', menu, file, 'file-explorer-context-menu');
+    return menu.items.filter((i) => i.title === 'New Bedrock note');
+  };
+  const [item] = await menuFor(new fake.TFolder('Physics'));
+  assert.ok(item, 'the folder menu has the item');
+  assert.equal(item.icon, 'pen-tool');
+  await item.click();
+  await (await menuFor(new fake.TFolder('Physics')))[0].click();
+  assert.deepEqual(opened, ['Physics/Handwritten note.bedrock', 'Physics/Handwritten note 1.bedrock']);
+  assert.equal(vault.files.get('Physics/Handwritten note.bedrock').data.byteLength, 0);
+  // The vault's top folder.
+  await (await menuFor(new fake.TFolder('/')))[0].click();
+  assert.equal(opened.at(-1), 'Handwritten note.bedrock');
+  // A file's menu is left alone.
+  const file = vault.files.get('Physics/Handwritten note.bedrock');
+  assert.deepEqual(await menuFor(file), []);
 });
 
 test('the link picker is offered every vault file but the note itself and index notes, with its link text', async () => {
@@ -272,4 +395,66 @@ test('a plugin problem is shown with Report and logged; reports go out through r
   assert.equal(fake.requestUrl.calls.length, 1);
   assert.equal(fake.requestUrl.calls[0].url, 'https://bedrock-collect.reelplum.workers.dev/v1/reports');
   assert.equal(fake.requestUrl.calls[0].method, 'POST');
+});
+
+/** A .bedrock file in the vault with these recognised words. */
+async function noteFile(vault, path, words) {
+  const f = await vault.createBinary(path, inkNote(...words.map((w, i) => [w, [`s${i}`]])));
+  Object.setPrototypeOf(f, fake.TFile.prototype);
+  return f;
+}
+
+test("naming a note in the header renames its file with Obsidian's file manager, in its folder", async () => {
+  const { plugin, vault, renamed } = await loaded();
+  await vault.createFolder('Physics');
+  const f = await noteFile(vault, 'Physics/Handwritten note.bedrock', ['Newton']);
+  await plugin.indexer.update(f.path, await vault.readBinary(f));
+  assert.equal(await plugin.renameNote(f, 'Forces'), 'Forces');
+  assert.deepEqual(renamed, [['Physics/Handwritten note.bedrock', 'Physics/Forces.bedrock']], 'through fileManager, so links follow');
+  assert.equal(f.path, 'Physics/Forces.bedrock');
+  // The index note followed, as for every rename.
+  assert.ok(vault.files.has('Bedrock index/Physics/Forces.md'));
+  assert.ok(!vault.files.has('Bedrock index/Physics/Handwritten note.md'));
+  // A case change is a rename too.
+  assert.equal(await plugin.renameNote(f, 'forces'), 'forces');
+  assert.equal(f.path, 'Physics/forces.bedrock');
+  plugin.unload();
+});
+
+test('a header name another file already has renames nothing and says so', async () => {
+  const { plugin, vault, renamed } = await loaded();
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await noteFile(vault, 'Motion.bedrock', ['Galileo']);
+  fake.Notice.shown.length = 0;
+  assert.equal(await plugin.renameNote(f, 'Motion'), 'Forces');
+  assert.deepEqual(renamed, []);
+  assert.equal(f.path, 'Forces.bedrock');
+  assert.match(fake.Notice.shown.join('\n'), /Motion\.bedrock.*already/);
+  plugin.unload();
+});
+
+test('the view tells the canvas when Obsidian renames its file', async () => {
+  const { plugin, vault } = await loaded();
+  const view = plugin.views['bedrock-note'](new fake.WorkspaceLeaf());
+  const sent = [];
+  view.bridge = { send: (event, args) => { sent.push([event, args]); return Promise.resolve(true); } };
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await vault.rename(f, 'School/Motion.bedrock');
+  await view.onRename(f);
+  assert.deepEqual(sent, [['renamed', { name: 'Motion' }]]);
+  view.bridge = null;
+  await view.onRename(f); // closed meanwhile: nothing to tell
+  plugin.unload();
+});
+
+test('the camera follows a renamed note, even with search switched off', async () => {
+  const { plugin, vault } = await loaded();
+  plugin.settings.index = false;
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await plugin.kv.set('Forces.bedrock\u0000camera', [1, 2, 3]);
+  await plugin.renameNote(f, 'Motion');
+  assert.deepEqual(plugin.kv.get('Motion.bedrock\u0000camera'), [1, 2, 3]);
+  assert.equal(plugin.kv.get('Forces.bedrock\u0000camera'), undefined);
+  assert.ok(!vault.getFiles().some((x) => x.path.endsWith('.md')), 'no index note with search off');
+  plugin.unload();
 });

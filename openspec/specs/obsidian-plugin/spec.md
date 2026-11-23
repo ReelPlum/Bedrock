@@ -16,6 +16,8 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
   note. Its front matter `bedrock: "<note path>"` names the note.
 - **Link to a word**: `[[<note link text>#^<stroke id>]]`, where the stroke id
   is a 16-hex-digit id of a stroke in that word.
+- **Note links and tags**: `noteLinks` and `tags` in `note.json`
+  (`note-format`); the index note's front matter lists the tags.
 - **Plugin data** (Obsidian's `data.json`): `{ ...settings, cameras }`: the settings
   (`index`, `indexFolder`, `newNoteFolder`) and the camera per vault file
   (only the most recent are kept).
@@ -44,6 +46,12 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **WHEN** a new note is made
 - **THEN** it is an empty `.bedrock` file next to it and never overwrites a file
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: new notes are empty .bedrock files next to the open file, never overwriting one -->
+
+#### Scenario: A new note from a folder's menu
+- **GIVEN** a folder in Obsidian's file explorer
+- **WHEN** the writer holds it (iPad, iPhone) or right-clicks it (desktop) and picks "New Bedrock note"
+- **THEN** an empty `.bedrock` file is made in that folder (the vault's top folder too), whatever the "Folder for new notes" setting says, never overwriting a file, and it opens; a file's menu gets no such item
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: holding (or right-clicking) a folder offers a new Bedrock note in that folder -->
 
 #### Scenario: Saving to the vault file
 - **GIVEN** a note open in the view
@@ -135,3 +143,33 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`); the word menu moves above the keyboard, any other text box being typed in slides into sight with the page (`keep-in-view.js`), and both go back when the keyboard goes
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the word menu moves above the iPad keyboard, and back when it goes -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: any text box being typed in slides into sight above the iPad keyboard, and back after -->
+
+### Requirement: A handwritten note SHALL be made from a note or PDF, linking to it
+
+"New handwritten note linking here" SHALL be offered in the editor menu of a
+Markdown note, in the file menu of a Markdown note or PDF, in a right-click
+inside a PDF that Obsidian leaves unanswered, and in the command palette.
+
+#### Scenario: From a note or a PDF page
+- **GIVEN** a Markdown note and a PDF scrolled to its fourth page
+- **WHEN** the item is chosen in the note's editor menu, the PDF's ⋯ menu, a right-click on the PDF's second page, the file explorer, or the command palette
+- **THEN** an empty note is made next to the page, named after it (`Lecture 3 notes`, `Week 3 page 4 notes`) without overwriting a file, and opened; it starts with a link of the whole note to the note, the page in view (`#page=4`), the page right-clicked, or the whole PDF when it is not open
+- **AND** it is not offered for index notes, handwritten notes, or a right-click Obsidian answered with its own menu
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: a note or PDF offers "New handwritten note linking here": named after the page, it starts with a link to it -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: registers the .bedrock view, commands and settings, and writes nothing into the plugin folder -->
+
+#### Scenario: The canvas saves the link at once
+- **GIVEN** a note made this way
+- **WHEN** its canvas starts
+- **THEN** it asks for the starting link once (`start`), adds it, and saves straight away with no ink; the link reaches the file, `links.md` and the index note, and is not added again when the note reopens
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a new note's starting link is handed to its canvas once -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made about a page starts with its link, saved at once; tags and links of the whole note reach the file and the index -->
+
+### Requirement: The canvas SHALL show and edit the note's tags and links
+
+#### Scenario: Tags and links… in the menu
+- **GIVEN** a note open in the canvas
+- **WHEN** "Tags and links…" is chosen in the menu and tags, a PDF page from the vault picker and a website are added, and a tag and a link are removed
+- **THEN** the panel shows them, stays open over the picker, refuses a tag already there, opens a link with Obsidian, and the file and the index note get the tags and links
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made about a page starts with its link, saved at once; tags and links of the whole note reach the file and the index -->
+<!-- test-js: apps/web/tests/app.test.mjs :: tags and links of the whole note: added and removed from the menu, with no ink, and kept when the note reopens -->

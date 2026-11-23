@@ -5,6 +5,7 @@ import { DOCKS, defaultLayout, loadLayouts, mapRect, orientationOf, placeAlong, 
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
+import { NoteInfo } from './note-info.js';
 import { KeepInView } from './keep-in-view.js';
 import { SelectionView } from './selection-view.js';
 import { SwatchPicker } from './swatch-picker.js';
@@ -230,6 +231,7 @@ async function main() {
   let handwriting = null;
   let recognizerView = null;
   let wordMenu = null;
+  let noteInfo = null;
   let selectionView = null;
   let pictures = null;
   let lastRevision = -1;
@@ -520,6 +522,7 @@ async function main() {
     handwriting?.schedule();
     savedRevision = canvas.revision();
     setSaveState('Saved');
+    if (noteInfo?.open) noteInfo.render();
     updateUndo();
     input.requestFrame();
   }
@@ -562,6 +565,9 @@ async function main() {
     if (!rec) return newNote();
     try {
       const warnings = canvas.load(rec.data, ...randomSeed());
+      // In a host the note's name is its file's name; the title stored in
+      // the note follows with the next save.
+      if (host && rec.title) canvas.set_title(rec.title);
       note = { id: rec.id, created: rec.created, folder: rec.folder || null };
       const cam = await store.getKv(`camera:${id}`).catch(() => null);
       if (cam && cam.length === 3) canvas.set_camera(cam[0], cam[1], cam[2]);
@@ -580,11 +586,27 @@ async function main() {
     await shareWordsAndSend();
     const folder = await libraryFolder();
     canvas.new_document(...randomSeed());
+    if (host) canvas.set_title((await store?.list().catch(() => []))?.[0]?.title || '');
     note = { id: host ? host.noteId : newNoteId(), created: Date.now(), folder };
     canvas.set_paper('dots');
     applyDocToUi();
     savedRevision = -1; // a new note is saved on its first stroke
     setSaveState('New');
+    // A note the host made about a page ("New handwritten note linking
+    // here" in Obsidian) starts with its link and tags, saved at once.
+    const start = host ? await host.start().catch(() => null) : null;
+    if (start && applyStart(start)) await saveNow();
+  }
+
+  /** Put the host's starting links and tags into the new note. */
+  function applyStart({ noteLinks, tags } = {}) {
+    let changed = false;
+    for (const l of Array.isArray(noteLinks) ? noteLinks : []) {
+      if (l && typeof l.target === 'string') changed = canvas.add_note_link(l.target, typeof l.type === 'string' ? l.type : 'note', typeof l.text === 'string' ? l.text : '') || changed;
+    }
+    for (const t of Array.isArray(tags) ? tags : []) if (typeof t === 'string') changed = !!canvas.add_tag(t) || changed;
+    if (changed) noteInfo?.render();
+    return changed;
   }
 
   // ----- library -------------------------------------------------------------
@@ -1269,6 +1291,30 @@ async function main() {
     scheduleSave();
   });
   $('title').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  /** The host renamed the note's file (or kept its name): show and keep it. */
+  function hostNamed(name) {
+    if (typeof name !== 'string' || !name || name === canvas.title()) {
+      if (name) $('title').value = name;
+      return;
+    }
+    canvas.set_title(name);
+    $('title').value = name;
+    savedRevision = -1;
+    scheduleSave();
+  }
+  // In a host the name is the file's name: once it is done (Enter, or
+  // leaving the box), not on every key, the host renames the file.
+  if (host) {
+    $('title').addEventListener('change', async (e) => {
+      const r = await host.rename(e.target.value).catch(() => null);
+      if (r) hostNamed(r.name);
+    });
+  }
+
+  // Tags and links of the whole note (note-info.js).
+  noteInfo = new NoteInfo($('note-info'), canvas, {
+    onChange: () => { savedRevision = -1; scheduleSave(); },
+  });
 
   // ----- menu ------------------------------------------------------------------
   const menu = $('menu');
@@ -1395,6 +1441,7 @@ async function main() {
       applyDock();
     },
     report: () => window.bedrockErrors?.open({ stage: 'running' }),
+    'note-info': () => (noteInfo.open ? noteInfo.close() : noteInfo.show()),
   };
   document.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -1816,7 +1863,7 @@ async function main() {
   });
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
+  window.bedrock = { noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });
@@ -1829,6 +1876,8 @@ async function main() {
     // A search hit or a link to a place in this note: go there and point
     // it out. True if that ink is still on the page.
     host.on('show', ({ strokes } = {}) => showInk(strokes));
+    // The file was renamed in the host: the header shows its new name.
+    host.on('renamed', ({ name } = {}) => { hostNamed(name); return true; });
     // The bottom of the frame is hidden (the iPad's keyboard in Obsidian):
     // the word menu moves above it, and any other text box being typed in
     // is slid into sight.
