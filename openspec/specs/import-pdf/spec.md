@@ -82,24 +82,33 @@ Importing SHALL NOT change the note format. Strokes, recognised text and picture
 ### Requirement: In Obsidian a PDF SHALL be imported into the open note
 
 Inside a host (the Obsidian plugin) the open note is the vault file, the only
-note the app may write. Importing SHALL put the PDF's first page into that
-file and save it, keeping the file's name and the note's links and tags. A
-note that already has writing or pictures SHALL NOT be replaced. Before this,
-the import was saved under a new note id that the host never writes, so it
-was lost when another note was opened (a bug).
+note the app may write. Importing SHALL put every page of the PDF that has
+ink or pictures into that file, one below another in page order with a gap
+of 40 page units, and save it, keeping the file's name and the note's links
+and tags. Each page keeps its own readings, times run on from page to page,
+and every stroke id is distinct. A note that already has writing or pictures
+SHALL NOT be replaced. Before this, the import was saved under a new note id
+that the host never writes, so it was lost when another note was opened (a
+bug). The stacked note is an ordinary note: no data format changes.
 
 #### Scenario: Importing into a new vault note
 - **GIVEN** an empty `.bedrock` note open in Obsidian
-- **WHEN** a PDF is imported, another note is opened, and the first is opened again
-- **THEN** the first page's strokes are in the file and on the canvas, and the note keeps its file's name
+- **WHEN** a two page PDF is imported, another note is opened, and the first is opened again
+- **THEN** both pages' strokes are in the file and on the canvas, and the note keeps its file's name
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: a PDF imported into a vault note is saved into that file, and is there when the note is opened again -->
 
-#### Scenario: More pages, a note made about a page, and a note with writing
+#### Scenario: Pages one below another, in a note made about a page; a note with writing
 - **GIVEN** a note made with "New handwritten note linking here", and a two page PDF
 - **WHEN** the PDF is imported
-- **THEN** page 1 goes into the note, which keeps its link, and the message says the other page was left out
+- **THEN** page 2 sits below page 1, and the note keeps its link
 - **AND** importing into a note that already has writing leaves the note as it was and says so
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: a PDF imported into a note made about a page keeps the note's link; a note with writing is never replaced -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a PDF's pages are imported one below another into a note made about a page, which keeps its link; a note with writing is never replaced -->
+
+#### Scenario: Stacking pages in the reader
+- **GIVEN** a PDF of a page with ink, an empty page and another page with ink
+- **WHEN** it is read as one note
+- **THEN** the empty page is left out, the second page with ink sits a page height and the gap below the first, ids are distinct, times rise, each page keeps its readings, a warning is said once, and the note saves and opens again unchanged
+<!-- test: pdf_pages_can_be_stacked_in_one_note -->
 
 ### Requirement: Imported words SHALL be sent for training only with consent
 

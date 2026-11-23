@@ -678,16 +678,16 @@ test('bug: a PDF imported into a vault note is saved into that file, and is ther
   let frame = await openFile(page, 'Lectures/Lecture 8.bedrock');
   await frame.evaluate(() => { bedrock.handwriting.enabled = false; });
   await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
-  await until(page, async () => (await host.files('Lectures/Lecture 8.bedrock')).strokes === 4);
+  await until(page, async () => (await host.files('Lectures/Lecture 8.bedrock')).strokes === 5);
   await openFile(page, 'Other.bedrock');
   frame = await openFile(page, 'Lectures/Lecture 8.bedrock');
-  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4, 'the imported page is in the note');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 5, 'both pages are in the note');
   assert.equal(await frame.evaluate(() => document.getElementById('title').value), 'Lecture 8', "the note keeps its file's name");
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-test("a PDF imported into a note made about a page keeps the note's link; a note with writing is never replaced", async () => {
+test("a PDF's pages are imported one below another into a note made about a page, which keeps its link; a note with writing is never replaced", async () => {
   const { page, ctx, errors } = await openHost();
   await page.evaluate(async () => {
     await host.vault.create('Lectures/Lecture 9.md', '# Lecture 9');
@@ -697,9 +697,11 @@ test("a PDF imported into a note made about a page keeps the note's link; a note
   await until(page, () => host.vault.files.get('Lectures/Lecture 9 notes.bedrock').data.byteLength > 0);
   await frame.evaluate(() => { bedrock.handwriting.enabled = false; });
   const pages = await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
-  assert.equal(pages, 1, 'only the first page: the note is one file');
-  assert.match(await frame.evaluate(() => document.getElementById('toast')?.textContent || ''), /1 more page was left out/);
-  await until(page, async () => (await host.files('Lectures/Lecture 9 notes.bedrock')).strokes === 4);
+  assert.equal(pages, 1, 'one note: the file that is open');
+  await until(page, async () => (await host.files('Lectures/Lecture 9 notes.bedrock')).strokes === 5);
+  // Page 2 (one stroke) sits below page 1 (400 high), not on top of it.
+  const ys = await frame.evaluate(() => JSON.parse(bedrock.canvas.export_json()).strokes.map((s) => s.points[1]));
+  assert.ok(ys.slice(0, 4).every((y) => y < 400) && ys[4] > 400, `page 2 below page 1: ${ys}`);
   const f = await page.evaluate(() => host.files('Lectures/Lecture 9 notes.bedrock'));
   assert.deepEqual(f.noteLinks, [{ target: 'Lectures/Lecture 9', type: 'note', text: 'Lecture 9' }]);
 
@@ -707,12 +709,12 @@ test("a PDF imported into a note made about a page keeps the note's link; a note
   frame = await openFile(page, 'Physics.bedrock');
   await writeWord(frame);
   await frame.evaluate(() => bedrock.saveNow());
-  const before = await page.evaluate(() => host.files('Physics.bedrock'));
+  await page.evaluate(() => { host.vault.log.length = 0; });
   assert.equal(await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf()), 0);
   assert.match(await frame.evaluate(() => document.getElementById('toast')?.textContent || ''), /not imported/);
-  await frame.evaluate(() => bedrock.saveNow());
   assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4);
-  assert.equal((await page.evaluate(() => host.files('Physics.bedrock'))).size, before.size);
+  assert.deepEqual(await page.evaluate(() => host.vault.log.filter((l) => l[1] === 'Physics.bedrock')), [], 'nothing written');
+  assert.equal((await page.evaluate(() => host.files('Physics.bedrock'))).strokes, 4);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
