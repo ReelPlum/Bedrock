@@ -180,3 +180,56 @@ inside a PDF that Obsidian leaves unanswered, and in the command palette.
 - **THEN** the panel shows them, stays open over the picker, refuses a tag already there, opens a link with Obsidian, and the file and the index note get the tags and links
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made about a page starts with its link, saved at once; tags and links of the whole note reach the file and the index -->
 <!-- test-js: apps/web/tests/app.test.mjs :: tags and links of the whole note: added and removed from the menu, with no ink, and kept when the note reopens -->
+
+### Requirement: The tag box SHALL suggest tags already in use
+
+Typing in "Tags and links…"'s tag box suggests tags that are already in use,
+so an existing tag is found and picked instead of typed again with another
+spelling. In Obsidian these are every tag in the vault, as Obsidian's tag
+pane sees them (`#tags` and front matter `tags` of every Markdown note,
+handwritten notes' tags through their index notes), asked of the plugin with
+`list-tags` (`apps/obsidian/src/tags.js`). In the web app they are the tags
+of the other notes in the library on the device, read from each note's
+`note.json` and remembered while the app runs. Nothing new is saved: no data
+format changes.
+
+#### Scenario: Suggestions while typing
+- **GIVEN** tags in use in other notes
+- **WHEN** the panel opens, and a tag is typed
+- **THEN** with nothing typed the most used tags are offered (at most eight); typing narrows them, case-insensitively and ignoring a leading `#`: tags that start with it first, then tags with a part that does (after `/`, `-` or `_`, so `forc` finds `physics/forces`), then tags that hold it; the most used first; tags the note already has are not offered; tags that differ only in case are one tag, in the spelling used most; `bedrock` is never offered
+<!-- test-js: apps/web/tests/tag-suggest.test.mjs :: tags in use are counted per note, case-insensitively, in the spelling used most, without bedrock -->
+<!-- test-js: apps/web/tests/tag-suggest.test.mjs :: suggestions match the start of the tag, then a part of it, then inside it; the most used first; not the tags the note has -->
+<!-- test-js: apps/web/tests/app.test.mjs :: the tag box suggests tags used in other notes of the library, above the box, picked by tap or keys -->
+
+#### Scenario: Picking a suggestion
+- **GIVEN** suggestions shown
+- **WHEN** one is tapped or clicked, or chosen with the arrow keys and Enter
+- **THEN** it is added in its spelling, the box is emptied and keeps focus (on the iPad the keyboard stays up), and the suggestions follow; a typed tag that matches nothing is added with Enter as before
+<!-- test-js: apps/web/tests/app.test.mjs :: the tag box suggests tags used in other notes of the library, above the box, picked by tap or keys -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the tag box suggests every tag in the vault, from Markdown notes too, and a tap adds one -->
+
+#### Scenario: Where they come from
+- **GIVEN** the web app with a library, or Obsidian with a vault
+- **WHEN** the panel opens
+- **THEN** the web app reads each other note's tags once until it changes, never the open note's; the plugin answers `list-tags` with every vault tag and how many notes have it; a plugin without `list-tags` (older) suggests nothing and the tag box works as before
+<!-- test-js: apps/web/tests/tag-suggest.test.mjs :: the tags of the library are read from the note.json of each note once, leaving out the open note -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: every tag in the vault is offered for the tag box: Markdown notes and index notes, counted per note, without bedrock -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a plugin without list-tags suggests nothing and the tag box works as before -->
+
+#### Scenario: Never under the iPad's keyboard
+- **GIVEN** an iPad, the on-screen keyboard up for the tag box
+- **WHEN** suggestions are shown
+- **THEN** they sit above the box, inside the panel at the top of the screen, so the keyboard covering the bottom never hides them
+<!-- test-js: apps/web/tests/app.test.mjs :: on an iPad the tag suggestions sit above the tag box, where the keyboard never covers them -->
+
+#### Open source used
+None. Looked at: Awesomplete (MIT, no release since 2020), Tom Select
+(Apache-2.0, maintained, but replaces the box with its own widget and
+styles), @tarekraafat/autocomplete.js (Apache-2.0) and fuzzy matchers Fuse.js
+(Apache-2.0) and uFuzzy (MIT). Built our own because the widgets float a
+dropdown under the box, where the iPad keyboard hides it (the reason the
+suggestions sit above it here), and each brings its own styles and events
+that fight the panel's tap handling; the matching needed (start, part of a
+nested tag, inside) is a few lines that a fuzzy matcher would make less
+predictable for short tags. Obsidian's own `getAllTags` (its plugin API)
+reads the vault's tags.
