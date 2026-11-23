@@ -40,8 +40,8 @@ existing link field, `links.md` and the index note. The requests above are
 between the plugin and the canvas it ships with, and nothing new is stored.
 
 Pointing a link at any spot in a Bedrock note (not only a word) would need a
-new link format; Frederik was asked, and until he decides the picker links to
-words.
+new link format. Frederik was asked and chose links to a word you tap
+(2026-11-23), so no format changes.
 
 ## Open source used
 
