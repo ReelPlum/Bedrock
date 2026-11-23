@@ -82,6 +82,12 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 - **THEN** each time is raised to the one before it, so the backend takes it; ink without times is left alone
 <!-- test-js: apps/web/tests/share-words.test.mjs :: bug: times that go backwards within a stroke are sent never going backwards -->
 
+#### Scenario: Lines refused before the time fix are sent again
+- **GIVEN** lines remembered as sent before stroke times were kept from going backwards (most were refused and dropped)
+- **WHEN** the app starts once after the fix and a note is open
+- **THEN** each of its remembered lines is sent once more, replacing the earlier sample if that got in, and never again after that
+<!-- test-js: apps/web/tests/share-words.test.mjs :: bug: lines sent before the stroke time fix are sent once more, replacing what got in -->
+
 #### Scenario: The console says why samples were not sent
 - **GIVEN** queued samples
 - **WHEN** an upload gets no answer, or the server turns it down, or the gate could not check a code
