@@ -25,13 +25,21 @@ it. On the iPad and phones notes are edited as before.
 #### Scenario: The file is never written
 - **GIVEN** a note open view only
 - **WHEN** keys for undo, redo, tools or delete are pressed, text is pasted, and the view saves and closes
-- **THEN** the note does not change and its file keeps its bytes; the plugin refuses a write, a rename and starting links from a view-only canvas, so even a canvas that asked could not change the file
+- **THEN** the note does not change and its file keeps its bytes; the plugin refuses a write and a rename from a view-only canvas, so even a canvas that asked could not change the file (the one write it allows is below)
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never writes or renames the file and hands out no starting links -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only once, for the starting links of a new note -->
 
-#### Scenario: No new notes on a computer
+#### Scenario: New notes are made on a computer, and written on the iPad
 - **GIVEN** the plugin in Obsidian's desktop app
-- **WHEN** it loads
-- **THEN** there is no "New Bedrock note" button or folder item, no "New handwritten note" or "New handwritten note linking here" command or menu item, the canvas page is told it is view only (`BEDROCK_VIEW_ONLY`), and the header cannot rename the note; on the iPad all of them are there
-<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: on a desktop computer notes are view only, and no new notes are offered; the iPad edits -->
+- **WHEN** it loads, and "New Bedrock note" (ribbon, folder menu, command) or "New handwritten note linking here" (note, PDF or editor menu, command) is chosen
+- **THEN** the empty note is made as on the iPad and opens view only (`BEDROCK_VIEW_ONLY`); the header cannot rename it
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: on a desktop computer notes are view only, and new notes are still made; the iPad edits -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas pages are written with their files handed over as blob: URLs, never loaded by address -->
+
+#### Scenario: A note made about a page keeps its link on a computer
+- **GIVEN** a note made on a computer with "New handwritten note linking here"
+- **WHEN** its view-only canvas starts
+- **THEN** it asks for the starting link and saves it at once into the empty file, as on the iPad (the plugin allows that one write, into an empty file, after handing out the link, and no other); after that the note is view only and nothing is saved
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made on a computer about a page keeps its link, and is view only after that -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only once, for the starting links of a new note -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas pages are written with their files handed over as blob: URLs, never loaded by address -->

@@ -475,11 +475,12 @@ async function main() {
 
   let keepAsked = false; // keepStorage(), once per page load
   /** Timed as the `save` job (perf.js). */
-  function saveNow() { return perf.job('save', () => saveNowUntimed()); }
-  async function saveNowUntimed() {
+  function saveNow(opts) { return perf.job('save', () => saveNowUntimed(opts)); }
+  /** View only, nothing is saved but a new note's starting links (`start`). */
+  async function saveNowUntimed({ start = false } = {}) {
     clearTimeout(saveTimer);
     saveTimer = null;
-    if (startFailed || !store || viewOnly) return;
+    if (startFailed || !store || (viewOnly && !start)) return;
     if (canvas.is_drawing()) return scheduleSave();
     const rev = canvas.revision();
     const now = Date.now();
@@ -601,8 +602,9 @@ async function main() {
     setSaveState('New');
     // A note the host made about a page ("New handwritten note linking
     // here" in Obsidian) starts with its link and tags, saved at once.
-    const start = host && !viewOnly ? await host.start().catch(() => null) : null;
-    if (start && applyStart(start)) await saveNow();
+    // View only (a computer) too: the link is part of making the note.
+    const start = host ? await host.start().catch(() => null) : null;
+    if (start && applyStart(start)) await saveNow({ start: true });
   }
 
   /** Put the host's starting links and tags into the new note. */

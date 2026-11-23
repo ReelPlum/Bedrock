@@ -46,7 +46,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
 
 /**
  * @param {object} o
- * @param {boolean} [o.viewOnly]  the note is only looked at: it is never written or renamed, and gets no starting links
+ * @param {boolean} [o.viewOnly]  the note is only looked at: it is never renamed, and written only once, to save the starting links of a new (empty) note
  * @param {object} o.vault       Obsidian Vault
  * @param {() => object} o.file  the open TFile
  * @param {object} o.indexer     Indexer (index-note.js)
@@ -86,6 +86,8 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
   let ownMtime = null;
   let writing = Promise.resolve();
   let inFlight = 0;
+  // View only: a new note's starting links may be written once.
+  let startWrite = false;
   const session = {
     get ownMtime() { return ownMtime; },
     /** Write the index note now if a save is waiting for it (the view
@@ -96,7 +98,12 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
     handlers: {
       ready: async () => { onReady?.(); return true; },
       // A new note's starting links ("New handwritten note linking here").
-      start: async () => (viewOnly ? null : start?.() ?? null),
+      start: async () => {
+        const st = start?.() ?? null;
+        // View only, the canvas may save these links once, into the empty file.
+        if (viewOnly && st) startWrite = true;
+        return st;
+      },
       // Sent as a compiled module (structured clone shares its code).
       wasm: async () => (wasm ? (await wasm().catch(() => null)) : null),
       read: async () => {
@@ -105,8 +112,12 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
         return { name: f.basename, created: f.stat.ctime, modified: f.stat.mtime, data };
       },
       write: async ({ data }) => {
-        if (viewOnly) throw new Error(VIEW_ONLY);
         const f = file();
+        if (viewOnly) {
+          const ok = startWrite && !(await vault.readBinary(f)).byteLength;
+          startWrite = false;
+          if (!ok) throw new Error(VIEW_ONLY);
+        }
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
         // The app hands the file's buffer over (no copy); copy only a part.
         const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;

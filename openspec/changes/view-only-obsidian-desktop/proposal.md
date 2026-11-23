@@ -30,13 +30,17 @@ it was only being read or searched.
   - never saves the note. Search hits, links to words, "Show all ink", the
     minimap and the remembered camera (plugin data, not the note) work as
     before.
-- The plugin refuses a `write` and a `rename` from a view-only canvas, and
-  gives it no starting links, so the file cannot change even if the canvas
-  asked.
-- No new notes are made on a computer: the ribbon's "New Bedrock note", the
-  "New handwritten note" and "New handwritten note linking here" commands,
-  the folder menu item and the note, PDF and editor menu items are not
-  offered, and "Folder for new notes" is not in the settings.
+- The plugin refuses a `write` and a `rename` from a view-only canvas, so
+  the file cannot change even if the canvas asked. The one exception is
+  below.
+- New notes are still made on a computer (Frederik, later: "I want to be
+  able to create notes on Mac but it should not be able to draw there"):
+  "New Bedrock note" (ribbon, folder menu, command), "New handwritten note
+  linking here" (note, PDF and editor menus, command) and the "Folder for
+  new notes" setting work as on the iPad. The new note opens view only, to
+  be written on the iPad. A note made about a page saves its starting link
+  at once, as on the iPad: the plugin lets a view-only canvas write once,
+  only into the empty file and only after it was handed starting links.
 - Index notes are still written on a computer, so search, links, the graph
   and backlinks keep seeing notes written on the iPad.
 
