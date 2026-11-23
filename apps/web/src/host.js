@@ -8,7 +8,9 @@
 //     folders and files in the canvas's own picker (link-picker.js) and
 //     opened by the host;
 //   * the host can ask to be shown a place in the note (a search hit, a
-//     link to a word), and can be asked for a link to one.
+//     link to a word), and can be asked for a link to one;
+//   * the note's name in the header is the host file's name: naming the
+//     note renames the file, and renaming the file renames the note.
 //
 // Nothing here runs in the normal web app (`host` is null there). Keeping the
 // differences in this one file lets the web app and every host ship from the
@@ -128,6 +130,9 @@ function connect() {
     store: () => new HostStore(rpc),
     /** Let the host run app functions it needs (e.g. save before closing). */
     on: (event, fn) => rpc.on(event, fn),
+    /** The note's name is its file's name: ask the host to rename the
+     *  file to `title`. Resolves to `{ name }`, the file's name after. */
+    rename: (title) => rpc.call('rename', { title }),
     /** The WebAssembly the host compiled once for all its notes, or null
      *  (the app then compiles it itself). */
     wasm: () => rpc.call('wasm').catch(() => null),
