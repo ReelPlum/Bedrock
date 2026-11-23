@@ -61,3 +61,26 @@ app in a browser is unchanged.
 ## Open source used
 
 None added. The desktop check is Obsidian's own `Platform` API.
+
+## Later: tags, corrections and zoom on a computer
+
+Frederik: "On Desktop you should be able to edit tags for notes, and
+scrolling should zoom." and "And you should be able to edit the text
+recognition".
+
+- "View only" now means the ink is locked. On a computer "Tags and links…"
+  adds and removes tags (links are still only shown and opened), and a
+  word's menu corrects the reading ("This is right", "Correct the text…",
+  maths or text, "Not a word"). Linking words, grouping, recolouring,
+  duplicating and deleting stay off.
+- Those changes are saved at once. Nothing else is saved on a computer:
+  there is no autosave, so opening a note never writes it (and never
+  races an iPad editing it through sync).
+- The plugin's guard changes from "refuse every write but a new note's
+  starting links" to "refuse any write that changes the ink": strokes
+  (their samples and brush), pictures and text boxes must stay exactly as
+  they are (`sameInk` in `session.js`). A note from before `points.bin`
+  may be saved with its samples moved there, as every save does.
+- Scrolling with a mouse wheel or two fingers on a trackpad zooms around
+  the pointer instead of moving the page (dragging moves it). A trackpad
+  pinch zooms as before.

@@ -119,6 +119,7 @@ test('on a desktop computer notes are view only, and new notes are still made; t
   const view = plugin.views['bedrock-note'](new fake.WorkspaceLeaf());
   const frame = { remove() {}, ownerDocument: { defaultView: { addEventListener() {}, removeEventListener() {} } }, contentWindow: null };
   view.app = app;
+  view.file = note;
   view.contentEl = { createEl: () => frame };
   await view.onLoadFile(note);
   assert.deepEqual(pages, [['app', { viewOnly: true }]]);

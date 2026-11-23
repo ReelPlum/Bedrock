@@ -9,6 +9,8 @@
 //  * frames are only requested when something changed (no idle redraw loop).
 
 const HALF_PI = Math.PI / 2;
+/** How much scrolling zooms where it zooms (per px of wheel delta). */
+export const WHEEL_ZOOM = 0.002;
 
 // Holding the pen (or a finger, or the mouse) still this long on handwriting
 // opens the word's menu instead of drawing.
@@ -63,8 +65,11 @@ function kindOf(e) {
 }
 
 export class InputController {
-  constructor(stage, canvas, { onFrame, onCommit, onHover, onLongPress } = {}) {
+  constructor(stage, canvas, { onFrame, onCommit, onHover, onLongPress, wheelZooms = false } = {}) {
     this.stage = stage;
+    // Scrolling (wheel, two fingers on a trackpad) zooms instead of moving
+    // the page (a view-only note on a computer, where dragging moves it).
+    this.wheelZooms = wheelZooms;
     this.canvas = canvas;
     this.onFrame = onFrame || (() => {});
     this.onCommit = onCommit || (() => {});
@@ -337,6 +342,9 @@ export class InputController {
       if (e.ctrlKey || e.metaKey) {
         // Trackpad pinch (and ctrl+wheel) zooms around the cursor.
         this.canvas.zoom_at(e.clientX - this.rect.left, e.clientY - this.rect.top, Math.exp(-e.deltaY * scale * 0.01));
+      } else if (this.wheelZooms) {
+        // A wheel notch (100 px) zooms about a fifth, around the cursor.
+        this.canvas.zoom_at(e.clientX - this.rect.left, e.clientY - this.rect.top, Math.exp(-e.deltaY * scale * WHEEL_ZOOM));
       } else {
         this.canvas.pan(-e.deltaX * scale, -e.deltaY * scale);
       }
