@@ -423,6 +423,9 @@ test('the link picker opens another Bedrock note to link one of its words, or th
   await writeWord(frame, 200, 200);
   await frame.evaluate(() => bedrock.saveNow());
   await until(page, async () => (await host.files('Maths.bedrock')).strokes === 4);
+  // The word as read is in the file too (its index note is made from the
+  // file), before the note is closed: the harness closes without a save.
+  await until(page, async () => (await host.files('Maths.bedrock')).index?.includes('Newtn'));
   const mathsStrokes = await frame.evaluate(() => JSON.parse(bedrock.canvas.words_json())[0].strokes);
   frame = await openFile(page, 'Physics.bedrock');
   await writeWord(frame);
