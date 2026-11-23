@@ -347,34 +347,53 @@ test('session reads and writes the open file and keeps its index current', async
   assert.equal((await s.handlers.read({})).data.byteLength, note(['Newton']).byteLength);
 });
 
-test('a view-only session never renames the file, and writes it only once, for the starting links of a new note', async () => {
+/** A .bedrock with ink: `strokes` ids, their samples in points.bin, and tags. */
+const inked = ({ strokes = ['a1'], samples = [1, 2, 3], tags = [], images = [], words = ['Newton'], v1 = false } = {}) => zip({
+  'note.json': JSON.stringify({
+    format: 'bedrock-note', version: v1 ? 1 : 2, tags, images,
+    strokes: strokes.map((id) => ({ id, brush: { kind: 'pen', color: '#000000ff', size: 2 }, ...(v1 ? { points: samples } : {}) })),
+  }),
+  ...(v1 ? {} : { 'points.bin': new Uint8Array(samples) }),
+  'recognized.json': recognized(...words),
+});
+
+test('a view-only session never renames the file, and writes it only with its ink exactly as it was', async () => {
   const vault = new FakeVault();
-  const file = await vault.createBinary('Forces.bedrock', new Uint8Array(note(['Newton'])).buffer);
-  const before = vault.files.get('Forces.bedrock').data.slice(0);
+  const file = await vault.createBinary('Forces.bedrock', inked());
   const renamed = [];
-  const { s } = session(vault, file, { viewOnly: true, rename: async (n) => { renamed.push(n); return n; }, start: () => ({ noteLinks: [{ target: 'Ideas' }] }) });
+  const { s } = session(vault, file, { viewOnly: true, rename: async (n) => { renamed.push(n); return n; } });
   assert.equal((await s.handlers.read({})).name, 'Forces', 'it still reads');
-  await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['changed'])) }), new RegExp(VIEW_ONLY));
-  await s.flushIndex();
-  assert.deepEqual(new Uint8Array(vault.files.get('Forces.bedrock').data), new Uint8Array(before));
   assert.deepEqual(await s.handlers.rename({ title: 'Gravity' }), { name: 'Forces' });
   assert.deepEqual(renamed, []);
-  // Starting links for a file that is not empty write nothing.
-  assert.deepEqual(await s.handlers.start(), { noteLinks: [{ target: 'Ideas' }] });
-  await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['changed'])) }), new RegExp(VIEW_ONLY));
-  assert.deepEqual(new Uint8Array(vault.files.get('Forces.bedrock').data), new Uint8Array(before));
-  // Looking around is kept: the camera, links and the picker still work.
+  const bytes = () => new Uint8Array(vault.files.get('Forces.bedrock').data);
+  const before = bytes().slice();
+  // Ink added, removed, its samples or brush changed, a picture added: refused.
+  for (const changed of [
+    inked({ strokes: ['a1', 'b2'] }), inked({ strokes: [] }), inked({ samples: [1, 2, 4] }),
+    inked({ images: [{ id: 'p1' }] }), new Uint8Array([1, 2, 3]),
+  ]) {
+    await assert.rejects(s.handlers.write({ data: new Uint8Array(changed) }), new RegExp(VIEW_ONLY));
+  }
+  assert.deepEqual(bytes(), before);
+  // Tags and a corrected reading, with the ink as it was: saved.
+  const fixed = new Uint8Array(inked({ tags: ['physics'], words: ['Newton!'] }));
+  assert.equal(await s.handlers.write({ data: fixed.slice() }), true);
+  assert.deepEqual(bytes(), fixed);
+  await s.flushIndex();
+  assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Newton!/);
+  // A note from before points.bin (samples in note.json) saved with them in points.bin.
+  const old = await vault.createBinary('Old.bedrock', inked({ v1: true }));
+  const { s: s3 } = session(vault, old, { viewOnly: true });
+  assert.equal(await s3.handlers.write({ data: new Uint8Array(inked({ tags: ['x'] })) }), true);
+  // Looking around is kept: the camera still works.
   await s.handlers['set-kv']({ key: 'camera:host', value: [1, 2, 1] });
   assert.deepEqual(await s.handlers['get-kv']({ key: 'camera:host' }), [1, 2, 1]);
 
-  // A new (empty) note made on a computer: its starting links are written once, nothing after.
+  // A new (empty) note: its starting links and tags are saved, ink never.
   const fresh = await vault.createBinary('Lecture 3 notes.bedrock', new ArrayBuffer(0));
-  const { s: s2 } = session(vault, fresh, { viewOnly: true, start: () => ({ noteLinks: [{ target: 'Lecture 3' }] }) });
-  await assert.rejects(s2.handlers.write({ data: new Uint8Array(note(['a'])) }), new RegExp(VIEW_ONLY), 'not before the links were asked for');
-  assert.ok(await s2.handlers.start());
+  const { s: s2 } = session(vault, fresh, { viewOnly: true });
+  await assert.rejects(s2.handlers.write({ data: new Uint8Array(inked()) }), new RegExp(VIEW_ONLY));
   assert.equal(await s2.handlers.write({ data: new Uint8Array(note([])) }), true);
-  assert.equal(vault.files.get('Lecture 3 notes.bedrock').data.byteLength, note([]).byteLength);
-  await assert.rejects(s2.handlers.write({ data: new Uint8Array(note(['ink'])) }), new RegExp(VIEW_ONLY), 'only once');
   assert.equal(vault.files.get('Lecture 3 notes.bedrock').data.byteLength, note([]).byteLength);
 });
 

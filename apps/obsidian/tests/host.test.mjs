@@ -766,7 +766,7 @@ test('the word menu copies a link to the word, for pasting into a vault note', a
 
 // ---- View only on a desktop computer ------------------------------------------
 
-test('on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open', async () => {
+test('on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved', async () => {
   const { page, ctx, errors } = await openHost();
   // Written on the iPad, with a tag and a link of the whole note.
   let frame = await openFile(page, 'Physics.bedrock');
@@ -816,35 +816,6 @@ test('on a computer the note is view only: pen and mouse move the page, nothing 
   assert.equal(moved.undo, false);
   assert.ok(moved.dx < -100, `the page moved with each pointer (${moved.dx})`);
 
-  // A word's menu says what it was read as and copies a link; it changes nothing.
-  const menu = await frame.evaluate(() => {
-    const w = JSON.parse(bedrock.canvas.words_json())[0];
-    bedrock.wordMenu.open(w);
-    const shown = [...document.querySelectorAll('#wm-main button')].filter((b) => !b.hidden).map((b) => b.id);
-    bedrock.wordMenu.close();
-    return { shown, reading: document.getElementById('wm-reading').textContent };
-  });
-  assert.deepEqual(menu.shown, ['wm-copy-here']);
-  assert.match(menu.reading, /Newtn/);
-
-  // Tags and links are shown, and a link opens; nothing adds or removes them.
-  const info = await frame.evaluate(() => {
-    bedrock.noteInfo.show();
-    const root = document.getElementById('note-info');
-    const visible = (el) => !el.hidden && !el.closest('[hidden]');
-    const r = {
-      tags: [...root.querySelectorAll('.ni-tag span')].map((s) => s.textContent),
-      inputs: [...root.querySelectorAll('input')].filter(visible).length,
-      removes: root.querySelectorAll('.ni-remove').length,
-      browse: visible(root.querySelector('.ni-browse')),
-    };
-    root.querySelector('.ni-open').click();
-    bedrock.noteInfo.close();
-    return r;
-  });
-  assert.deepEqual(info, { tags: ['#physics'], inputs: 0, removes: 0, browse: false });
-  await until(page, () => host.calls.some((c) => c[0] === 'open' && c[1] === 'Lecture 3'));
-
   // Pasting text inserts nothing; saving and closing write nothing.
   await frame.evaluate(async () => {
     const data = new DataTransfer();
@@ -854,10 +825,66 @@ test('on a computer the note is view only: pen and mouse move the page, nothing 
   });
   await page.evaluate(() => host.bridge.send('flush', {}, 3000));
   assert.equal(await frame.evaluate(() => bedrock.canvas.revision() === window.rev0), true, 'nothing was pasted');
-  const after = await page.evaluate(() => Array.from(host.vault.files.get('Physics.bedrock').data.slice(0)));
-  assert.deepEqual(after, before, 'the file is not written');
-  // Even if the canvas asked, the plugin would not write it.
+  assert.deepEqual(await page.evaluate(() => Array.from(host.vault.files.get('Physics.bedrock').data.slice(0))), before, 'the file is not written');
+  // Even if the canvas asked, the plugin would not write changed ink.
   await assert.rejects(page.evaluate(() => host.session.handlers.write({ data: new Uint8Array([1, 2, 3]) })), /view only/);
+
+  // Scrolling (a wheel, two fingers on a trackpad) zooms around the pointer.
+  const zoom = await frame.evaluate(async () => {
+    const [x0, y0, z0] = bedrock.canvas.camera();
+    const at = (x, y) => [x / bedrock.canvas.camera()[2] + bedrock.canvas.camera()[0], y / bedrock.canvas.camera()[2] + bedrock.canvas.camera()[1]];
+    const under = at(500, 400);
+    document.getElementById('stage').dispatchEvent(new WheelEvent('wheel', { deltaY: -100, clientX: 500, clientY: 400, bubbles: true, cancelable: true }));
+    await t.frame();
+    const z1 = bedrock.canvas.camera()[2];
+    const stays = at(500, 400);
+    document.getElementById('stage').dispatchEvent(new WheelEvent('wheel', { deltaY: 300, clientX: 500, clientY: 400, bubbles: true, cancelable: true }));
+    await t.frame();
+    return { inBy: z1 / z0, outBy: bedrock.canvas.camera()[2] / z1, drift: Math.hypot(stays[0] - under[0], stays[1] - under[1]), moved: x0 !== bedrock.canvas.camera()[0] || y0 !== bedrock.canvas.camera()[1] };
+  });
+  assert.ok(zoom.inBy > 1.1 && zoom.inBy < 1.5, `scrolling up zooms in (${zoom.inBy})`);
+  assert.ok(zoom.outBy < 0.8, `scrolling down zooms out (${zoom.outBy})`);
+  assert.ok(zoom.drift < 1, 'around the pointer');
+
+  // A word's menu corrects the reading and copies a link; it does not link or change the ink.
+  const menu = await frame.evaluate(() => {
+    const w = JSON.parse(bedrock.canvas.words_json())[0];
+    bedrock.wordMenu.open(w);
+    const shown = [...document.querySelectorAll('#wm-main button')].filter((b) => !b.hidden).map((b) => b.id);
+    const reading = document.getElementById('wm-reading').textContent;
+    document.getElementById('wm-correct').click();
+    return { shown, reading };
+  });
+  assert.deepEqual(menu.shown, ['wm-copy-here', 'wm-right', 'wm-correct', 'wm-kind', 'wm-drawing']);
+  assert.match(menu.reading, /Newtn/);
+  await frame.fill('#wm-correct-text', 'Newton');
+  await frame.press('#wm-correct-text', 'Enter');
+  // The correction is saved, the ink as it was, and reaches search.
+  await until(page, async () => (await host.files('Physics.bedrock')).index?.includes('Newton'));
+
+  // Tags are added and removed; links are shown and open, but not added or removed.
+  const info = await frame.evaluate(() => {
+    bedrock.noteInfo.show();
+    const root = document.getElementById('note-info');
+    const visible = (el) => !el.hidden && !el.closest('[hidden]');
+    const r = {
+      tags: [...root.querySelectorAll('.ni-tag span')].map((s) => s.textContent),
+      inputs: [...root.querySelectorAll('input')].filter(visible).map((i) => i.getAttribute('aria-label')),
+      linkRemoves: root.querySelectorAll('.ni-link .ni-remove').length,
+      browse: visible(root.querySelector('.ni-browse')),
+    };
+    root.querySelector('.ni-open').click();
+    return r;
+  });
+  assert.deepEqual(info, { tags: ['#physics'], inputs: ['New tag'], linkRemoves: 0, browse: false });
+  await until(page, () => host.calls.some((c) => c[0] === 'open' && c[1] === 'Lecture 3'));
+  await frame.fill('#note-info .ni-tags + form input', 'exam');
+  await frame.press('#note-info .ni-tags + form input', 'Enter');
+  await frame.click('#note-info .ni-tag .ni-remove');
+  await until(page, async () => JSON.stringify((await host.files('Physics.bedrock')).tags) === '["exam"]');
+  await until(page, async () => (await host.files('Physics.bedrock')).index?.includes('tags: [bedrock, exam]'));
+  assert.equal((await page.evaluate(() => host.files('Physics.bedrock'))).strokes, 4, 'the ink is as it was');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

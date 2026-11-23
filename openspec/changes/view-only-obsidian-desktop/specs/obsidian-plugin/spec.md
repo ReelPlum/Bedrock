@@ -2,11 +2,13 @@
 
 ## ADDED Requirements
 
-### Requirement: Notes SHALL be view only in Obsidian on a computer
+### Requirement: The ink SHALL be locked in Obsidian on a computer
 
-In Obsidian's desktop app (Mac, Windows, Linux) a Bedrock note can be looked
-at, moved around and searched, and its links followed, but nothing changes
-it. On the iPad and phones notes are edited as before.
+In Obsidian's desktop app (Mac, Windows, Linux) a Bedrock note opens "view
+only": it can be looked at, moved, zoomed and searched, its links followed,
+its tags edited and what the recogniser read corrected, but its ink,
+pictures and text boxes never change. On the iPad and phones notes are
+edited as before.
 
 #### Scenario: Pen, mouse and fingers move the page and never draw
 - **GIVEN** a note open view only
@@ -14,20 +16,31 @@ it. On the iPad and phones notes are edited as before.
 - **THEN** the page moves and nothing is drawn, erased, selected, undone or redone
 <!-- test: view_only_pen_and_mouse_move_the_page_and_never_draw -->
 <!-- test: view_only_ignores_undo_redo_and_eraser_taps -->
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
 
-#### Scenario: Only what changes nothing is offered
+#### Scenario: Scrolling zooms
+- **GIVEN** a note open view only
+- **WHEN** the mouse wheel turns, or two fingers scroll on a trackpad
+- **THEN** the page zooms around the pointer (in when scrolling up, about a fifth per wheel notch) instead of moving; a trackpad pinch zooms as before
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: Only what leaves the ink alone is offered
 - **GIVEN** a note written on the iPad, with words, a tag and a link of the whole note, opened view only
 - **WHEN** it is shown
-- **THEN** the toolbar, undo, redo, inserting, pasting, importing and the pen's settings are hidden, the header says "View only" and its name cannot be edited; a word's menu says what the word was read as and copies a link to it, and nothing else; "Tags and links…" lists the tags and links and opens a link, with nothing to add or remove; "Show all ink" stays
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open -->
+- **THEN** the toolbar, undo, redo, inserting, pasting, importing and the pen's settings are hidden, the header says "View only" and its name cannot be edited; a word's menu says what the word was read as, corrects it ("This is right", "Correct the text…", maths or text, "Not a word") and copies a link to it, but does not link, group, recolour, duplicate or delete; "Tags and links…" adds and removes tags, and lists the links and opens one, with nothing to add or remove; "Show all ink" stays
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
 
-#### Scenario: The file is never written
+#### Scenario: Tags and corrections are saved; nothing else is
 - **GIVEN** a note open view only
-- **WHEN** keys for undo, redo, tools or delete are pressed, text is pasted, and the view saves and closes
-- **THEN** the note does not change and its file keeps its bytes; the plugin refuses a write and a rename from a view-only canvas, so even a canvas that asked could not change the file (the one write it allows is below)
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only once, for the starting links of a new note -->
+- **WHEN** keys for undo, redo, tools or delete are pressed, text is pasted, the recogniser reads, and the view saves and closes; then a reading is corrected and tags are added and removed
+- **THEN** the first changes nothing and writes nothing (no autosave, so opening a note on a computer never writes it); each correction and tag change is saved at once with the ink exactly as it was, and reaches the index note
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: The plugin refuses changed ink
+- **GIVEN** a view-only canvas asks to write its file
+- **WHEN** the new file adds, removes or changes strokes (their samples or brush), pictures or text boxes, or cannot be read
+- **THEN** the plugin refuses it and the file keeps its bytes; a file whose ink, pictures and text boxes are as they were (tags, readings, links of the whole note) is written, and a note from before `points.bin` may be written with its samples moved there; the file is never renamed
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only with its ink exactly as it was -->
 
 #### Scenario: New notes are made on a computer, and written on the iPad
 - **GIVEN** the plugin in Obsidian's desktop app
@@ -39,7 +52,6 @@ it. On the iPad and phones notes are edited as before.
 #### Scenario: A note made about a page keeps its link on a computer
 - **GIVEN** a note made on a computer with "New handwritten note linking here"
 - **WHEN** its view-only canvas starts
-- **THEN** it asks for the starting link and saves it at once into the empty file, as on the iPad (the plugin allows that one write, into an empty file, after handing out the link, and no other); after that the note is view only and nothing is saved
+- **THEN** it asks for the starting link and saves it at once, as on the iPad; after that the ink is locked
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made on a computer about a page keeps its link, and is view only after that -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only once, for the starting links of a new note -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas pages are written with their files handed over as blob: URLs, never loaded by address -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only with its ink exactly as it was -->

@@ -14,3 +14,10 @@
 - [x] 2.2 Plugin: new-note actions and "Folder for new notes" on every device; session allows the one starting-links write.
 - [x] 2.3 Web app: a view-only canvas applies starting links and saves them once.
 - [x] 2.4 Spec, README.
+
+## 3. Tags, corrections and zoom on a computer
+
+- [x] 3.1 Tests first: a view-only session writes only files with the same ink; on a computer scrolling zooms, a reading is corrected and tags edited and saved with the ink as it was.
+- [x] 3.2 Session: `sameInk` guard in place of the one-time starting-links write.
+- [x] 3.3 Web app: tags and corrections offered and saved (no autosave), `wheelZooms` in the input controller.
+- [x] 3.4 Spec, README.
