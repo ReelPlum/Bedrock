@@ -79,9 +79,10 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 #### Scenario: The console says why samples were not sent
 - **GIVEN** queued samples
 - **WHEN** an upload gets no answer, or the server turns it down, or the gate could not check a code
-- **THEN** the console has a warning saying so (`Bedrock: samples were not sent: HTTP 401 invite: …`, or no answer from the server), never with the code or any ink
+- **THEN** the console has a warning saying so (`Bedrock: samples were not sent: HTTP 401 invite: …`, or no answer from the server), and a sample the server refuses is named with the refusal's code and reason (`Bedrock: 1 sample was refused: label (…)`), never with the code or any ink
 <!-- test-js: apps/web/tests/collect.test.mjs :: a wrong invite code keeps the samples and says so -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: bug: an upload with no connection says so in the console -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: a sample the server will never take is dropped; one it could not store is kept -->
 
 #### Scenario: Delete my contributions
 - **GIVEN** samples sent and queued
