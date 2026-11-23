@@ -54,7 +54,7 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 #### Scenario: The server address is built in
 - **GIVEN** the training page
 - **WHEN** it looks for where to send
-- **THEN** there is no address field, the site always uses the built-in `https` address (`https://bedrock-collect.reelplum.workers.dev`), only a page on this computer may use another, and the tests act as if none were built in so they never reach the real backend
+- **THEN** there is no address field, the site always uses the built-in `https` address (`https://bedrock-collect.reelplum.workers.dev`), only a page on this computer (`localhost` or `127.0.0.1` on a port) may use another, Obsidian on iPad (`capacitor://localhost`) and Android (`http://localhost`, no port) uses the built-in address, and the tests act as if none were built in so they never reach the real backend
 <!-- test-js: apps/web/tests/collect.test.mjs :: people cannot change the server address: there is no field, and only a page on this computer may use another -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: ids, device class and the server address check -->
 
@@ -75,6 +75,13 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 <!-- test-js: apps/web/tests/collect.test.mjs :: with no connection samples wait on the device and are sent later, even after a reload -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: a sample the server will never take is dropped; one it could not store is kept -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: a wrong invite code keeps the samples and says so -->
+
+#### Scenario: The console says why samples were not sent
+- **GIVEN** queued samples
+- **WHEN** an upload gets no answer, or the server turns it down, or the gate could not check a code
+- **THEN** the console has a warning saying so (`Bedrock: samples were not sent: HTTP 401 invite: …`, or no answer from the server), never with the code or any ink
+<!-- test-js: apps/web/tests/collect.test.mjs :: a wrong invite code keeps the samples and says so -->
+<!-- test-js: apps/web/tests/collect.test.mjs :: bug: an upload with no connection says so in the console -->
 
 #### Scenario: Delete my contributions
 - **GIVEN** samples sent and queued
