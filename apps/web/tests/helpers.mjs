@@ -5,13 +5,27 @@ import { startServer } from '../serve.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
+/** Every page these tests open acts as if no backend address were built
+ *  in (`bedrockNoBuiltInApi`, honoured only on this computer), so no test
+ *  can reach the real backend. A test points the app at a pretend backend
+ *  by storing an address, as before. */
+export function withoutBuiltInApi(browser) {
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (...args) => {
+    const ctx = await newContext(...args);
+    await ctx.addInitScript(() => { window.bedrockNoBuiltInApi = true; });
+    return ctx;
+  };
+  return browser;
+}
+
 export async function launch() {
   const server = await startServer(0);
   const url = `http://127.0.0.1:${server.address().port}/`;
   // SwiftShader gives headless Chromium a software WebGL2 implementation.
-  const browser = await chromium.launch({
+  const browser = withoutBuiltInApi(await chromium.launch({
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-  });
+  }));
   return {
     url,
     browser,

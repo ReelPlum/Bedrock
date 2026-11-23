@@ -52,7 +52,7 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 #### Scenario: The server address is built in
 - **GIVEN** the training page
 - **WHEN** it looks for where to send
-- **THEN** there is no address field, the site always uses the built-in `https` address, and only a page on this computer may use another
+- **THEN** there is no address field, the site always uses the built-in `https` address (`https://bedrock-collect.reelplum.workers.dev`), only a page on this computer may use another, and the tests act as if none were built in so they never reach the real backend
 <!-- test-js: apps/web/tests/collect.test.mjs :: people cannot change the server address: there is no field, and only a page on this computer may use another -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: ids, device class and the server address check -->
 

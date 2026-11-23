@@ -172,6 +172,7 @@ test('people cannot change the server address: there is no field, and only a pag
   assert.equal(r.plugin, r.built);
   assert.equal(r.local, 'http://127.0.0.1:8787');
   assert.notEqual(r.agreed, 'https://someone-else.example', 'agreeing cannot set it either');
+  assert.equal(r.built, 'https://bedrock-collect.reelplum.workers.dev', 'the deployed backend is built in');
   await ctx.close();
 });
 

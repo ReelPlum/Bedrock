@@ -113,9 +113,16 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Links to and from words
 - **GIVEN** a word's menu in the view
 - **WHEN** a link is made, or a link to the word is copied
-- **THEN** the vault note picker opens (not index notes or the note itself) and the link reaches the file, `links.md`, the index note and Obsidian; closing the picker keeps the form; a copied link names a real stroke of the word
+- **THEN** the vault note picker opens (not index notes or the note itself), without focusing the link box (no iPad keyboard); the chosen note goes into the link box and Save makes the link, which reaches the file, `links.md`, the index note and Obsidian; closing the picker keeps the form; a copied link names a real stroke of the word
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: the note picker lists vault notes, not index notes or the note itself, and gives link text -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: making a link opens the vault note picker, and the link reaches the file, the index and Obsidian -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the note chosen in Obsidian's picker goes into the link box, and Save makes the link -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: closing the picker leaves the link form open, with Browse to try again and the other kinds of link -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the word menu copies a link to the word, for pasting into a vault note -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: the app can ask for a link to a word; only real stroke ids are accepted -->
+
+#### Scenario: The iPad keyboard does not hide the word menu
+- **GIVEN** a word's menu open low in the view on an iPad
+- **WHEN** the on-screen keyboard comes up (Obsidian sets `--keyboard-height` and fires `keyboardWillShow` without resizing the view) or the visible part of the window shrinks
+- **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`), the menu moves above the keyboard with its text box in sight, and back when the keyboard goes
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the word menu moves above the iPad keyboard, and back when it goes -->

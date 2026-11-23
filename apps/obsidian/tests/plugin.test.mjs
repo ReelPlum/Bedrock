@@ -227,10 +227,18 @@ test('a plugin problem is shown with Report and logged; reports go out through r
   const before = fake.Modal.opened.length;
   plugin.commands.find((c) => c.id === 'report-problem').callback();
   assert.equal(fake.Modal.opened.length, before + 1);
-  // Sending needs the backend's address, which this version does not have.
+  // Sent with Obsidian's requestUrl to the backend built into the app.
   const report = plugin.errors.report({ appVersion: plugin.manifest.version });
   assert.equal(report.app, 'obsidian');
   assert.equal(report.app_version, '0.1.0');
-  await assert.rejects(plugin.sendReport(report), /not switched on/);
-  assert.equal(fake.requestUrl.calls.length, 0);
+  fake.requestUrl.calls.length = 0;
+  fake.requestUrl.answer = (req) => ({ status: 200, json: { id: JSON.parse(req.body).id } });
+  try {
+    assert.equal(await plugin.sendReport(report), report.id);
+  } finally {
+    fake.requestUrl.answer = () => ({ status: 200, json: {} });
+  }
+  assert.equal(fake.requestUrl.calls.length, 1);
+  assert.equal(fake.requestUrl.calls[0].url, 'https://bedrock-collect.reelplum.workers.dev/v1/reports');
+  assert.equal(fake.requestUrl.calls[0].method, 'POST');
 });

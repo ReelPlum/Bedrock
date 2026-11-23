@@ -1772,6 +1772,8 @@ async function main() {
     // A search hit or a link to a place in this note: go there and point
     // it out. True if that ink is still on the page.
     host.on('show', ({ strokes } = {}) => showInk(strokes));
+    // The bottom of the frame is hidden (the iPad's keyboard in Obsidian).
+    host.on('inset', ({ bottom } = {}) => wordMenu.setInset(bottom));
     host.ready();
   }
 }
