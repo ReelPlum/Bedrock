@@ -130,6 +130,9 @@ function connect() {
     store: () => new HostStore(rpc),
     /** Let the host run app functions it needs (e.g. save before closing). */
     on: (event, fn) => rpc.on(event, fn),
+    /** What a new note starts with, if the host made it about something:
+     *  `{ noteLinks: [{ target, type, text }], tags: [] }`, or null. */
+    start: () => rpc.call('start'),
     /** The note's name is its file's name: ask the host to rename the
      *  file to `title`. Resolves to `{ name }`, the file's name after. */
     rename: (title) => rpc.call('rename', { title }),

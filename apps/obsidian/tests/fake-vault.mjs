@@ -18,6 +18,7 @@ export class FakeVault {
       name,
       basename: dot > 0 ? name.slice(0, dot) : name,
       extension: dot > 0 ? name.slice(dot + 1) : '',
+      parent: { path: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '/' },
       stat: { ctime: now, mtime: now, size: 0 },
       data,
     };

@@ -28,6 +28,9 @@ pub fn meta_only(d: &Document) -> Document {
     if !d.links.is_empty() {
         m.extra.insert("links".into(), serde_json::to_value(&d.links).expect("links serialise"));
     }
+    // Note links and tags belong to no stroke, so they are saved as they are.
+    m.note_links = d.note_links.clone();
+    m.tags = d.tags.clone();
     m.kinds = d.kinds.clone();
     if !d.kinds.is_empty() {
         m.extra.insert("kinds".into(), serde_json::to_value(&d.kinds).expect("kinds serialise"));
@@ -224,6 +227,13 @@ mod tests {
         src.group(&ids);
         sync(&mut src, &mut m);
         assert_eq!(m.doc().live_groups(), vec![ids]);
+        assert_eq!(format::to_json(m.doc()), format::to_json(&src));
+
+        // And the whole note's links and tags.
+        src.add_note_link("Lecture 3", "note", None);
+        src.add_tag("physics");
+        sync(&mut src, &mut m);
+        assert_eq!((m.doc().note_links.clone(), m.doc().tags.clone()), (src.note_links.clone(), src.tags.clone()));
         assert_eq!(format::to_json(m.doc()), format::to_json(&src));
     }
 

@@ -11,6 +11,7 @@
 //! | `v1-first-release` | commit dc1b86b, the first note format |
 //! | `v1-before-pictures` | commit 46539c1: links, word groups, text/maths, line styles, stabiliser |
 //! | `v1-pictures-and-text-boxes` | Nov 12 2026: pictures, text boxes and per-stroke pen tuning |
+//! | `v1-before-note-links` | Nov 23 2026 (commit 8048376), before note links and tags: a link to a PDF page on a word |
 //! | `v1-handwriting-before-points-bin` | commit 90c0a6c (Nov 13 2026), the last writer with every sample in `note.json`: two handwritten words, an i-dot and an underline (`.bedrock` only) |
 
 use bedrock_core::brush::{BrushKind, LineStyle};
@@ -125,6 +126,27 @@ fn notes_with_pictures_and_text_boxes_still_open() {
     }
 }
 
+#[test]
+fn notes_from_before_note_links_and_tags_still_open() {
+    for ext in FORMATS {
+        let what = format!("v1-before-note-links.{ext}");
+        let first = open("v1-before-note-links", ext);
+        let again = (ext != "json").then(|| resave(&first));
+        for d in std::iter::once(first).chain(again) {
+            assert_eq!(d.title, "Before note links", "{what}");
+            check_common(&d, &what);
+            let s = d.strokes();
+            assert_eq!(d.live_links().len(), 2, "{what}");
+            assert_eq!(d.links[1].target, "Lectures/Week 3.pdf#page=4", "{what}");
+            assert_eq!(d.links[1].strokes, [s[2].id], "{what}");
+            assert_eq!(d.images().len(), 2, "{what}");
+            assert!(d.note_links.is_empty(), "{what}: no note links before they existed");
+            assert!(d.tags.is_empty(), "{what}: no tags before they existed");
+            assert!(d.extra.is_empty(), "{what}: nothing taken for an unknown field");
+        }
+    }
+}
+
 /// A `.bedrock` from just before samples moved to `points.bin` opens with
 /// every sample, and saved again (now with `points.bin`) gives back exactly
 /// the same note, value for value.
@@ -144,10 +166,10 @@ fn notes_from_before_points_bin_still_open_and_resave_bit_for_bit() {
 /// Every older fixture, saved with points.bin, keeps every value.
 #[test]
 fn every_old_note_resaves_with_points_bin_bit_for_bit() {
-    for name in ["v1-first-release", "v1-before-pictures", "v1-pictures-and-text-boxes"] {
+    for name in ["v1-first-release", "v1-before-pictures", "v1-pictures-and-text-boxes", "v1-before-note-links"] {
         for ext in FORMATS {
             // A bare JSON file has no picture files to save with it.
-            if name == "v1-pictures-and-text-boxes" && ext == "json" {
+            if (name == "v1-pictures-and-text-boxes" || name == "v1-before-note-links") && ext == "json" {
                 continue;
             }
             let d = open(name, ext);

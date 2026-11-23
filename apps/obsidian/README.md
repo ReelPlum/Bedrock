@@ -29,6 +29,18 @@ makes the note in that folder.
   setting is (no second copy in `Bedrock index/`), the sidecar opens the
   note beside it, moves with the note when it is renamed, and is fixed up
   once if the folder was not dropped into the vault's root.
+- **A handwritten note about a page.** Right-click in a note (a long press
+  on the iPad), or open a note's or PDF's ⋯ menu (also the tab header and
+  the file explorer), and choose "New handwritten note linking here"; a
+  right-click inside a PDF offers it too, and so does the command palette.
+  The new note ("Lecture 3 notes", or "Week 3 page 4 notes" for a PDF) is
+  made next to the page and opens at once, linking to it: to the note, or to
+  the PDF page in view (`[[Week 3.pdf#page=4]]`). The link belongs to the
+  whole note, not to any ink, so the page lists the note in its backlinks.
+- **Tags and links of the whole note.** "Tags and links…" in the canvas's
+  menu adds and removes the note's tags (shown in the index note's front
+  matter, so Obsidian's tag pane and search find them) and links that belong
+  to no handwriting (a vault file or PDF page from the picker, or a website).
 - **Link to a word.** Hold a word and choose "Copy a link to here". Pasted
   into any note, the link (`[[Physics.bedrock#^9f2c4e1a7b3d5f60]]`) opens the
   handwriting at that word.
@@ -82,6 +94,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | From | Message | Answer |
 |---|---|---|
 | app | `ready` | the app has started |
+| app | `start` | what a new note starts with: `{ noteLinks: [{ target, type, text }] }` for a note made by "New handwritten note linking here" (once; the app adds the link and saves at once), else `null` |
 | app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
 | app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes |

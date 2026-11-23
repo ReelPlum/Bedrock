@@ -122,6 +122,37 @@ pub struct KindOverride {
     pub kind: String,
 }
 
+/// A link of the whole note, not tied to any ink (`noteLinks` in
+/// note.json): for example the page a note was made about. Same fields as a
+/// [`Link`] without strokes; unknown kinds are kept and written back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoteLink {
+    pub target: String,
+    #[serde(rename = "type", default = "url_kind")]
+    pub kind: String,
+    /// What to call the link (for example "Week 3, page 4").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// A tag in Obsidian's form: letters, digits, `_`, `-` and `/` (nesting),
+/// at least one of them not a digit, no `#`. Spaces become `-`, a leading
+/// `#` and other characters are dropped. None if nothing is left.
+pub fn clean_tag(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in raw.trim().trim_start_matches('#').chars() {
+        if c.is_whitespace() {
+            if !out.ends_with('-') && !out.is_empty() {
+                out.push('-');
+            }
+        } else if c.is_alphanumeric() || c == '_' || c == '-' || (c == '/' && !out.ends_with('/')) {
+            out.push(c);
+        }
+    }
+    let out = out.trim_matches(|c| c == '/' || c == '-').to_string();
+    (!out.is_empty() && !out.chars().all(|c| c.is_ascii_digit() || c == '/')).then_some(out)
+}
+
 fn url_kind() -> String {
     "url".to_string()
 }
@@ -138,6 +169,10 @@ pub struct Document {
     strokes: Vec<Stroke>,
     pub recognition: Vec<RecognizedText>,
     pub links: Vec<Link>,
+    /// Links of the whole note, not tied to ink (see [`NoteLink`]).
+    pub note_links: Vec<NoteLink>,
+    /// The note's tags, in the order added (see [`clean_tag`]).
+    pub tags: Vec<String>,
     /// Strokes the writer made into one word (see [`Document::group`]).
     pub groups: Vec<Vec<StrokeId>>,
     /// Text or maths, as the writer set it (see [`Document::set_kind`]).
@@ -185,6 +220,8 @@ impl Document {
             strokes: Vec::new(),
             recognition: Vec::new(),
             links: Vec::new(),
+            note_links: Vec::new(),
+            tags: Vec::new(),
             groups: Vec::new(),
             kinds: Vec::new(),
             images: Vec::new(),
@@ -828,6 +865,54 @@ impl Document {
             });
         }
         self.revision += 1;
+    }
+
+    /// Add a link of the whole note. A blank target, or one the note
+    /// already links to, changes nothing; returns whether it was added.
+    pub fn add_note_link(&mut self, target: &str, kind: &str, text: Option<&str>) -> bool {
+        let target = target.trim();
+        if target.is_empty() || self.note_links.iter().any(|l| l.target == target) {
+            return false;
+        }
+        let text = text.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        self.note_links.push(NoteLink { target: target.to_string(), kind: kind.to_string(), text });
+        self.revision += 1;
+        true
+    }
+
+    /// Remove the note link to this target; returns whether there was one.
+    pub fn remove_note_link(&mut self, target: &str) -> bool {
+        let n = self.note_links.len();
+        self.note_links.retain(|l| l.target != target);
+        let removed = self.note_links.len() != n;
+        if removed {
+            self.revision += 1;
+        }
+        removed
+    }
+
+    /// Add a tag (cleaned by [`clean_tag`]); a tag already there in any
+    /// case is not added twice. Returns the tag as stored, if added.
+    pub fn add_tag(&mut self, raw: &str) -> Option<String> {
+        let tag = clean_tag(raw)?;
+        if self.tags.iter().any(|t| t.to_lowercase() == tag.to_lowercase()) {
+            return None;
+        }
+        self.tags.push(tag.clone());
+        self.revision += 1;
+        Some(tag)
+    }
+
+    /// Remove a tag (any case); returns whether it was there.
+    pub fn remove_tag(&mut self, tag: &str) -> bool {
+        let n = self.tags.len();
+        let tag = tag.trim().trim_start_matches('#').to_lowercase();
+        self.tags.retain(|t| t.to_lowercase() != tag);
+        let removed = self.tags.len() != n;
+        if removed {
+            self.revision += 1;
+        }
+        removed
     }
 
     /// The link a word belongs to (all its strokes are in the link).

@@ -2,8 +2,8 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
-import { PdfPages } from './pdf-pages.js';
+import { FileView, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
+import { PdfPages, pdfPageInView } from './pdf-pages.js';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
 import { HostBridge } from './bridge.js';
@@ -151,6 +151,7 @@ class BedrockView extends FileView {
       pdfPage: (path, page, width) => plugin.pdfPages.page(path, page, width),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
+      start: () => plugin.takeStart(this.file),
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
       rename: (name) => plugin.renameNote(this.file, name),
@@ -208,6 +209,9 @@ export default class BedrockPlugin extends Plugin {
     const data = (await this.loadData()) || {};
     this.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     this.cameras = data.cameras || {};
+    // Links a new note starts with (note path -> { noteLinks }), handed to
+    // its canvas once, when it opens (see newNote).
+    this.starts = new Map();
     // The canvas's pages and files, handed to it from memory (inline-app.js).
     this.webApp = new InlineApp(bundle);
     this.register(() => this.webApp.revoke());
@@ -246,6 +250,16 @@ export default class BedrockPlugin extends Plugin {
         .onClick(() => this.newNote(file.path)));
     }));
     this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
+    this.addCommand({
+      id: 'new-linked-note',
+      name: 'New handwritten note linking here',
+      checkCallback: (checking) => {
+        const about = this.aboutActive();
+        if (!about) return false;
+        if (!checking) this.newNote(undefined, about);
+        return true;
+      },
+    });
     this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
     this.addSettingTab(new BedrockSettings(this.app, this));
@@ -269,6 +283,8 @@ export default class BedrockPlugin extends Plugin {
     this.registerEvent(vault.on('delete', (f) => {
       if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch((e) => this.errors.record('Bedrock: search index not removed', e, 'error'));
     }));
+    // "New handwritten note linking here" in the menus of a note or PDF.
+    this.registerLinkedNoteMenus();
     // A search result or link that lands on an index note opens the
     // handwriting, at the words that were found.
     this.redirectIndexNotes();
@@ -430,22 +446,97 @@ export default class BedrockPlugin extends Plugin {
       .map((f) => ({ path: f.path, link: this.app.metadataCache.fileToLinktext(f, sourcePath, true) }));
   }
 
+  /** What a new note would link to from the active view: the Markdown
+   *  note, or the PDF at the page in view. Null for anything else. */
+  aboutActive() {
+    const leaf = this.app.workspace.getMostRecentLeaf?.();
+    const file = leaf?.view?.file || this.app.workspace.getActiveFile();
+    return this.aboutFile(file, leaf);
+  }
+
+  /** `{ file, page }` for a Markdown note or a PDF (`page` when the PDF is
+   *  open in `leaf`, at the page in view or under `at`). */
+  aboutFile(file, leaf = null, at = null) {
+    if (!(file instanceof TFile) || !['md', 'pdf'].includes(file.extension)) return null;
+    if (file.extension === 'md' && isIndexPath(file.path, this.settings.index ? this.settings.indexFolder : '')) return null;
+    const el = leaf?.view?.file === file ? leaf.view.containerEl : null;
+    const page = file.extension === 'pdf' && el ? pdfPageInView(el, at) : null;
+    return { file, page };
+  }
+
+  /** The link a new note at `notePath` keeps to the page it was made about. */
+  linkTo({ file, page }, notePath) {
+    const link = this.app.metadataCache.fileToLinktext(file, notePath, true);
+    return page
+      ? { target: `${link}#page=${page}`, type: 'note', text: `${file.basename}, page ${page}` }
+      : { target: link, type: 'note', text: file.basename };
+  }
+
+  /** Adds "New handwritten note linking here" to a menu. */
+  addLinkedNoteItem(menu, about) {
+    if (!about) return;
+    menu.addItem((item) => {
+      item.setTitle('New handwritten note linking here').setIcon('pen-tool').onClick(() => this.newNote(undefined, about));
+      item.setSection?.('action');
+    });
+  }
+
+  /** The item goes in the editor's menu (right-click; a long press on the
+   *  iPad), in a file's menu (a tab's ⋯ and header, the file explorer) and
+   *  in a right-click inside a PDF that Obsidian leaves unanswered. */
+  registerLinkedNoteMenus() {
+    const ws = this.app.workspace;
+    this.registerEvent(ws.on('editor-menu', (menu, _editor, info) => {
+      this.addLinkedNoteItem(menu, this.aboutFile(info?.file));
+    }));
+    this.registerEvent(ws.on('file-menu', (menu, file, _source, leaf) => {
+      // From the explorer there is no leaf: a PDF found open still links its page.
+      const open = leaf || ws.getLeavesOfType?.('pdf').find((l) => l.view?.file === file) || null;
+      this.addLinkedNoteItem(menu, this.aboutFile(file, open));
+    }));
+    if (typeof document !== 'undefined') this.registerDomEvent(document, 'contextmenu', (e) => this.pdfContextMenu(e));
+  }
+
+  /** A right-click inside a PDF that Obsidian did not answer with a menu
+   *  of its own: offer a note linking the page under the pointer. */
+  pdfContextMenu(e) {
+    if (e.defaultPrevented) return;
+    const leaf = this.app.workspace.getLeavesOfType?.('pdf').find((l) => l.view?.containerEl?.contains(e.target));
+    const about = leaf && this.aboutFile(leaf.view.file, leaf, e.target);
+    if (!about) return;
+    const menu = new Menu();
+    this.addLinkedNoteItem(menu, about);
+    menu.showAtMouseEvent(e);
+    e.preventDefault();
+  }
+
+  /** The starting links of a note made by newNote, once. */
+  takeStart(file) {
+    const start = file && this.starts.get(file.path);
+    if (start) this.starts.delete(file.path);
+    return start || null;
+  }
+
   /** Makes an empty note and opens it: in `inFolder` when given (a
    *  folder's menu), otherwise in the folder for new notes or beside the
-   *  open file. */
-  async newNote(inFolder) {
-    const active = this.app.workspace.getActiveFile();
+   *  open file (or the page it is about). With `about` (`{ file, page }`),
+   *  it is named after that page and starts with a link to it. */
+  async newNote(inFolder, about = null) {
+    const active = about?.file || this.app.workspace.getActiveFile();
     const folder = inFolder ?? (this.settings.newNoteFolder || active?.parent?.path || '');
     const dir = folder && folder !== '/' ? `${folder}/` : '';
+    const base = about ? `${about.file.basename}${about.page ? ` page ${about.page}` : ''} notes`.replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim() : 'Handwritten note';
     let path;
     for (let n = 0; ; n++) {
-      path = normalizePath(`${dir}Handwritten note${n ? ` ${n}` : ''}.${EXTENSION}`);
+      path = normalizePath(`${dir}${base}${n ? ` ${n}` : ''}.${EXTENSION}`);
       if (!this.app.vault.getAbstractFileByPath(path)) break;
     }
     if (dir) await this.indexer.ensureFolder(folder);
+    if (about) this.starts.set(path, { noteLinks: [this.linkTo(about, path)] });
     // An empty file is a new note; the canvas writes the first save.
     const file = await this.app.vault.createBinary(path, new ArrayBuffer(0));
     await this.app.workspace.getLeaf(true).openFile(file);
+    return file;
   }
 }
 

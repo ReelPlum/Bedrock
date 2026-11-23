@@ -2652,6 +2652,47 @@ test('lasso: Color in the selection menu shows the swatches and the +, and gives
   await ctx.close();
 });
 
+test('tags and links of the whole note: added and removed from the menu, with no ink, and kept when the note reopens', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  await page.click('#btn-menu');
+  await page.click('#menu [data-action="note-info"]');
+  assert.equal(await page.isVisible('#note-info'), true);
+  assert.equal(await page.isVisible('#note-info .ni-browse'), false, 'no vault to browse outside Obsidian');
+  await page.fill('#note-info .ni-tags + form input', 'Biology 101');
+  await page.press('#note-info .ni-tags + form input', 'Enter');
+  await page.fill('#note-info .ni-tags + form input', '12');
+  await page.press('#note-info .ni-tags + form input', 'Enter');
+  assert.match(await page.textContent('#note-info .wm-error'), /not a tag/);
+  await page.fill('#note-info .ni-links ~ form input', 'not an address');
+  await page.press('#note-info .ni-links ~ form input', 'Enter');
+  assert.match(await page.textContent('#note-info .wm-error'), /not a web address/);
+  await page.fill('#note-info .ni-links ~ form input', 'example.com/cells');
+  await page.click('#note-info .ni-links ~ form button');
+  await page.fill('#note-info .ni-links ~ form input', 'example.org');
+  await page.press('#note-info .ni-links ~ form input', 'Enter');
+  await page.click('#note-info .ni-link:nth-child(2) .ni-remove');
+  const shown = await page.evaluate(() => ({
+    tags: [...document.querySelectorAll('#note-info .ni-tag span')].map((s) => s.textContent),
+    links: [...document.querySelectorAll('#note-info .ni-open')].map((b) => b.textContent),
+  }));
+  assert.deepEqual(shown, { tags: ['#Biology-101'], links: ['example.com/cells'] });
+  // Tapping outside closes it.
+  await page.mouse.click(600, 600);
+  assert.equal(await page.isVisible('#note-info'), false);
+  await page.evaluate(() => bedrock.saveNow());
+  const saved = await page.evaluate(async () => {
+    const rec = await bedrock.store.get(bedrock.noteId);
+    return rec ? rec.data.byteLength : 0;
+  });
+  assert.ok(saved > 0, 'a note with only tags and links is saved');
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock?.ready);
+  const info = await page.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()));
+  assert.deepEqual(info, { noteLinks: [{ target: 'https://example.com/cells', type: 'url' }], tags: ['Biology-101'] });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // The save worker compiled the 2.2 MB WebAssembly a second time on every
 // start. The page compiles it once and sends the module to the worker.
 test('the WebAssembly is fetched and compiled once; the save worker gets the module the page compiled', async () => {

@@ -53,12 +53,13 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
  * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
  * @param {{ job: (name: string, fn: () => any) => any }} [o.perf]  times reads, writes and index updates (perf.js)
+ * @param {() => ({noteLinks: object[]} | null)} [o.start]  what a new note starts with (a link to the page it was made about), once
  * @param {(name: string) => Promise<string>} [o.rename]  rename the open file to `name` (no extension) in its folder; resolves to its name after (the old one if refused)
  * @param {() => void} [o.onReady]
  * @param {() => Promise<WebAssembly.Module|null>} [o.wasm]  the canvas's WebAssembly, compiled once by the plugin
  * @param {number} [o.indexDelayMs]  how long writing must pause before the index note is written
  */
-export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, indexDelayMs = INDEX_DELAY_MS }) {
+export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, indexDelayMs = INDEX_DELAY_MS }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // The index note follows the file once writing pauses, not after every
   // autosave: each index write makes Obsidian re-read the note for search,
@@ -90,6 +91,8 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
     isOutsideChange(f) { return f === file() && !inFlight && f.stat.mtime !== ownMtime; },
     handlers: {
       ready: async () => { onReady?.(); return true; },
+      // A new note's starting links ("New handwritten note linking here").
+      start: async () => start?.() ?? null,
       // Sent as a compiled module (structured clone shares its code).
       wasm: async () => (wasm ? (await wasm().catch(() => null)) : null),
       read: async () => {
