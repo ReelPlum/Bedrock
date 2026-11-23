@@ -8,7 +8,7 @@
 - **GIVEN** a word's menu in the view
 - **WHEN** a link is made, or a link to the word is copied
 - **THEN** the vault note picker opens (not index notes or the note itself), without focusing the link box (no iPad keyboard); the chosen note goes into the link box and Save makes the link, which reaches the file, `links.md`, the index note and Obsidian; closing the picker keeps the form; a copied link names a real stroke of the word
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the note chosen in Obsidian's picker goes into the link box, and Save makes the link -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker shows the vault's folders and files; tapping a note puts its link in the box -->
 
 #### Scenario: The iPad keyboard does not hide the word menu
 - **GIVEN** a word's menu open low in the view on an iPad

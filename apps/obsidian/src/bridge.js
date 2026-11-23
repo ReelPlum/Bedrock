@@ -5,7 +5,7 @@
 
 export class HostBridge {
   /** `frame()` returns the iframe's window; `handlers` maps request names
-   *  (read, write, get-kv, set-kv, pick-note, open-link, ready) to async
+   *  (read, write, get-kv, set-kv, list-files, read-note, pdf-page, open-link, ready) to async
    *  functions of the request's args. */
   constructor(frame, handlers) {
     this.frame = frame;

@@ -68,7 +68,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **WHEN** each is reopened
 - **THEN** each comes back to its own view
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the camera is remembered per vault file -->
-<!-- test-js: apps/obsidian/tests/unit.test.mjs :: session camera is kept per file; picker and links get the note path -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: session camera is kept per file; the link picker and links get the note path -->
 
 #### Scenario: The bridge to the web app
 - **GIVEN** the web app running in the view
@@ -113,16 +113,25 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Links to and from words
 - **GIVEN** a word's menu in the view
 - **WHEN** a link is made, or a link to the word is copied
-- **THEN** the vault note picker opens (not index notes or the note itself), without focusing the link box (no iPad keyboard); the chosen note goes into the link box and Save makes the link, which reaches the file, `links.md`, the index note and Obsidian; closing the picker keeps the form; a copied link names a real stroke of the word
-<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: the note picker lists vault notes, not index notes or the note itself, and gives link text -->
+- **THEN** the canvas's own picker opens over the canvas (without focusing the link box, so no iPad keyboard) with the vault's folders and files as a tree (not index notes or the note itself) and a filter; the chosen link goes into the link box and Save makes the link, which reaches the file, `links.md`, the index note and Obsidian; closing the picker keeps the form; a copied link names a real stroke of the word
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: the link picker is offered every vault file but the note itself and index notes, with its link text -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: making a link opens the vault note picker, and the link reaches the file, the index and Obsidian -->
-<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the note chosen in Obsidian's picker goes into the link box, and Save makes the link -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker shows the vault's folders and files; tapping a note puts its link in the box -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: closing the picker leaves the link form open, with Browse to try again and the other kinds of link -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the word menu copies a link to the word, for pasting into a vault note -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: the app can ask for a link to a word; only real stroke ids are accepted -->
 
-#### Scenario: The iPad keyboard does not hide the word menu
-- **GIVEN** a word's menu open low in the view on an iPad
+#### Scenario: Linking to a page of a PDF or a word of another note
+- **GIVEN** the link picker
+- **WHEN** a PDF or a Bedrock note is tapped
+- **THEN** a PDF opens as its pages (drawn by the plugin with Obsidian's PDF.js) and a page links as `[[File.pdf#page=N]]`; a Bedrock note opens as its picture with its words marked, and a word links as `[[Note.bedrock#^<stroke id>]]`; either can be linked whole instead; the canvas may read other `.bedrock` files and nothing else
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker opens a PDF to link one of its pages, or the whole file -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker opens another Bedrock note to link one of its words, or the whole note -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: a PDF's pages are drawn for the link picker with Obsidian's PDF.js, and the open PDF is kept for the next page -->
+
+#### Scenario: The iPad keyboard hides no text box
+- **GIVEN** a word's menu, or any other text box, low in the view on an iPad
 - **WHEN** the on-screen keyboard comes up (Obsidian sets `--keyboard-height` and fires `keyboardWillShow` without resizing the view) or the visible part of the window shrinks
-- **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`), the menu moves above the keyboard with its text box in sight, and back when the keyboard goes
+- **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`); the word menu moves above the keyboard, any other text box being typed in slides into sight with the page (`keep-in-view.js`), and both go back when the keyboard goes
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the word menu moves above the iPad keyboard, and back when it goes -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: any text box being typed in slides into sight above the iPad keyboard, and back after -->

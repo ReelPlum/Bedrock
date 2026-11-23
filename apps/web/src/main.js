@@ -4,6 +4,7 @@ import { Minimap } from './minimap.js';
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
+import { KeepInView } from './keep-in-view.js';
 import { SelectionView } from './selection-view.js';
 import { SwatchPicker } from './swatch-picker.js';
 import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
@@ -1624,8 +1625,14 @@ async function main() {
     // A search hit or a link to a place in this note: go there and point
     // it out. True if that ink is still on the page.
     host.on('show', ({ strokes } = {}) => showInk(strokes));
-    // The bottom of the frame is hidden (the iPad's keyboard in Obsidian).
-    host.on('inset', ({ bottom } = {}) => wordMenu.setInset(bottom));
+    // The bottom of the frame is hidden (the iPad's keyboard in Obsidian):
+    // the word menu moves above it, and any other text box being typed in
+    // is slid into sight.
+    const keepInView = new KeepInView();
+    host.on('inset', ({ bottom } = {}) => {
+      wordMenu.setInset(bottom);
+      keepInView.setInset(bottom);
+    });
     host.ready();
   }
 }
