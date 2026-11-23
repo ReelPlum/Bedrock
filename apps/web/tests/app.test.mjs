@@ -2780,3 +2780,43 @@ test('lasso: Color in the selection menu shows the swatches and the +, and gives
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test('the minimap shows pictures and text boxes under the ink', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async (make) => {
+    bedrock.canvas.set_paper('plain');
+    const mm = document.querySelector('#minimap canvas');
+    const count = (test) => {
+      const d = mm.getContext('2d').getImageData(0, 0, mm.width, mm.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (test(d[i], d[i + 1], d[i + 2], d[i + 3])) n++;
+      return n;
+    };
+    const red = (r, g, b, a) => a > 200 && r > 180 && g < 90 && b < 90;
+    const dark = (r, g, b, a) => a > 200 && r + g + b < 350;
+    const settle = async () => { for (let i = 0; i < 30; i++) await t.frame(); };
+    const empty = count(red);
+    await bedrock.insertPictures([await eval(make)(300, 200, '#e53935')]);
+    await settle();
+    const picture = count(red);
+    // Ink across the picture stays on top of it on the minimap too.
+    document.querySelector('[data-tool="lasso"]').click();
+    document.querySelector('[data-brush="pen"]').click();
+    await t.line(innerWidth / 2 - 100, innerHeight / 2, innerWidth / 2 + 100, innerHeight / 2, { pressure: 1 });
+    await settle();
+    const inked = count(dark);
+    const redBefore = count(red);
+    bedrock.insertText('A text box with a few words in it\nand a second line');
+    await settle();
+    await new Promise((res) => setTimeout(res, 500));
+    await settle();
+    return { empty, picture, inked, redBefore, redWithText: count(red), images: JSON.parse(bedrock.canvas.images_json()).length };
+  }, makePicture);
+  assert.equal(r.empty, 0, 'nothing red before');
+  assert.ok(r.picture > 100, `the red picture shows (${r.picture} px)`);
+  assert.ok(r.inked > 0, 'the ink over it shows');
+  assert.equal(r.images, 2);
+  assert.ok(r.redWithText < r.redBefore - 20, `the text box shows over the picture (red ${r.redBefore} -> ${r.redWithText} px)`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
