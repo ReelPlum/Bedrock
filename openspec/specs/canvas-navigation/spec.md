@@ -81,6 +81,26 @@ for undo and redo, and palm rejection.
 <!-- test-js: apps/web/tests/app.test.mjs :: grid paper stays fixed to the page when zooming -->
 <!-- test-js: apps/web/tests/app.test.mjs :: starts without errors and renders the paper -->
 
+### Requirement: A new note SHALL start on grid paper, and a note SHALL keep its own paper
+
+New notes start on grid paper; in Obsidian the plugin's "Paper for new
+notes" setting chooses it instead (see `obsidian-plugin`). The paper is
+saved in the note (`paper`, see `note-format`), so changing the default
+never changes a note that already exists. A file that names no paper still
+opens with dots, as it did before grid became the default.
+
+#### Scenario: New and existing notes
+- **GIVEN** a note saved on dots paper
+- **WHEN** the app starts with no note, a new note is made, and the dots note is opened again
+- **THEN** the first and the new note are on grid paper, and the dots note is on dots
+<!-- test-js: apps/web/tests/folders.test.mjs :: a new note starts on grid paper; a note that is opened again keeps its own paper -->
+
+#### Scenario: A file that names no paper
+- **GIVEN** a note file without `paper`
+- **WHEN** it is opened
+- **THEN** it is on dots paper, as before
+<!-- test: a_note_that_names_no_paper_opens_with_dots -->
+
 ### Requirement: The minimap SHALL show the drawing and the view and move the camera
 
 #### Scenario: Minimap

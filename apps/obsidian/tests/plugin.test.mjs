@@ -147,6 +147,42 @@ test('new notes are empty .bedrock files next to the open file, never overwritin
   assert.equal(vault.files.get('Physics/Handwritten note.bedrock').data.byteLength, 0);
 });
 
+test('new notes start on grid paper; the settings choose another paper for new notes, and it is remembered', async () => {
+  const { plugin, app, vault } = await loaded();
+  const tab = plugin.settingTabs[0];
+  tab.display();
+  const setting = tab.containerEl.settings.find((x) => x.name === 'Paper for new notes');
+  assert.ok(setting, 'the settings have it');
+  assert.equal(setting.control.kind, 'dropdown');
+  assert.deepEqual(setting.control.options, { grid: 'Grid', dots: 'Dots', lines: 'Lines', plain: 'Plain' });
+  assert.equal(setting.control.value, 'grid', 'grid is the default');
+  // A new note's canvas is told the paper to start with.
+  const note = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+  Object.setPrototypeOf(note, fake.TFile.prototype);
+  const view = plugin.views['bedrock-note'](new fake.WorkspaceLeaf());
+  const frame = { remove() {}, ownerDocument: { defaultView: { addEventListener() {}, removeEventListener() {} } }, contentWindow: null };
+  view.app = app;
+  view.contentEl = { createEl: () => frame };
+  await view.onLoadFile(note);
+  assert.deepEqual(await view.session.handlers.defaults(), { paper: 'grid' });
+  await setting.control.change('lines');
+  assert.deepEqual(await view.session.handlers.defaults(), { paper: 'lines' });
+  assert.equal(plugin.data.settings.newNotePaper, 'lines', 'saved with the settings');
+  // Something that is not a paper is never kept.
+  await setting.control.change('stripes');
+  assert.equal(plugin.settings.newNotePaper, 'grid');
+  // Restarted, the choice comes back; settings saved before it existed get grid.
+  await setting.control.change('dots');
+  const again = new Plugin(app, plugin.manifest);
+  again.data = plugin.data;
+  await again.onload();
+  assert.equal(again.settings.newNotePaper, 'dots');
+  const old = new Plugin(app, plugin.manifest);
+  old.data = { settings: { index: true, indexFolder: 'Bedrock index', newNoteFolder: '' } };
+  await old.onload();
+  assert.equal(old.settings.newNotePaper, 'grid');
+});
+
 /** A PDF open in Obsidian's viewer, its pages `count` tall pages of 1000px
  *  with the view scrolled to `scroll`: just the DOM pdfPageInView reads. */
 function pdfLeaf(file, count, scroll) {

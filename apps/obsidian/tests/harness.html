@@ -54,6 +54,8 @@ window.host = {
   vault,
   /** Starting links of new notes, as the plugin's newNote leaves them. */
   starts: new Map(),
+  /** The plugin's "Paper for new notes" setting. */
+  paper: 'grid',
   /** What the plugin does when Obsidian starts: ask for the invite code
    *  and consent. The "window" is a div here. Resolves to how it went. */
   launch() {
@@ -109,6 +111,7 @@ window.host = {
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
       start: () => { const st = host.starts.get(file.path) ?? null; host.starts.delete(file.path); return st; },
+      paper: () => host.paper,
       // As the plugin's renameNote: in its folder, never over another file.
       rename: async (name) => {
         const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/') + 1) : '';

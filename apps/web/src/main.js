@@ -57,6 +57,7 @@ const TUNE_DEFAULTS = {
   highlighter: { taper_start: 0, taper_end: 0, taper_fade: 0, pressure: 100, speed: 0 },
 };
 const MAX_CURVE_POINTS = 6;
+const NEW_NOTE_PAPERS = ['grid', 'dots', 'lines', 'plain']; // grid first: the default for new notes
 
 function validCurve(c) {
   if (!Array.isArray(c)) return null;
@@ -596,7 +597,7 @@ async function main() {
     canvas.new_document(...randomSeed());
     if (host) canvas.set_title((await store?.list().catch(() => []))?.[0]?.title || '');
     note = { id: host ? host.noteId : newNoteId(), created: Date.now(), folder };
-    canvas.set_paper('dots');
+    canvas.set_paper(await newNotePaper());
     applyDocToUi();
     savedRevision = -1; // a new note is saved on its first stroke
     setSaveState('New');
@@ -605,6 +606,14 @@ async function main() {
     // View only (a computer) too: the link is part of making the note.
     const start = host ? await host.start().catch(() => null) : null;
     if (start && applyStart(start)) await saveNow({ start: true });
+  }
+
+  /** The paper a new note starts with: grid, or what the host's settings
+   *  chose (the Obsidian plugin's "Paper for new notes"). A note that is
+   *  opened keeps its own paper; one without any opens with dots. */
+  async function newNotePaper() {
+    const chosen = host ? (await host.defaults().catch(() => null))?.paper : null;
+    return NEW_NOTE_PAPERS.includes(chosen) ? chosen : 'grid';
   }
 
   /** Put the host's starting links and tags into the new note. */

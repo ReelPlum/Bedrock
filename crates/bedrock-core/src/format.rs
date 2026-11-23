@@ -1023,6 +1023,16 @@ mod tests {
         assert!(out.contains(r##""layers":[{"name":"a"}]"##));
     }
 
+    /// New notes start on grid paper (the app picks it), but a file that
+    /// names no paper keeps opening with dots, as it always has.
+    #[test]
+    fn a_note_that_names_no_paper_opens_with_dots() {
+        let json = r##"{"format":"bedrock-note","version":2,"strokes":[]}"##;
+        assert_eq!(from_json(json, 0).unwrap().doc.paper, "dots");
+        let json = r##"{"format":"bedrock-note","version":2,"paper":"plain","strokes":[]}"##;
+        assert_eq!(from_json(json, 0).unwrap().doc.paper, "plain");
+    }
+
     #[test]
     fn note_links_and_tags_are_saved_without_any_ink() {
         let mut d = Document::new(1);

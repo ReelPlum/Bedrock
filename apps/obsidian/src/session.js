@@ -63,7 +63,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {() => Promise<WebAssembly.Module|null>} [o.wasm]  the canvas's WebAssembly, compiled once by the plugin
  * @param {number} [o.indexDelayMs]  how long writing must pause before the index note is written
  */
-export function createSession({ viewOnly = false, vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, indexDelayMs = INDEX_DELAY_MS }) {
+export function createSession({ viewOnly = false, vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, paper, indexDelayMs = INDEX_DELAY_MS }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // The index note follows the file once writing pauses, not after every
   // autosave: each index write makes Obsidian re-read the note for search,
@@ -104,6 +104,9 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
         if (viewOnly && st) startWrite = true;
         return st;
       },
+      // What a new note starts with that is not about anything: the
+      // paper chosen in the plugin's settings.
+      defaults: async () => ({ paper: paper?.() || 'grid' }),
       // Sent as a compiled module (structured clone shares its code).
       wasm: async () => (wasm ? (await wasm().catch(() => null)) : null),
       read: async () => {
