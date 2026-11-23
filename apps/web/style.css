@@ -378,3 +378,79 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .ni-row button, .ni-browse { padding: 8px 12px; border-radius: 9px; font-size: 14px; }
 .ni-browse { text-align: left; color: var(--accent); }
 .ni-browse[hidden] { display: none; }
+
+/* ----- Opening a note: a pen writes a loop (openspec saving-and-opening) ----
+   One colour, the ink, on the paper. Fades in only after a moment, so a
+   note that opens at once shows nothing; it goes at once, so the note's
+   ink shows straight away. The ink and the pen share one
+   timeline and one easing on the same path, so the nib stays on the line. */
+.note-loading {
+  position: absolute; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; gap: 14px;
+  background: var(--paper); color: var(--ink); pointer-events: none;
+  animation: nl-in 220ms ease-out 150ms both;
+}
+@keyframes nl-in { from { opacity: 0; } to { opacity: 1; } }
+.nl-stage { position: relative; width: 200px; height: 110px; }
+.note-loading svg { overflow: visible; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.nl-ink { position: absolute; inset: 0; width: 200px; height: 110px; stroke-width: 5; }
+.nl-line { stroke-dasharray: 100 100; stroke-dashoffset: 100; animation: nl-draw 2.6s infinite; }
+.nl-spark { stroke-width: 3; opacity: 0; transform-box: fill-box; transform-origin: center; animation: nl-spark 2.6s infinite; }
+.nl-pen {
+  position: absolute; left: 0; top: 0; width: 85px; height: 85px;
+  offset-path: path("M16 80C34 80 42 34 60 34c14 0 12 28 0 30-12 2-6-26 18-24 20 2 16 36 38 34 18-2 16-30 34-30 14 0 18 20 34 16");
+  offset-anchor: 10px 75px; offset-rotate: 0deg; offset-distance: 0%;
+  animation: nl-move 2.6s infinite;
+}
+.nl-hop { width: 85px; height: 85px; transform-origin: 10px 75px; animation: nl-hop 2.6s infinite; }
+.nl-wiggle { display: block; width: 85px; height: 85px; stroke-width: 2.4; transform-origin: 10px 75px; animation: nl-wiggle 2.6s infinite; }
+.nl-wiggle .nl-body { fill: var(--paper); }
+.nl-label { font-size: 13px; color: var(--muted); letter-spacing: 0.01em; }
+
+/* Writing: 6% to 58% of the loop, ink and pen together. */
+@keyframes nl-draw {
+  0%, 6% { stroke-dashoffset: 100; animation-timing-function: cubic-bezier(0.45, 0.05, 0.4, 1); }
+  58%, 74% { stroke-dashoffset: 0; animation-timing-function: cubic-bezier(0.6, 0, 0.7, 1); }
+  /* The ink is lifted off from where it started, towards the pen. */
+  90%, 100% { stroke-dashoffset: -100; }
+}
+@keyframes nl-move {
+  0%, 6% { offset-distance: 0%; animation-timing-function: cubic-bezier(0.45, 0.05, 0.4, 1); }
+  58%, 100% { offset-distance: 100%; }
+}
+/* The pen pops in, hops for joy at the end of the line, and pops away. */
+@keyframes nl-hop {
+  0% { transform: scale(0) rotate(-30deg); animation-timing-function: cubic-bezier(0.3, 1.6, 0.5, 1); }
+  6% { transform: scale(1) rotate(0); }
+  58% { transform: scale(1, 1); animation-timing-function: ease-out; }
+  61% { transform: scale(1.12, 0.84); animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1); }
+  67% { transform: translate(6px, -22px) scale(0.94, 1.08) rotate(-12deg); animation-timing-function: cubic-bezier(0.6, 0, 0.8, 0.4); }
+  72% { transform: scale(1.14, 0.82); animation-timing-function: cubic-bezier(0.3, 1.8, 0.5, 1); }
+  77% { transform: scale(1); }
+  90% { transform: scale(1); animation-timing-function: cubic-bezier(0.6, -0.6, 0.7, 0.4); }
+  100% { transform: scale(0) rotate(25deg); }
+}
+/* While it writes, the pen rocks and presses like a hand in a hurry. */
+@keyframes nl-wiggle {
+  0%, 6% { transform: rotate(0); }
+  12% { transform: rotate(-9deg) translateY(1px); }
+  18% { transform: rotate(6deg); }
+  24% { transform: rotate(-7deg) translateY(1px); }
+  30% { transform: rotate(8deg); }
+  36% { transform: rotate(-6deg) translateY(1px); }
+  42% { transform: rotate(7deg); }
+  48% { transform: rotate(-8deg) translateY(1px); }
+  54% { transform: rotate(5deg); }
+  58%, 100% { transform: rotate(0); }
+}
+@keyframes nl-spark {
+  0%, 70% { opacity: 0; transform: scale(0.3); }
+  73% { opacity: 1; transform: scale(1.15); animation-timing-function: ease-out; }
+  84%, 100% { opacity: 0; transform: scale(1.4); }
+}
+/* Reduced motion: the finished line and the pen resting at its end, still. */
+@media (prefers-reduced-motion: reduce) {
+  .note-loading { animation-duration: 1ms; }
+  .nl-line, .nl-spark, .nl-pen, .nl-hop, .nl-wiggle { animation: none; }
+  .nl-line { stroke-dashoffset: 0; }
+  .nl-pen { offset-distance: 100%; }
+}
