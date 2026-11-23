@@ -17,6 +17,8 @@
 
 export const GLOBALS_MARK = '<!--bedrock:globals-->';
 export const MODULE_MARK = '<!--bedrock:module-->';
+/** The canvas's WebAssembly, by its path in apps/web. */
+export const WASM = 'pkg/bedrock_web_bg.wasm';
 
 const TYPES = { '.wasm': 'application/wasm', '.js': 'text/javascript', '.aff': 'text/plain', '.gz': 'application/gzip' };
 const typeOf = (path) => TYPES[path.slice(path.lastIndexOf('.'))] || 'application/octet-stream';
@@ -39,6 +41,7 @@ export class InlineApp {
     this.host = host;
     this.urls = urls;
     this.made = null;
+    this.compiled = null;
   }
 
   /** The blob: URLs, made once: files, then workers (which need the files),
@@ -70,8 +73,22 @@ export class InlineApp {
     return html.replace(GLOBALS_MARK, () => globals).replace(MODULE_MARK, () => module);
   }
 
+  /** The canvas's WebAssembly, compiled once for every note opened while
+   *  the plugin runs (blob: URLs get no compiled-code cache, so each note
+   *  and its save worker compiled it again). Each canvas is sent the module
+   *  over the bridge (`wasm`) and passes it on to its save worker. */
+  wasmModule() {
+    if (!this.compiled) {
+      const b64 = this.bundle.files?.[WASM];
+      this.compiled = b64 ? WebAssembly.compile(bytesOf(b64)) : Promise.resolve(null);
+      this.compiled.catch(() => { this.compiled = null; });
+    }
+    return this.compiled;
+  }
+
   /** Lets go of the blob: URLs (the plugin is unloaded). */
   revoke() {
+    this.compiled = null;
     if (!this.made) return;
     for (const u of [...Object.values(this.made.assets), ...Object.values(this.made.modules)]) this.urls.revokeObjectURL(u);
     this.made = null;

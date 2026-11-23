@@ -89,6 +89,13 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
 });
 
+test('soon after Obsidian starts, the WebAssembly is compiled once, ready for the first note', async () => {
+  const { plugin } = await loaded();
+  const module = await plugin.wasmWarm;
+  assert.ok(module instanceof WebAssembly.Module, 'compiled in the background');
+  assert.equal(await plugin.webApp.wasmModule(), module, 'the first note gets that module');
+});
+
 test('new notes are empty .bedrock files next to the open file, never overwriting one', async () => {
   const { plugin, vault, app, opened } = await loaded();
   await vault.createFolder('Physics');
