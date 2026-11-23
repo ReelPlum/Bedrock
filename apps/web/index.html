@@ -21,6 +21,30 @@
     <canvas id="overlay"></canvas>
     <canvas id="marks" aria-hidden="true"></canvas>
     <div id="hover-cursor" class="hover-cursor" hidden aria-hidden="true"></div>
+    <!-- Shown while a note opens: a pen writes a loop, hops, and starts
+         again (openspec saving-and-opening). Plain SVG and CSS, so it
+         shows before the scripts and WebAssembly have loaded. -->
+    <div id="note-loading" class="note-loading" role="status">
+      <div class="nl-stage" aria-hidden="true">
+        <svg class="nl-ink" viewBox="0 0 200 110" width="200" height="110">
+          <path class="nl-line" pathLength="100" d="M16 80C34 80 42 34 60 34c14 0 12 28 0 30-12 2-6-26 18-24 20 2 16 36 38 34 18-2 16-30 34-30 14 0 18 20 34 16"/>
+          <path class="nl-spark" d="M194 64l8 3M190 72l5 7M181 74v9"/>
+        </svg>
+        <div class="nl-pen">
+          <div class="nl-hop">
+            <svg class="nl-wiggle" viewBox="-8 -60 68 68" width="85" height="85">
+              <g transform="rotate(40)">
+                <path class="nl-body" d="M-6-17h12v-33a6 6 0 0 0-12 0z"/>
+                <path class="nl-body" d="M-7-12h14v-5h-14z"/>
+                <path class="nl-body" d="M0 0-6-12h12z"/>
+                <path d="M0-3v-5M3-44v20"/>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <span class="nl-label">Opening note…</span>
+    </div>
   </main>
 
   <header class="topbar" id="topbar">

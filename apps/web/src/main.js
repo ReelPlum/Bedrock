@@ -21,6 +21,7 @@ import { perf, AutoSender } from './perf.js';
 import { buildReport, context as reportContext, sendReport } from './report-panel.js';
 import * as reportPanel from './report-panel.js';
 import { asset, compileWasm, handedOver } from './assets.js';
+import { NoteLoading } from './note-loading.js';
 
 // errors.js (a classic script) opens the report panel with this when the
 // module cannot be loaded by its address (inside the Obsidian plugin).
@@ -189,6 +190,8 @@ function askAtLaunch() {
 let startFailed = false;
 /** The compiled WebAssembly, shared with the save worker. */
 let wasmModule = null;
+/** The pen that writes while a note opens; showing from the first paint. */
+const loading = new NoteLoading(document.getElementById('note-loading'));
 
 async function main() {
   askAtLaunch();
@@ -576,8 +579,8 @@ async function main() {
     return true;
   }
 
-  /** Timed as the `open` job (perf.js). */
-  function openNote(id) { return perf.job('open', () => openNoteUntimed(id)); }
+  /** Timed as the `open` job (perf.js). The pen writes while it opens. */
+  function openNote(id) { return loading.during(() => perf.job('open', () => openNoteUntimed(id))); }
   async function openNoteUntimed(id) {
     if (saveTimer) await saveNow();
     await shareWordsAndSend();
@@ -1882,6 +1885,7 @@ async function main() {
   const startNote = host ? host.noteId : settings.lastNote;
   if (startNote && store && (await store.get(startNote))) await openNote(startNote);
   else await newNote();
+  loading.started();
 
   // Offline (see the web-app-delivery spec): the service worker keeps the
   // app's files (not inside a host, which has its own copy), and what waited
@@ -1904,7 +1908,7 @@ async function main() {
   });
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
+  window.bedrock = { loading, noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });
@@ -1939,6 +1943,7 @@ main().then(() => {
   try { sessionStorage.removeItem(RELOADED); } catch { /* private mode */ }
 }).catch((e) => {
   startFailed = true;
+  loading.stop();
   console.error(e);
   let again = false;
   try {

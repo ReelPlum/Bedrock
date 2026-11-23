@@ -646,6 +646,33 @@ test('the note reopens from the vault file; outside changes reload; closing the 
   await ctx.close();
 });
 
+test('the pen writes while a note opens in Obsidian, and while an outside change reloads it', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.open('Other.bedrock'));
+  const early = await frameOf(page, '#frame');
+  await early.waitForSelector('#note-loading', { state: 'attached' });
+  // Its stylesheet is inline in the page, so it is drawn before the app has loaded.
+  assert.equal(await early.evaluate(() => getComputedStyle(document.getElementById('note-loading')).position), 'absolute');
+  const first = await openFile(page, 'Other.bedrock');
+  await until(first, () => document.getElementById('note-loading').hidden);
+  await writeWord(first);
+  await until(page, async () => (await host.files('Other.bedrock')).strokes === 4);
+  const frame = await openFile(page, 'Loading.bedrock');
+  await until(frame, () => document.getElementById('note-loading').hidden);
+
+  await frame.evaluate(() => {
+    const el = document.getElementById('note-loading');
+    window.penShown = false;
+    new MutationObserver(() => { if (!el.hidden) window.penShown = true; }).observe(el, { attributes: true });
+  });
+  await page.evaluate(() => host.outsideChange('Loading.bedrock', 'Other.bedrock'));
+  await until(frame, () => window.penShown);
+  await until(frame, () => bedrock.canvas.stroke_count() === 4);
+  await until(frame, () => document.getElementById('note-loading').hidden);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('the camera is remembered per vault file', async () => {
   const { page, ctx } = await openHost();
   let frame = await openFile(page, 'Physics.bedrock');
