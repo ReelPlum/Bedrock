@@ -6,7 +6,7 @@ import { FakeVault } from './fake-vault.mjs';
 import { readZip, text } from '../src/zip.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteForIndex, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
 import { libraryFiles } from '../../web/src/library.js';
-import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
+import { createSession, fileNameFor, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
 import { packWebApp } from '../build.mjs';
@@ -331,6 +331,47 @@ test('the app can ask for a link to a word; only real stroke ids are accepted', 
   assert.deepEqual(copied, [['9f2c4e1a7b3d5f60', 'Physics/Forces.bedrock']]);
   // A host without a clipboard just says no.
   assert.equal(await session(vault, file).s.handlers['copy-link']({ stroke: 'ab' }), false);
+});
+
+test('a title becomes a file name Obsidian can link to', () => {
+  assert.equal(fileNameFor('Forces'), 'Forces');
+  assert.equal(fileNameFor('  Forces and   motion '), 'Forces and motion');
+  assert.equal(fileNameFor('Week 3: forces/motion'), 'Week 3 forces motion');
+  assert.equal(fileNameFor('a\\b*c?d"e<f>g|h#i^j[k]l'), 'a b c d e f g h i j k l');
+  assert.equal(fileNameFor('...hidden'), 'hidden', 'no hidden files');
+  assert.equal(fileNameFor('Chapter 1...'), 'Chapter 1', 'Windows drops trailing dots');
+  assert.equal(fileNameFor('tab\there'), 'tab here');
+  assert.equal(fileNameFor('Ünïcødé 名前'), 'Ünïcødé 名前');
+  assert.equal(fileNameFor(' / : '), '');
+  assert.equal(fileNameFor(''), '');
+  assert.equal(fileNameFor(null), '');
+  assert.equal(fileNameFor('x'.repeat(300)).length, 120);
+});
+
+test('the app can ask to rename the note; empty and unchanged names rename nothing', async () => {
+  const vault = new FakeVault();
+  const f = await vault.createBinary('Physics/Forces.bedrock', note(['Newton']));
+  const asked = [];
+  const s = createSession({
+    vault, file: () => f, indexer: null, kv: { get() {}, set: async () => {} },
+    rename: async (name) => { asked.push(name); return name === 'Taken' ? f.basename : name; },
+  });
+  assert.deepEqual(await s.handlers.rename({ title: 'Week 3: motion' }), { name: 'Week 3 motion' });
+  assert.deepEqual(await s.handlers.rename({ title: 'Taken' }), { name: 'Forces' }, 'a refused rename answers the file name');
+  assert.deepEqual(await s.handlers.rename({ title: '  ' }), { name: 'Forces' });
+  assert.deepEqual(await s.handlers.rename({ title: 'Forces' }), { name: 'Forces' });
+  assert.deepEqual(await s.handlers.rename({}), { name: 'Forces' });
+  assert.deepEqual(asked, ['Week 3 motion', 'Taken'], 'empty and unchanged names are not asked for');
+  const none = createSession({ vault, file: () => f, indexer: null, kv: { get() {}, set: async () => {} } });
+  assert.deepEqual(await none.handlers.rename({ title: 'Other' }), { name: 'Forces' }, 'a host that cannot rename keeps the name');
+});
+
+test('renaming an empty note makes no index note', async () => {
+  const vault = new FakeVault();
+  const ix = new Indexer(vault);
+  await vault.createBinary('Handwritten note.bedrock', new ArrayBuffer(0));
+  await ix.rename('Handwritten note.bedrock', 'Forces.bedrock', new ArrayBuffer(0));
+  assert.deepEqual(vault.getFiles().map((f) => f.path).filter((p) => p.endsWith('.md')), []);
 });
 
 test('session camera is kept per file; the link picker and links get the note path', async () => {

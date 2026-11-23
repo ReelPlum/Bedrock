@@ -102,6 +102,14 @@ window.host = {
       pdfPage,
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
+      // As the plugin's renameNote: in its folder, never over another file.
+      rename: async (name) => {
+        const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/') + 1) : '';
+        const to = `${dir}${name}.bedrock`;
+        if (vault.files.has(to)) { calls.push(['refused', to]); return file.basename; }
+        await this.renameInObsidian(to);
+        return file.basename;
+      },
       onReady: () => { tellInset(keyboard.covered()); ready(); },
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
@@ -113,13 +121,23 @@ window.host = {
     frame.srcdoc = webApp.page('app');
     await isReady;
   },
+  /** Obsidian renames or moves the open file (its file explorer, or the
+   *  plugin's file manager call): the index note follows, as the plugin's
+   *  rename handler does, and the view tells the app, as its onRename does. */
+  async renameInObsidian(to) {
+    const from = file.path;
+    calls.push(['rename', from, to]);
+    await vault.rename(file, to);
+    if (file.data.byteLength) await indexer.rename(from, to, file.data.slice(0));
+    await bridge.send('renamed', { name: file.basename });
+  },
   /** What the vault holds: the note's entries and its index note. */
   async files(path) {
     const f = vault.files.get(path);
     const z = await readZip(f.data);
     const note = JSON.parse(text(z.get('note.json')) || '{}');
     const index = vault.files.get(indexer.pathFor(path))?.data ?? null;
-    return { strokes: (note.strokes || []).length, links: text(z.get('links.md')), index, size: f.data.byteLength };
+    return { strokes: (note.strokes || []).length, title: note.title ?? null, links: text(z.get('links.md')), index, size: f.data.byteLength };
   },
   /** Click a search result: `text` as found in the note's index note.
    *  Works out the ink as the plugin does and asks the open view to show

@@ -87,11 +87,13 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
 | app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
 | app | `open-link { type, target }` | opens the note in Obsidian |
+| app | `rename { title }` | the name typed in the canvas header is done (Enter, or leaving the box): the plugin renames the file to it in its folder with `fileManager.renameFile` (so links follow), unless the name is empty or another file has it; `{ name }`, the file's name after |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
 | app | `send-report { report }` | posts an error report the person chose to send ("Share with the Bedrock team"), or an automatic performance report (`sent: "auto"`, which gets the plugin's own slow moments and a `mobile` fact added), with `requestUrl`; `{ id }` |
 | view | `flush` | the app saves now (sent before the view closes) |
 | view | `reload` | the file changed elsewhere (sync, another window): the app reloads it |
 | view | `show { strokes }` | the app brings those strokes (each as its whole word) into view and flashes a frame around them; `false` if none is on the page any more |
+| view | `renamed { name }` | the file was renamed or moved (in Obsidian, or by `rename`): the header shows `name`, and the next save stores it as the note's title |
 | view | `inset { bottom }` | the bottom `bottom` CSS px of the frame are hidden (the iPad's keyboard, which covers Obsidian without resizing it; `src/keyboard.js`): the word menu stays above them, and a text box being typed in slides into sight (`apps/web/src/keep-in-view.js`) |
 
 Requests carry `seq`; answers carry `reply` (the request's `seq`) and

@@ -16,6 +16,25 @@ export function strokesOfState(eState) {
   return m ? [m[1].toLowerCase()] : [];
 }
 
+/** Longest file name made from a title, before `.bedrock`. */
+const MAX_NAME = 120;
+
+/** The file name (without `.bedrock`) for a title typed in the canvas
+ *  header: characters a file name or an Obsidian link cannot hold
+ *  (`\ / : * ? " < > | # ^ [ ]` and control characters) become spaces, runs
+ *  of spaces one, and leading dots (hidden files) and trailing dots (Windows
+ *  drops them) go. '' if nothing is
+ *  left. */
+export function fileNameFor(title) {
+  return String(title ?? '')
+    .replace(/[\\/:*?"<>|#^[\]\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+\s*/, '')
+    .slice(0, MAX_NAME)
+    .replace(/[.\s]+$/, '');
+}
+
 /** The link another note uses to point at the word with this stroke. */
 export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
 
@@ -31,9 +50,10 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
  * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
  * @param {{ job: (name: string, fn: () => any) => any }} [o.perf]  times reads, writes and index updates (perf.js)
+ * @param {(name: string) => Promise<string>} [o.rename]  rename the open file to `name` (no extension) in its folder; resolves to its name after (the old one if refused)
  * @param {() => void} [o.onReady]
  */
-export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf }) {
+export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // mtime of our own last write, to tell our saves from outside changes.
   let ownMtime = null;
@@ -86,6 +106,14 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
       'send-report': async ({ report } = {}) => {
         if (!sendReport || !report || typeof report !== 'object') throw new Error('Sending is not switched on here.');
         return { id: await sendReport(report) };
+      },
+      // The name typed in the canvas header is the file's name: the app
+      // asks once the name is done. Answers the file's name after.
+      rename: async ({ title } = {}) => {
+        const f = file();
+        const name = fileNameFor(title);
+        if (!rename || !name || name === f.basename) return { name: f.basename };
+        return { name: await rename(name) };
       },
       'copy-link': async ({ stroke }) => {
         if (!copyLink || !isStrokeId(stroke)) return false;

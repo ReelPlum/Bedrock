@@ -666,3 +666,54 @@ test('at start, nothing is shown when consent is already given', async () => {
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test("the header shows the note's file name, and naming the note there renames the file", async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.vault.createFolder('Physics'));
+  let frame = await openFile(page, 'Physics/Handwritten note.bedrock');
+  assert.equal(await frame.inputValue('#title'), 'Handwritten note', 'a new note is named after its file');
+  await writeWord(frame);
+  // A title stored in the note that is not the file name (written elsewhere).
+  await frame.evaluate(async () => { bedrock.canvas.set_title('Old title'); await bedrock.saveNow(); });
+  assert.equal((await page.evaluate(() => host.files('Physics/Handwritten note.bedrock'))).title, 'Old title');
+  frame = await openFile(page, 'Physics/Handwritten note.bedrock');
+  assert.equal(await frame.inputValue('#title'), 'Handwritten note', 'the header shows the file name');
+  await frame.evaluate(() => bedrock.saveNow());
+  assert.equal((await page.evaluate(() => host.files('Physics/Handwritten note.bedrock'))).title, 'Handwritten note', 'the next save stores the file name');
+
+  // Typing renames nothing; finishing the name renames the file once.
+  await frame.fill('#title', 'Week 3: forces');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(await page.evaluate(() => host.vault.files.has('Physics/Handwritten note.bedrock')), 'not renamed while typing');
+  await frame.press('#title', 'Enter');
+  await until(page, () => host.vault.files.has('Physics/Week 3 forces.bedrock'));
+  assert.equal(await frame.inputValue('#title'), 'Week 3 forces', 'the header shows the name the file got');
+  assert.deepEqual(await page.evaluate(() => host.calls.filter((c) => c[0] === 'rename')), [['rename', 'Physics/Handwritten note.bedrock', 'Physics/Week 3 forces.bedrock']]);
+  await frame.evaluate(() => bedrock.saveNow());
+  const f = await page.evaluate(() => host.files('Physics/Week 3 forces.bedrock'));
+  assert.equal(f.title, 'Week 3 forces', 'the stored title follows');
+  assert.match(f.index, /^---\nbedrock: "Physics\/Week 3 forces.bedrock"/, 'the index note followed');
+
+  // A name another file has: the file keeps its name, and so does the header.
+  await page.evaluate(() => host.vault.createBinary('Physics/Motion.bedrock', new ArrayBuffer(0)));
+  await frame.fill('#title', 'Motion');
+  await frame.press('#title', 'Enter');
+  await until(frame, () => document.getElementById('title').value === 'Week 3 forces');
+  assert.ok(await page.evaluate(() => host.vault.files.has('Physics/Week 3 forces.bedrock')));
+  assert.equal(await frame.evaluate(() => bedrock.canvas.title()), 'Week 3 forces');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('renaming the file in Obsidian puts the new name in the header', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Forces.bedrock');
+  await writeWord(frame);
+  await frame.evaluate(() => bedrock.saveNow());
+  await page.evaluate(() => host.renameInObsidian('School/Motion.bedrock'));
+  assert.equal(await frame.inputValue('#title'), 'Motion');
+  await frame.evaluate(() => bedrock.saveNow());
+  assert.equal((await page.evaluate(() => host.files('School/Motion.bedrock'))).title, 'Motion', 'the stored title follows');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

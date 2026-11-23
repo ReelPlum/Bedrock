@@ -52,12 +52,24 @@ function makeApp() {
     onLayoutReady: (fn) => fn(),
     openLinkText: () => {},
   });
+  // Obsidian's FileManager: renames the file (and would update links to
+  // it), then the vault tells everyone, as Obsidian does.
+  const renamed = [];
+  const fileManager = {
+    async renameFile(f, newPath) {
+      const oldPath = f.path;
+      await vault.rename(f, newPath);
+      renamed.push([oldPath, newPath]);
+      await vault.trigger('rename', f, oldPath);
+    },
+  };
   const app = {
     vault,
     workspace,
+    fileManager,
     metadataCache: { fileToLinktext: (f, source, omitMd) => (omitMd && f.extension === 'md' ? f.path.slice(0, -3) : f.path) },
   };
-  return { app, vault, written, opened };
+  return { app, vault, written, opened, renamed };
 }
 
 async function loaded() {
@@ -265,4 +277,66 @@ test('a plugin problem is shown with Report and logged; reports go out through r
   assert.equal(fake.requestUrl.calls.length, 1);
   assert.equal(fake.requestUrl.calls[0].url, 'https://bedrock-collect.reelplum.workers.dev/v1/reports');
   assert.equal(fake.requestUrl.calls[0].method, 'POST');
+});
+
+/** A .bedrock file in the vault with these recognised words. */
+async function noteFile(vault, path, words) {
+  const f = await vault.createBinary(path, inkNote(...words.map((w, i) => [w, [`s${i}`]])));
+  Object.setPrototypeOf(f, fake.TFile.prototype);
+  return f;
+}
+
+test("naming a note in the header renames its file with Obsidian's file manager, in its folder", async () => {
+  const { plugin, vault, renamed } = await loaded();
+  await vault.createFolder('Physics');
+  const f = await noteFile(vault, 'Physics/Handwritten note.bedrock', ['Newton']);
+  await plugin.indexer.update(f.path, await vault.readBinary(f));
+  assert.equal(await plugin.renameNote(f, 'Forces'), 'Forces');
+  assert.deepEqual(renamed, [['Physics/Handwritten note.bedrock', 'Physics/Forces.bedrock']], 'through fileManager, so links follow');
+  assert.equal(f.path, 'Physics/Forces.bedrock');
+  // The index note followed, as for every rename.
+  assert.ok(vault.files.has('Bedrock index/Physics/Forces.md'));
+  assert.ok(!vault.files.has('Bedrock index/Physics/Handwritten note.md'));
+  // A case change is a rename too.
+  assert.equal(await plugin.renameNote(f, 'forces'), 'forces');
+  assert.equal(f.path, 'Physics/forces.bedrock');
+  plugin.unload();
+});
+
+test('a header name another file already has renames nothing and says so', async () => {
+  const { plugin, vault, renamed } = await loaded();
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await noteFile(vault, 'Motion.bedrock', ['Galileo']);
+  fake.Notice.shown.length = 0;
+  assert.equal(await plugin.renameNote(f, 'Motion'), 'Forces');
+  assert.deepEqual(renamed, []);
+  assert.equal(f.path, 'Forces.bedrock');
+  assert.match(fake.Notice.shown.join('\n'), /Motion\.bedrock.*already/);
+  plugin.unload();
+});
+
+test('the view tells the canvas when Obsidian renames its file', async () => {
+  const { plugin, vault } = await loaded();
+  const view = plugin.views['bedrock-note'](new fake.WorkspaceLeaf());
+  const sent = [];
+  view.bridge = { send: (event, args) => { sent.push([event, args]); return Promise.resolve(true); } };
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await vault.rename(f, 'School/Motion.bedrock');
+  await view.onRename(f);
+  assert.deepEqual(sent, [['renamed', { name: 'Motion' }]]);
+  view.bridge = null;
+  await view.onRename(f); // closed meanwhile: nothing to tell
+  plugin.unload();
+});
+
+test('the camera follows a renamed note, even with search switched off', async () => {
+  const { plugin, vault } = await loaded();
+  plugin.settings.index = false;
+  const f = await noteFile(vault, 'Forces.bedrock', ['Newton']);
+  await plugin.kv.set('Forces.bedrock\u0000camera', [1, 2, 3]);
+  await plugin.renameNote(f, 'Motion');
+  assert.deepEqual(plugin.kv.get('Motion.bedrock\u0000camera'), [1, 2, 3]);
+  assert.equal(plugin.kv.get('Forces.bedrock\u0000camera'), undefined);
+  assert.ok(!vault.getFiles().some((x) => x.path.endsWith('.md')), 'no index note with search off');
+  plugin.unload();
 });
