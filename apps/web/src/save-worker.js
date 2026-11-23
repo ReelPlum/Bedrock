@@ -3,6 +3,8 @@
 // .bedrock file here, so saving a large note never stalls the pen.
 //
 // Messages (each gets one reply with the same `seq`):
+//   { wasm: WebAssembly.Module }  the page's compiled WebAssembly, sent
+//                   first so it is not compiled twice (no reply)
 //   { reset: Uint8Array }  replace the copy with a whole note
 //   { ops: { meta, touched, added, index } }  apply changes (see NoteMirror.apply)
 //   { assets: [{ file, bytes }] }  picture files (with a reset or ops; each sent once)
@@ -12,12 +14,18 @@ import init, { NoteMirror } from '../pkg/bedrock_web.js';
 import { asset } from './assets.js';
 
 let mirror = null;
-const ready = init({ module_or_path: asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)) }).then(() => { mirror = new NoteMirror(); });
+let ready = null;
+/** Starts the WebAssembly: the page's compiled module when it sent one
+ *  (`{ wasm }`, its first message), otherwise compiled here from the file. */
+const start = (module) => (ready ||= init({
+  module_or_path: module instanceof WebAssembly.Module ? module : asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)),
+}).then(() => { mirror = new NoteMirror(); }));
 
 self.onmessage = async (e) => {
   const m = e.data;
+  if (m && m.wasm) { start(m.wasm); return; }
   try {
-    await ready;
+    await start();
     if (m.reset) mirror.reset(m.reset);
     for (const a of m.assets || []) mirror.add_asset(a.file, a.bytes);
     if (m.ops) mirror.apply(m.ops.meta ?? undefined, m.ops.touched, m.ops.added, Uint32Array.from(m.ops.index));

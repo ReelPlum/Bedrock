@@ -18,7 +18,7 @@ import { showGate, gateStyles } from './consent.js';
 import { perf, AutoSender } from './perf.js';
 import { buildReport, context as reportContext, sendReport } from './report-panel.js';
 import * as reportPanel from './report-panel.js';
-import { asset, handedOver } from './assets.js';
+import { asset, compileWasm, handedOver } from './assets.js';
 
 // errors.js (a classic script) opens the report panel with this when the
 // module cannot be loaded by its address (inside the Obsidian plugin).
@@ -175,10 +175,18 @@ function askAtLaunch() {
 /** Set when start-up failed: the half-started app must not save (its
  *  note may be incomplete, and parts it needs may not exist yet). */
 let startFailed = false;
+/** The compiled WebAssembly, shared with the save worker. */
+let wasmModule = null;
 
 async function main() {
   askAtLaunch();
-  await init({ module_or_path: asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)) });
+  // Compiled once here (or once per session by the host) and shared with
+  // the save worker.
+  wasmModule = await compileWasm(
+    asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)),
+    host ? await host.wasm() : null,
+  );
+  await init({ module_or_path: wasmModule });
   const stage = $('stage');
   let canvas;
   try {
@@ -374,6 +382,8 @@ async function main() {
     };
     try {
       worker = new Worker(asset('src/save-worker.js', () => new URL('./save-worker.js', import.meta.url)), { type: 'module' });
+      // The WebAssembly the page compiled: the worker need not compile it.
+      worker.postMessage({ wasm: wasmModule });
       worker.onmessage = (e) => {
         const resolve = waiting.get(e.data.seq);
         waiting.delete(e.data.seq);
