@@ -91,6 +91,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {object} o.kv          { get(key), set(key, value) } stored by the plugin
  * @param {(sourcePath: string) => Promise<{path: string, link: string}[]>} o.listFiles  the vault's files to link to (not this note or index notes), with their link text
  * @param {(path: string, page: number, width: number) => Promise<{count: number, png: ArrayBuffer}>} [o.pdfPage]  a PDF's page count and one page drawn `width` px wide
+ * @param {(path: string, query: string) => Promise<{count: number, total: number, hits: object[]}>} [o.pdfFind]  where a text is in a PDF (PdfPages.find)
  * @param {(target: string, sourcePath: string) => void} o.openLink
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
  * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
@@ -101,7 +102,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {() => Promise<WebAssembly.Module|null>} [o.wasm]  the canvas's WebAssembly, compiled once by the plugin
  * @param {number} [o.indexDelayMs]  how long writing must pause before the index note is written
  */
-export function createSession({ viewOnly = false, vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, paper, indexDelayMs = INDEX_DELAY_MS }) {
+export function createSession({ viewOnly = false, vault, file, indexer, kv, listFiles, pdfPage, pdfFind, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, paper, indexDelayMs = INDEX_DELAY_MS }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // The index note follows the file once writing pauses, not after every
   // autosave: each index write makes Obsidian re-read the note for search,
@@ -182,6 +183,11 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
       'pdf-page': async ({ path, page, width } = {}) => {
         if (!pdfPage || typeof path !== 'string' || !/\.pdf$/i.test(path)) throw new Error('Not a PDF.');
         return pdfPage(path, Math.max(1, Math.floor(page) || 1), Math.min(2000, Math.max(50, Math.floor(width) || 480)));
+      },
+      'pdf-find': async ({ path, query } = {}) => {
+        if (!pdfFind || typeof path !== 'string' || !/\.pdf$/i.test(path)) throw new Error('Not a PDF.');
+        if (typeof query !== 'string' || query.length > 200) throw new Error('Search for up to 200 letters.');
+        return pdfFind(path, query);
       },
       'open-link': async ({ target }) => { openLink(target, file().path); return true; },
       'send-report': async ({ report } = {}) => {

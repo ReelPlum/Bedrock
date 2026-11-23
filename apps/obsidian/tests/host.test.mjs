@@ -506,6 +506,169 @@ test('the link picker opens a PDF to link one of its pages, or the whole file', 
   await ctx.close();
 });
 
+/** Open the harness PDF `Papers/Paper.pdf` in the link picker. */
+async function openPdfInPicker(page, frame) {
+  await openPicker(page, frame);
+  await frame.click('#link-picker .lp-folder[data-path="Papers"]');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-page[data-page="3"]');
+}
+
+// Frederik: "add in pdf searching for when you want to link to a specific
+// file. Try to use the default search in pdfs obsidian uses."
+test('the link picker searches the text of an open PDF and links the page of a match', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(4)));
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await openPdfInPicker(page, frame);
+  const hits = () => frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-hit')].map((b) => ({
+    page: b.dataset.page, text: b.querySelector('.lp-hit-text').textContent, mark: b.querySelector('mark').textContent,
+  })));
+  // Any case; every match, with the words around it.
+  await frame.fill('#link-picker .lp-find', 'FORCE');
+  await frame.waitForSelector('#link-picker .lp-hit');
+  assert.deepEqual(await hits(), [
+    { page: '1', text: 'Newton wrote about forces.', mark: 'force' },
+    { page: '2', text: '…law of motion says F = ma, for every force.', mark: 'force' },
+    { page: '3', text: 'A force on a body changes its motion.', mark: 'force' },
+  ]);
+  assert.equal(await frame.evaluate(() => document.querySelector('#link-picker .lp-pages').hidden), true, 'the matches stand in for the pages');
+  assert.match(await frame.textContent('#link-picker .lp-inside > .lp-note'), /^3 matches/);
+  // Words over a line break are found too.
+  await frame.fill('#link-picker .lp-find', 'law of motion says');
+  await frame.waitForFunction(() => document.querySelectorAll('#link-picker .lp-hit').length === 1);
+  assert.deepEqual((await hits()).map((h) => [h.page, h.mark]), [['2', 'law of motion says']]);
+  await frame.click('#link-picker .lp-hit');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), 'Papers/Paper.pdf#page=2');
+  // Nothing found says so; an empty search shows the pages again.
+  await clickIn(page, frame, '#wm-link-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-find');
+  await frame.fill('#link-picker .lp-find', 'quantum');
+  await frame.waitForFunction(() => /^Not found/.test(document.querySelector('#link-picker .lp-inside > .lp-note').textContent));
+  await frame.fill('#link-picker .lp-find', '');
+  await frame.waitForFunction(() => !document.querySelector('#link-picker .lp-pages').hidden);
+  const asked = await page.evaluate(() => host.calls.filter((c) => c[0] === 'pdf-find').map((c) => [c[1], c[2]]));
+  assert.deepEqual(asked, [['Papers/Paper.pdf', 'FORCE'], ['Papers/Paper.pdf', 'law of motion says'], ['Papers/Paper.pdf', 'quantum']]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// Frederik: "make it so you can zoom on the view changing it from 3 pages on
+// a horizontal to 2 and 1".
+test('an open PDF in the link picker zooms from 3 pages across to 2 and 1 and back, with buttons, a pinch or a trackpad', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => host.vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(4)));
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await openPdfInPicker(page, frame);
+  /** Pages side by side (the grid's columns), the label, and how wide a page is. */
+  const view = () => frame.evaluate(() => {
+    const grid = document.querySelector('#link-picker .lp-pages');
+    return {
+      across: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+      label: document.querySelector('#link-picker .lp-across').textContent,
+      width: Math.round(grid.querySelector('.lp-page').getBoundingClientRect().width),
+    };
+  });
+  const v3 = await view();
+  assert.equal(v3.across, 3);
+  assert.equal(v3.label, '3 across');
+  await frame.click('#link-picker .lp-zoom-in');
+  const v2 = await view();
+  assert.equal(v2.across, 2);
+  assert.ok(v2.width > v3.width * 1.3, 'pages are bigger');
+  await frame.click('#link-picker .lp-zoom-in');
+  const v1 = await view();
+  assert.deepEqual([v1.across, v1.label], [1, '1 page']);
+  assert.equal(await frame.evaluate(() => document.querySelector('#link-picker .lp-zoom-in').disabled), true, 'no bigger than one page across');
+  // Pages shown bigger are drawn again, sharper.
+  await until(page, ([w]) => host.calls.some((c) => c[0] === 'pdf-page' && c[3] > w), [v3.width]);
+  await frame.waitForFunction(() => document.querySelector('#link-picker .lp-page img').naturalWidth > 0);
+  // A pinch closing (two fingers) shows more pages again.
+  await frame.evaluate(() => {
+    const grid = document.querySelector('#link-picker .lp-pages');
+    const touches = (d) => [new Touch({ identifier: 1, target: grid, clientX: 300 - d, clientY: 300 }), new Touch({ identifier: 2, target: grid, clientX: 300 + d, clientY: 300 })];
+    const send = (type, list) => grid.dispatchEvent(new TouchEvent(type, { touches: list, targetTouches: list, changedTouches: list, bubbles: true, cancelable: true }));
+    send('touchstart', touches(150));
+    send('touchmove', touches(100));
+    send('touchend', []);
+  });
+  assert.equal((await view()).across, 2);
+  // A trackpad pinch (ctrl + wheel) too: out to 3, then 4, no further.
+  for (let i = 0; i < 3; i++) {
+    await frame.evaluate(() => document.querySelector('#link-picker .lp-pages').dispatchEvent(new WheelEvent('wheel', { deltaY: 60, ctrlKey: true, bubbles: true, cancelable: true })));
+  }
+  assert.equal((await view()).across, 4);
+  assert.equal(await frame.evaluate(() => document.querySelector('#link-picker .lp-zoom-out').disabled), true);
+  // A page still links, and the next PDF opens as zoomed as this one was.
+  await frame.click('#link-picker .lp-page[data-page="3"]');
+  assert.equal(await frame.evaluate(() => document.getElementById('wm-link-target').value), 'Papers/Paper.pdf#page=3');
+  await clickIn(page, frame, '#wm-link-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-page[data-page="3"]');
+  assert.equal((await view()).across, 4);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// The plugin's search is PDF.js's find controller, the one behind the search
+// bar of Obsidian's PDF viewer (Obsidian's `window.pdfjsViewer`), here the
+// same controller from pdfjs-dist on a real PDF; before Obsidian loads its
+// viewer the plugin's own matching must find the same passages.
+test("the plugin searches a real PDF with the find controller of Obsidian's PDF viewer, and without it finds the same", async () => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/obsidian/tests/blank.html`);
+  const r = await page.evaluate(async () => {
+    const { textPdf } = await import('/obsidian/tests/text-pdf.mjs');
+    const lib = await import('/obsidian/node_modules/pdfjs-dist/build/pdf.mjs');
+    lib.GlobalWorkerOptions.workerSrc = '/obsidian/node_modules/pdfjs-dist/build/pdf.worker.mjs';
+    globalThis.pdfjsLib = lib; // as Obsidian's loadPdfJs() leaves it
+    const viewer = await import('/obsidian/node_modules/pdfjs-dist/web/pdf_viewer.mjs');
+    const { PdfPages } = await import('/obsidian/src/pdf-pages.js');
+    const bytes = textPdf([
+      ['Newton wrote about forces.'],
+      ['The second law of motion', 'says F = ma. Caf\u00e9 and cafe.', 'An inter-', 'action of two bodies.'],
+      ['Nothing here.'],
+    ]);
+    const out = {};
+    for (const [name, v] of [['viewer', viewer], ['own', null]]) {
+      let found = 0;
+      const vw = v && { ...v, PDFFindController: class extends v.PDFFindController { constructor(o) { super(o); found++; } } };
+      const pages = new PdfPages({ pdfjs: async () => lib, read: async () => ({ bytes: bytes.slice().buffer, version: 1 }), viewer: () => vw });
+      out[name] = {
+        cafe: await pages.find('a.pdf', 'cafe'),
+        lines: await pages.find('a.pdf', 'LAW of   motion says'),
+        hyphen: await pages.find('a.pdf', 'interaction'),
+        none: await pages.find('a.pdf', 'quantum'),
+        controllers: found,
+      };
+    }
+    return out;
+  });
+  const { viewer, own } = r;
+  assert.equal(viewer.controllers, 4, "the viewer's find controller did the search");
+  assert.equal(own.controllers, 0);
+  // Accents are optional: "cafe" finds "Café" and "cafe".
+  assert.deepEqual(viewer.cafe.hits.map((h) => [h.page, h.match, h.selection]), [[2, 'Café', [1, 13, 1, 17]], [2, 'cafe', [1, 22, 1, 26]]]);
+  assert.equal(viewer.cafe.count, 3);
+  // Any case, any spaces, over a line break.
+  assert.deepEqual(viewer.lines.hits.map((h) => [h.page, h.match, h.selection]), [[2, 'law of motion says', [0, 11, 1, 4]]]);
+  assert.equal(viewer.lines.hits[0].before, 'The second ');
+  // A word split over two lines with a hyphen.
+  assert.deepEqual(viewer.hyphen.hits.map((h) => h.page), [2]);
+  assert.deepEqual(viewer.none, { count: 3, total: 0, hits: [] });
+  for (const k of ['cafe', 'lines', 'hyphen', 'none']) assert.deepEqual(own[k], viewer[k], `the plugin's own matching finds the same (${k})`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('the link picker opens another Bedrock note to link one of its words, or the whole note', async () => {
   const { page, ctx, errors } = await openHost();
   // Another handwritten note, with a word in it.

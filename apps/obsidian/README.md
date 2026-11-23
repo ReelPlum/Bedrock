@@ -10,6 +10,8 @@ makes the note in that folder.
   the vault's folders and files open over the canvas (with a filter). Tap a
   note to link it; tap a PDF to link one of its pages (`#page=3`), or a
   handwritten note to link one of its words; either can be linked whole.
+  An open PDF can be searched (the same search as Obsidian's PDF viewer) to
+  find the page of a passage, and zoomed from 3 pages across to 2 or 1.
   Save makes the link. Links open with Obsidian, and appear in the graph and
   backlinks (see below).
 - **Search the handwriting.** Obsidian only indexes Markdown, so each note
@@ -125,6 +127,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `list-files` | every vault file the link picker offers (not this note or index notes): `[{ path, link }]`, `link` being Obsidian's link text |
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
 | app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
+| app | `pdf-find { path, query }` | `{ count, total, hits }`: where `query` is in a PDF, found by the find controller of Obsidian's PDF viewer (or the same rules before it is loaded); each hit has `page`, `before`, `match`, `after` and `selection` (`src/pdf-pages.js`) |
 | app | `open-link { type, target }` | opens the note in Obsidian |
 | app | `rename { title }` | the name typed in the canvas header is done (Enter, or leaving the box): the plugin renames the file to it in its folder with `fileManager.renameFile` (so links follow), unless the name is empty or another file has it; `{ name }`, the file's name after |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
