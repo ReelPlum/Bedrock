@@ -33,11 +33,17 @@ const bytesOf = (b64) => {
 /** JSON that can sit inside a <script> element. */
 const scriptJson = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 
+/** The line that sets the page's theme, or nothing to follow the system. */
+const themeLine = (theme) => (theme === 'dark' || theme === 'light' ? ` document.documentElement.dataset.theme = ${scriptJson(theme)};` : '');
+
 export class InlineApp {
   /** `bundle` is what build.mjs packs: { hash, pages, modules, workers,
    *  files }. `urls` makes and revokes blob: URLs (the window's URL). */
-  constructor(bundle, { host = 'obsidian', urls = globalThis.URL } = {}) {
+  constructor(bundle, { host = 'obsidian', urls = globalThis.URL, theme = () => null } = {}) {
     this.bundle = bundle;
+    /** 'dark', 'light' or null (follow the system): written into each page
+     *  as `data-theme` on <html> before it paints (openspec dark-mode). */
+    this.theme = theme;
     this.host = host;
     this.urls = urls;
     this.made = null;
@@ -69,7 +75,7 @@ export class InlineApp {
     const html = this.bundle.pages?.[name];
     if (!html) throw new Error(`no ${name} page in the plugin`);
     const { assets, modules } = this.urlsOnce();
-    const globals = `<script>globalThis.BEDROCK_HOST = ${scriptJson(this.host)}; globalThis.BEDROCK_PROBE = ${probe ? 'true' : 'false'}; globalThis.BEDROCK_VIEW_ONLY = ${viewOnly ? 'true' : 'false'}; globalThis.BEDROCK_ASSETS = ${scriptJson(assets)};</script>`;
+    const globals = `<script>globalThis.BEDROCK_HOST = ${scriptJson(this.host)}; globalThis.BEDROCK_PROBE = ${probe ? 'true' : 'false'}; globalThis.BEDROCK_VIEW_ONLY = ${viewOnly ? 'true' : 'false'}; globalThis.BEDROCK_ASSETS = ${scriptJson(assets)};${themeLine(this.theme())}</script>`;
     const module = `<script type="module" src="${modules[name]}"></script>`;
     return html.replace(GLOBALS_MARK, () => globals).replace(MODULE_MARK, () => module);
   }

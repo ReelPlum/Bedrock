@@ -251,7 +251,7 @@ export class Minimap {
     const y = oy + (vy0 - y0) * s;
     const w = Math.max((vx1 - vx0) * s, 3);
     const h = Math.max((vy1 - vy0) * s, 3);
-    const accent = getComputedStyle(this.el).getPropertyValue('--accent').trim() || '#2f6bff';
+    const accent = getComputedStyle(this.el).getPropertyValue('--paper-accent').trim() || '#2f6bff';
     g.fillStyle = accent;
     g.globalAlpha = 0.1;
     g.fillRect(x, y, w, h);

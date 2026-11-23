@@ -10,6 +10,7 @@
 // text says every word is sent.
 
 import * as collect from './collect.js';
+import { darkCss } from './theme.js';
 
 const SETTINGS_KEY = 'bedrock.settings.v1';
 
@@ -155,10 +156,10 @@ export function gateStyles(doc = document) {
 .gate-error { margin: 0; color: #b3261e; }
 .gate-go { font: inherit; font-weight: 600; padding: 10px 14px; border: 0; border-radius: 10px; background: #2f6bff; color: #fff; }
 .gate-go:disabled { opacity: .6; }
-@media (prefers-color-scheme: dark) {
-  .launch-gate { background: #1f1f22; color: #eee; }
-  .gate-field input, .gate-field select { background: #2a2a2e; border-color: #444; color: #eee; }
-  .gate-error { color: #ff8a80; }
-}`;
+` + darkCss(`
+.launch-gate { background: #1f1f22; color: #eee; }
+.gate-field input, .gate-field select { background: #2a2a2e; border-color: #444; color: #eee; }
+.gate-agree a { color: #85a9ff; }
+.gate-error { color: #ff8a80; }`);
   doc.head.append(style);
 }

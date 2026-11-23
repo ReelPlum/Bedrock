@@ -9,6 +9,7 @@ import { libraryFiles } from '../../web/src/library.js';
 import { VIEW_ONLY, createSession, fileNameFor, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
+import { obsidianTheme, tellTheme } from '../src/theme.js';
 import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
 import { packWebApp } from '../build.mjs';
 import { GRAPH_FILTER, copyGraphFilter } from '../src/graph.js';
@@ -805,4 +806,30 @@ test('the link picker finds the words of notes with their samples in points.bin,
   ]);
   assert.deepEqual(after.words, before.words);
   assert.throws(() => readPointsBin(Uint8Array.from(bin.slice(0, -1))), /ends early/);
+});
+
+// Dark mode (openspec dark-mode): the canvas's chrome follows Obsidian's
+// theme, which can differ from the system's.
+test("the canvas's chrome follows Obsidian's theme, set before the page paints and changed live", () => {
+  const bundle = { pages: { app: `<html><head>${GLOBALS_MARK}</head><body>${MODULE_MARK}</body></html>` }, modules: { app: 'app();' }, workers: {}, files: {} };
+  const urls = { createObjectURL: () => 'blob:test/1', revokeObjectURL() {} };
+  let theme = 'dark';
+  const app = new InlineApp(bundle, { urls, theme: () => theme });
+  assert.match(app.page('app'), /<head><script>[^<]*document\.documentElement\.dataset\.theme = "dark";<\/script>/, 'in the head, before anything paints');
+  theme = 'light';
+  assert.match(app.page('app'), /dataset\.theme = "light";/);
+  assert.doesNotMatch(new InlineApp(bundle, { urls }).page('app'), /dataset\.theme/, 'no host theme: the page follows the system');
+
+  const body = (cls) => ({ classList: { contains: (c) => c === cls } });
+  assert.equal(obsidianTheme(body('theme-dark')), 'dark');
+  assert.equal(obsidianTheme(body('theme-light')), 'light');
+  assert.equal(obsidianTheme(undefined), 'light');
+
+  const frame = () => ({ contentDocument: { documentElement: { dataset: {} } } });
+  const a = frame();
+  const b = frame();
+  const blocked = { get contentDocument() { throw new Error('cross-origin'); } };
+  tellTheme([a, null, { contentDocument: null }, blocked, b], 'dark');
+  assert.equal(a.contentDocument.documentElement.dataset.theme, 'dark');
+  assert.equal(b.contentDocument.documentElement.dataset.theme, 'dark', 'a frame it cannot reach is skipped, not fatal');
 });
