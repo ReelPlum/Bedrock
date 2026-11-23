@@ -9,8 +9,12 @@
 // width (never a scaled bitmap), so strokes keep the same thickness while
 // you zoom and move. The ink layer is cached and redrawn only when the
 // strokes or the area change; the view box is drawn on top each frame.
+// Pictures and text boxes are drawn under the ink, as on the page, from small
+// copies made once per picture; until one is ready it shows as a light card.
 // Tap or drag on the minimap to move. Below it: the zoom level and a button
 // that fits the whole drawing.
+
+import { thumbnail } from './images.js';
 
 const W = 168;
 const H = 112;
@@ -18,6 +22,7 @@ const INK_PX = 1.25; // line width of ink on the minimap, CSS px
 const HIGHLIGHT_PX = 4;
 const REBUILD_WHILE_DRAWING_MS = 400;
 const EASE = 0.3; // share of the way to the target area per frame
+const THUMB_PX = 256; // long side of a picture's small copy, enough for a 3x screen
 
 export class Minimap {
   constructor(el, canvas, { onMove, onFit } = {}) {
@@ -40,6 +45,9 @@ export class Minimap {
     this.map = null; // { x0, y0, s, ox, oy }: world -> minimap px
     this.dpr = 1;
     this.easing = false;
+    this.pictures = []; // [{ key, x, y, w, h }] for `picturesRev`
+    this.picturesRev = -1;
+    this.thumbs = new Map(); // key -> canvas, or 'pending' / 'failed'
     if (this.fitButton && onFit) this.fitButton.addEventListener('click', onFit);
     this._bind();
   }
@@ -55,6 +63,7 @@ export class Minimap {
 
   /** Another note was opened: redraw, and jump instead of easing. */
   reset() {
+    this.picturesRev = -1;
     this.revision = -1;
     this.dataRev = -1;
     this.area = null;
@@ -144,12 +153,59 @@ export class Minimap {
     return this.data;
   }
 
+  /** The pictures and text boxes on the page, fetched again when it changes. */
+  _pictureList() {
+    if (this.picturesRev !== this.revision) {
+      let list = [];
+      try { list = JSON.parse(this.canvas.images_json()); } catch (_) { /* none */ }
+      this.pictures = list.map((i) => ({ key: i.text != null ? `text:${i.text}` : i.file, x: i.x, y: i.y, w: i.w, h: i.h }));
+      this.picturesRev = this.revision;
+    }
+    return this.pictures;
+  }
+
+  /** A picture's small copy; starts making it (and redraws when done) if
+   *  there is none yet. */
+  _thumb(key) {
+    const t = this.thumbs.get(key);
+    if (t !== undefined) return typeof t === 'string' ? null : t;
+    const bytes = key.startsWith('text:') ? null : this.canvas.image_bytes(key);
+    if (!bytes && !key.startsWith('text:')) return null;
+    this.thumbs.set(key, 'pending');
+    thumbnail(key, bytes, THUMB_PX).then((c) => {
+      this.thumbs.set(key, c);
+      this.inkKey = '';
+      this.update();
+    }).catch(() => this.thumbs.set(key, 'failed'));
+    return null;
+  }
+
+  _drawPictures(g) {
+    const { x0, y0, s, ox, oy } = this.map;
+    for (const p of this._pictureList()) {
+      const x = ox + (p.x - x0) * s, y = oy + (p.y - y0) * s;
+      const w = Math.max(p.w * s, 1), h = Math.max(p.h * s, 1);
+      const t = this._thumb(p.key);
+      if (t) {
+        if (p.key.startsWith('text:')) { g.fillStyle = 'rgba(255,255,255,0.9)'; g.fillRect(x, y, w, h); }
+        g.drawImage(t, x, y, w, h);
+      } else {
+        g.fillStyle = 'rgba(0,0,0,0.08)';
+        g.fillRect(x, y, w, h);
+      }
+    }
+  }
+
   _drawInk() {
     const g = this.ink.getContext('2d');
     const dpr = this.dpr;
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, this.ink.width, this.ink.height);
     const { x0, y0, s, ox, oy } = this.map;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.imageSmoothingQuality = 'high';
+    this._drawPictures(g); // under the ink, as on the page
+    g.setTransform(1, 0, 0, 1, 0, 0);
     const data = this._strokes(s);
     if (!data.length || this.frame.length !== 3) return;
     // q (0..65535) -> minimap px: x = ox + (fx + q / 65535 * span - x0) * s

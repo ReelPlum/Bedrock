@@ -97,6 +97,31 @@ export function drawText(text) {
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif', svg: 'image/svg+xml' };
 
 /** Decode a stored picture file to RGBA pixels for the GPU. */
+/** A small copy of a picture file, or of a text box's text (`text:<text>`),
+ *  at most `max` px on its long side: a canvas to draw from (the minimap). */
+export async function thumbnail(key, bytes, max) {
+  let src, close = () => {};
+  if (key.startsWith('text:')) {
+    const { width, height, data } = drawText(key.slice(5));
+    src = new OffscreenCanvas(width, height);
+    src.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(data.buffer), width, height), 0, 0);
+  } else {
+    const type = MIME[key.split('.').pop().toLowerCase()] || '';
+    src = await createImageBitmap(new Blob([bytes], { type }));
+    close = () => src.close?.();
+  }
+  try {
+    const [w, h] = scaled(src.width, src.height, max);
+    const c = new OffscreenCanvas(Math.max(1, w), Math.max(1, h));
+    const g = c.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(src, 0, 0, c.width, c.height);
+    return c;
+  } finally {
+    close();
+  }
+}
+
 export async function decodePicture(file, bytes) {
   const type = MIME[file.split('.').pop().toLowerCase()] || '';
   const bmp = await createImageBitmap(new Blob([bytes], { type }));

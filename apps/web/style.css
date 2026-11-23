@@ -60,7 +60,14 @@ svg circle { fill: currentColor; stroke: none; }
 .save-state.error { color: #c62828; font-weight: 600; }
 .icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; }
 .icon:hover { background: rgba(0, 0, 0, 0.05); }
-.icon:disabled { opacity: 0.3; cursor: default; }
+.icon:disabled, .tool:disabled { opacity: 0.3; cursor: default; }
+/* With the toolbar on a side, the title bar moves to the top corner on the
+   other side, away from it. */
+body[data-dock="left"] .topbar, body[data-dock="right"] .topbar { transform: none; width: min(460px, calc(100vw - 100px)); }
+body[data-dock="left"] .topbar { left: auto; right: max(10px, env(safe-area-inset-right)); }
+body[data-dock="right"] .topbar { left: max(10px, env(safe-area-inset-left)); }
+/* A palm resting while the Pencil writes can't press the chrome (main.js). */
+body.pen-down :is(.topbar, .toolbar, .minimap, .popover) { pointer-events: none; }
 
 .toolbar {
   bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
@@ -70,6 +77,11 @@ svg circle { fill: currentColor; stroke: none; }
 .tools, .colors { display: flex; gap: 2px; align-items: center; }
 .tool { position: relative; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; color: var(--muted); }
 .tool[aria-checked="true"] { background: var(--ink); color: #fff; }
+/* The pen family shares one slot: only the front pen shows, with a corner
+   mark, until the active one is tapped. */
+.toolbar:not(.family-open) .tool.fam:not(.front) { display: none; }
+.toolbar:not(.family-open) .tool.fam.front::after { content: ""; position: absolute; right: 4px; bottom: 4px; border: 3px solid transparent; border-right-color: currentColor; border-bottom-color: currentColor; opacity: 0.7; }
+.toolbar.family-open .tool.fam:not([aria-checked="true"]) { background: rgba(0, 0, 0, 0.05); }
 .tool .badge { position: absolute; right: 3px; bottom: 3px; font-size: 9px; font-weight: 700; line-height: 1; }
 .tool:not([aria-checked="true"]) .badge { display: none; }
 .sep { width: 1px; height: 28px; background: var(--chrome-border); margin: 0 2px; }
@@ -101,7 +113,7 @@ svg circle { fill: currentColor; stroke: none; }
 .toolbar[data-dock="top"] { top: calc(max(10px, env(safe-area-inset-top)) + 58px); bottom: auto; }
 .toolbar[data-dock="left"], .toolbar[data-dock="right"] {
   top: 50%; bottom: auto; transform: translateY(-50%); flex-direction: column; padding: 8px 6px;
-  max-width: none; max-height: calc(100vh - 150px); overflow-x: hidden; overflow-y: auto;
+  max-width: none; max-height: calc(100vh - 20px); overflow-x: hidden; overflow-y: auto;
 }
 .toolbar[data-dock="left"] { left: max(10px, env(safe-area-inset-left)); }
 .toolbar[data-dock="right"] { left: auto; right: max(10px, env(safe-area-inset-right)); }
@@ -218,20 +230,24 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 }
 
 /* Minimap: top right, clear of the top bar and of a toolbar docked right. */
+/* Placed by main.js (layout.js): where it was dragged, or under the title on
+   the side away from the toolbar. */
 .minimap {
-  position: fixed; z-index: 2;
-  top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right));
+  position: fixed; z-index: 2; left: 0; top: 0;
+  transition: opacity 400ms ease;
   width: 168px; padding: 0; overflow: hidden;
   background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: 12px; box-shadow: var(--shadow);
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
 }
 .minimap canvas { display: block; width: 168px; height: 112px; touch-action: none; cursor: crosshair; }
-body:has(.toolbar[data-dock="right"]) .minimap { right: calc(max(10px, env(safe-area-inset-right)) + 66px); }
-@media (max-width: 1040px) {
-  .minimap { top: calc(max(10px, env(safe-area-inset-top)) + 58px); }
-  body:has(.toolbar[data-dock="top"]) .minimap { top: calc(max(10px, env(safe-area-inset-top)) + 124px); }
-}
-.minimap-bar { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 4px 0 10px; border-top: 1px solid var(--chrome-border); font-size: 12px; color: var(--muted); }
+.minimap.resting:not(:hover) { opacity: 0.45; }
+.minimap.dragging { opacity: 0.92; transition: none; transform: scale(1.03); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.1); }
+@media (prefers-reduced-motion: reduce) { .minimap { transition: none; } }
+/* The strip under the map is the minimap's handle: drag it to move the minimap. */
+.minimap-bar { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 4px 0 6px; border-top: 1px solid var(--chrome-border); font-size: 12px; color: var(--muted); cursor: grab; touch-action: none; }
+.minimap.dragging .minimap-bar { cursor: grabbing; }
+.minimap-handle { display: flex; align-items: center; gap: 3px; flex: 1; align-self: stretch; }
+.minimap-handle svg { width: 14px; height: 14px; color: #a3a3a8; }
 .minimap-zoom { font-variant-numeric: tabular-nums; }
 .minimap-fit { display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 8px; font-size: 12px; color: var(--ink); }
 .minimap-fit:hover, .minimap-fit:active { background: rgba(0, 0, 0, 0.05); }

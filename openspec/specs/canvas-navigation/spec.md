@@ -92,3 +92,9 @@ for undo and redo, and palm rejection.
 <!-- test: fit_shows_rect -->
 <!-- test: reveal_centres_a_rect_and_keeps_the_zoom_when_it_can -->
 <!-- test-js: apps/web/tests/app.test.mjs :: the minimap shows the drawing and the view, follows them, shows zoom, fits, and moves the camera -->
+
+#### Scenario: Pictures and text boxes on the minimap
+- **GIVEN** pictures and text boxes on the page, with ink over them
+- **WHEN** the minimap is shown
+- **THEN** each shows in its place and size, under the ink as on the page, from a small copy made once (at most 256 px on its long side); until that copy is ready it shows as a light card
+<!-- test-js: apps/web/tests/app.test.mjs :: the minimap shows pictures and text boxes under the ink -->
