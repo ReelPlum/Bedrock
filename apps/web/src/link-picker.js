@@ -42,63 +42,11 @@ export function fileTree(files) {
   return root;
 }
 
-/** The samples in a `points.bin` entry (docs/note-format.md#pointsbin):
- *  one flat array per record, `channels` values per sample, as note.json
- *  would hold them. Null if it is damaged or has other channels. Never
- *  allocates more than the file could hold. */
-export function readPointsBin(bytes, channels) {
-  let i = 0;
-  // LEB128, with arithmetic that stays exact past 32 bits.
-  const leb = (signed) => {
-    let r = 0;
-    let scale = 1;
-    let b;
-    do {
-      b = bytes[i++];
-      if (b === undefined) throw new Error('cut short');
-      r += (b & 0x7f) * scale;
-      scale *= 128;
-    } while (b & 0x80);
-    return signed && b & 0x40 ? r - scale : r;
-  };
-  try {
-    if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'BDPT') return null;
-    i = 4;
-    if (leb() !== 1) return null;
-    const count = leb();
-    if (count !== channels) return null;
-    const div = [];
-    for (let c = 0; c < count; c++) {
-      const name = leb(); // the name: the same channels as note.json, in order
-      i += name;
-      div.push(10 ** leb());
-    }
-    const out = [];
-    for (let k = leb(); k > 0; k--) {
-      const n = leb();
-      // Every value takes at least one byte: a count the file cannot hold
-      // is damaged (and must not make a huge array; docs/security.md rule 4).
-      if (n * count > bytes.length - i) return null;
-      const last = new Array(count).fill(0);
-      const pts = new Array(n * count);
-      for (let j = 0; j < n * count; j++) {
-        const c = j % count;
-        last[c] += leb(true);
-        pts[j] = last[c] / div[c];
-      }
-      out.push(pts);
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-
 /** Where the words of a Bedrock note are, from its file: the picture
  *  (preview.svg), its viewBox, and each recognised word's bounds and first
  *  stroke, in the picture's coordinates. */
 export async function notePicture(bytes) {
-  const z = await readZip(bytes, ['preview.svg', 'note.json', 'points.bin', 'recognized.json']);
+  const z = await readZip(bytes, ['preview.svg', 'note.json', 'recognized.json']);
   const svg = text(z.get('preview.svg'));
   const vb = /viewBox="([-\d.e]+) ([-\d.e]+) ([-\d.e]+) ([-\d.e]+)"/.exec(svg);
   if (!svg || !vb) return null;
@@ -111,13 +59,9 @@ export async function notePicture(bytes) {
   const stride = channels.length || 2;
   const cx = Math.max(0, channels.indexOf('x'));
   const cy = Math.max(0, channels.indexOf('y'));
-  // Since note.json version 2 the samples of most strokes are in
-  // points.bin, one record per stroke without `points`, in order.
-  const bin = z.get('points.bin') ? readPointsBin(z.get('points.bin'), stride) : null;
-  let record = 0;
   const box = new Map();
   for (const s of note.strokes || []) {
-    const p = s.points || (bin ? bin[record++] : null) || [];
+    const p = s.points || [];
     let b = null;
     for (let i = 0; i + stride <= p.length; i += stride) {
       const px = p[i + cx];
