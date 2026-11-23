@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WordSharer } from '../src/share-words.js';
-import { fromLine } from '../src/collect.js';
+import { fromLine, fromNote, fromTraining } from '../src/collect.js';
 import { readFileSync } from 'node:fs';
 
 const CHANNELS = ['x', 'y', 'pressure', 't'];
@@ -177,4 +177,21 @@ test('a line of only a drawing has no text', () => {
   assert.deepEqual([s.version, s.kind, s.label, s.label_source], [3, 'text', '', 'corrected']);
   assert.deepEqual(s.words, [{ strokes: [0], kind: 'drawing', label: '', label_source: 'corrected' }]);
   assert.deepEqual(s.strokes[0].points.slice(0, 2), [0, 0], 'moved to 0,0');
+});
+
+test('bug: times that go backwards within a stroke are sent never going backwards', () => {
+  // An iPad gives a coalesced Apple Pencil sample an earlier time than the
+  // one before it, and the backend refused every such sample ("times
+  // within a stroke must not go backwards"), so almost nothing was stored.
+  const back = () => [{ start: T0, points: [5, 5, 0.5, 4, 6, 6, 0.5, 2, 7, 7, 0.5, 9, 8, 8, 0.5, 8.5] }];
+  const times = (s) => s.strokes[0].points.filter((_, i) => i % 4 === 3);
+  const line = fromLine({ words: [{ strokes: back(), kind: 'text', label: 'a', labelSource: 'confirmed' }], channels: CHANNELS });
+  assert.deepEqual(times(line), [4, 4, 9, 9]);
+  const one = fromNote({ strokes: back(), channels: CHANNELS, label: 'a', labelSource: 'confirmed' });
+  assert.deepEqual(times(one), [4, 4, 9, 9]);
+  const train = fromTraining({ prompt: { kind: 'text', text: 'a' }, note: { strokes: back(), channels: CHANNELS }, written: T0 });
+  assert.deepEqual(times(train), [4, 4, 9, 9]);
+  assert.deepEqual(train.strokes[0].points.slice(0, 3), [5, 5, 0.5], 'the rest is untouched');
+  const noTime = fromTraining({ prompt: { kind: 'text', text: 'a' }, note: { strokes: [{ start: T0, points: [1, 2, 3, 4] }], channels: ['x', 'y'] }, written: T0 });
+  assert.deepEqual(noTime.strokes[0].points, [1, 2, 3, 4], 'ink without times is left alone');
 });

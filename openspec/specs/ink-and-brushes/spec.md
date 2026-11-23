@@ -159,6 +159,12 @@ tapers) is saved with each new stroke; the "usual" setting saves nothing.
 <!-- test: a_wrong_prediction_does_not_bend_the_real_line -->
 <!-- test-js: apps/web/tests/app.test.mjs :: coalesced pen samples are all recorded, predicted ones are not saved -->
 
+#### Scenario: Times within a stroke never go back
+- **GIVEN** an iPad that gives a coalesced sample an earlier time than the one before it
+- **WHEN** a stroke is written
+- **THEN** that sample keeps the time of the one before it, so a stroke's times never go backwards
+<!-- test: bug_a_sample_with_an_earlier_time_does_not_go_back_in_time -->
+
 #### Scenario: Lifting the pen ends the line
 - **GIVEN** a pencil that is lifted and then hovers
 - **WHEN** hover samples arrive after the lift
