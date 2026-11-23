@@ -17,6 +17,27 @@ test('starts without errors and renders the paper', async () => {
   await ctx.close();
 });
 
+test('the app starts without downloading PDF import or, with spelling off, the dictionary', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  await ctx.addInitScript(() => {
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1') || '{}');
+    localStorage.setItem('bedrock.settings.v1', JSON.stringify({ ...s, spelling: false }));
+  });
+  const fetched = [];
+  ctx.on('request', (r) => fetched.push(new URL(r.url()).pathname));
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.waitForTimeout(500);
+  assert.ok(fetched.some((p) => p.endsWith('/bedrock_web_bg.wasm')), 'the app itself');
+  assert.deepEqual(fetched.filter((p) => /bedrock_pdf|\/dict\//.test(p)), []);
+  // Turning spelling on fetches the dictionary then.
+  await page.evaluate(() => { const c = document.getElementById('spelling'); c.checked = true; c.dispatchEvent(new Event('change')); });
+  await page.waitForFunction(() => window.bedrock.handwriting.dictionaryReady, null, { timeout: 10000 });
+  await page.waitForTimeout(300);
+  assert.ok(fetched.some((p) => p.includes('/dict/en.aff')), `fetched ${fetched.filter((p) => p.includes('dict'))}`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // The Duplicate update failed to start for a writer whose browser kept the
 // old page (without the Duplicate button) while loading the new scripts.
 test('a page from an older version than its scripts reloads once by itself and starts; if that does not help it says so with a Reload button', async () => {
@@ -2627,6 +2648,31 @@ test('lasso: Color in the selection menu shows the swatches and the +, and gives
   assert.ok(r.saved.includes('#00aa88') && !r.saved.includes('#101010'), JSON.stringify(r.saved));
   assert.ok(r.toolbarHasIt, 'the new swatch is in the toolbar too');
   assert.deepEqual(r.highlighterSwatches, ['#ffe14d', '#9be37a', '#ff8fc8', '#7cc6ff', '#ffb35c'].map((c) => `Color ${c}`));
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// The save worker compiled the 2.2 MB WebAssembly a second time on every
+// start. The page compiles it once and sends the module to the worker.
+test('the WebAssembly is fetched and compiled once; the save worker gets the module the page compiled', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const wasm = [];
+  // The page's and the save worker's requests. The service worker also
+  // fetches the app once when it installs, to keep it for offline use
+  // (sw.js); that copy is not the page loading it twice.
+  ctx.on('request', (r) => { if (r.url().endsWith('.wasm') && !r.serviceWorker()) wasm.push(r.url()); });
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.evaluate(async () => {
+    t.ev('pointerdown', 1, 'pen', 300, 300, { pressure: 0.6 });
+    for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', 300 + j * 4, 300 + (j % 2) * 10, { pressure: 0.6 });
+    t.ev('pointerup', 1, 'pen', 340, 300);
+    await t.frame();
+    await bedrock.saveNow();
+  });
+  const r = await page.evaluate(() => ({ background: bedrock.backgroundSaving, stats: { ...bedrock.saveStats } }));
+  assert.equal(r.background, true, 'the save worker runs');
+  assert.ok(r.stats.background >= 1 && r.stats.direct === 0, `saved in the background: ${JSON.stringify(r.stats)}`);
+  assert.equal(wasm.filter((u) => u.includes('bedrock_web_bg')).length, 1, `one request for the WebAssembly: ${wasm}`);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

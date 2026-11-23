@@ -77,6 +77,13 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
 });
 
+test('soon after Obsidian starts, the WebAssembly is compiled once, ready for the first note', async () => {
+  const { plugin } = await loaded();
+  const module = await plugin.wasmWarm;
+  assert.ok(module instanceof WebAssembly.Module, 'compiled in the background');
+  assert.equal(await plugin.webApp.wasmModule(), module, 'the first note gets that module');
+});
+
 test('new notes are empty .bedrock files next to the open file, never overwriting one', async () => {
   const { plugin, vault, app, opened } = await loaded();
   await vault.createFolder('Physics');
@@ -113,24 +120,48 @@ test('holding (or right-clicking) a folder offers a new Bedrock note in that fol
   assert.deepEqual(await menuFor(file), []);
 });
 
-test('the note picker lists vault notes, not index notes or the note itself, and gives link text', async () => {
+test('the link picker is offered every vault file but the note itself and index notes, with its link text', async () => {
   const { plugin, vault } = await loaded();
   await vault.create('Ideas.md', '# Ideas');
   await vault.create('Bedrock index/Forces.md', 'index');
+  await vault.create('Old/Maths.bedrock.md', 'sidecar index');
   await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
-  await vault.createBinary('Maths.bedrock', new ArrayBuffer(0));
-  fake.Modal.opened.length = 0;
-  const picked = plugin.pickNote('Ide', 'Forces.bedrock');
-  const modal = fake.Modal.opened[0];
-  assert.equal(modal.inputEl.value, 'Ide', 'starts with what was typed');
-  const items = modal.getItems().map((f) => modal.getItemText(f)).sort();
-  assert.deepEqual(items, ['Ideas', 'Maths.bedrock']);
-  modal.choose(modal.getItems().find((f) => f.path === 'Ideas.md'));
-  assert.equal(await picked, 'Ideas');
-  // Escape: no link.
-  const none = plugin.pickNote('', 'Forces.bedrock');
-  fake.Modal.opened[1].close();
-  assert.equal(await none, null);
+  await vault.createBinary('Old/Maths.bedrock', new ArrayBuffer(0));
+  await vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(0));
+  const files = plugin.linkableFiles('Forces.bedrock').sort((a, b) => a.path.localeCompare(b.path));
+  assert.deepEqual(files, [
+    { path: 'Ideas.md', link: 'Ideas' },
+    { path: 'Old/Maths.bedrock', link: 'Old/Maths.bedrock' },
+    { path: 'Papers/Paper.pdf', link: 'Papers/Paper.pdf' },
+  ]);
+});
+
+test("a PDF's pages are drawn for the link picker with Obsidian's PDF.js, and the open PDF is kept for the next page", async () => {
+  const { plugin, vault } = await loaded();
+  await vault.createBinary('Paper.pdf', new Uint8Array([37, 80, 68, 70]).buffer);
+  const opened = [];
+  const drawn = [];
+  fake.loadPdfJs.lib = {
+    getDocument: ({ data }) => {
+      opened.push([...data.slice(0, 4)]);
+      return { promise: Promise.resolve({
+        numPages: 3,
+        getPage: async (n) => ({
+          getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+          render: ({ viewport }) => { drawn.push([n, viewport.width]); return { promise: Promise.resolve() }; },
+        }),
+        destroy() {},
+      }) };
+    },
+  };
+  // Node has no canvas: a stand-in that makes a "PNG".
+  plugin.pdfPages.doc = { createElement: () => ({ getContext: () => ({ fillRect() {} }), toBlob: (cb) => cb(new Blob([new Uint8Array([137, 80, 78, 71])])) }) };
+  const p1 = await plugin.pdfPages.page('Paper.pdf', 1, 300);
+  const p3 = await plugin.pdfPages.page('Paper.pdf', 3, 300);
+  assert.equal(p1.count, 3);
+  assert.deepEqual([...new Uint8Array(p3.png)], [137, 80, 78, 71]);
+  assert.deepEqual(drawn, [[1, 300], [3, 300]]);
+  assert.deepEqual(opened, [[37, 80, 68, 70]], 'read and opened once');
 });
 
 test('at start, an empty (new) note is left alone: nothing to index yet', async () => {

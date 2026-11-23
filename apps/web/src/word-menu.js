@@ -119,7 +119,8 @@ export class WordMenu {
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
     // Tapping elsewhere closes it.
     document.addEventListener('pointerdown', (e) => {
-      if (!this.el.hidden && !this.el.contains(e.target)) this.close();
+      // The link picker opens over the menu, which waits for its answer.
+      if (!this.el.hidden && !this.el.contains(e.target) && !e.target.closest?.('#link-picker')) this.close();
     }, true);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !this.el.hidden) this.close(); });
   }
@@ -444,6 +445,10 @@ export class WordMenu {
     if (!w) return;
     const [ox, oy, zoom] = this.canvas.camera();
     const r = this.stage.getBoundingClientRect();
+    // The menu sits in the page, which may have slid up for a text box
+    // (keep-in-view.js): place it in the page's own coordinates.
+    const slid = document.body.getBoundingClientRect().top;
+    r.y -= slid;
     const left = r.left + (w.bounds[0] - ox) * zoom;
     const top = r.top + (w.bounds[1] - oy) * zoom;
     const bottom = r.top + (w.bounds[3] - oy) * zoom;

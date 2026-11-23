@@ -31,7 +31,9 @@ Version 1 existed only inside the first training page and was never stored
 or sent, so version 2 is the oldest version anyone holds.
 
 **Request**: `{ "contributor": { "id", "consent_version", "handedness"?, "locale"? }, "samples": [...] }`
-to `POST /v1/samples` with `Authorization: Bearer <invite code>`.
+to `POST /v1/samples` with `Authorization: Bearer <invite code>`. Sent with
+`Content-Encoding: gzip` where the browser has `CompressionStream` (since
+November 2026); the JSON inside is the same.
 
 **On the device**: the queue is IndexedDB database `bedrock-collect`
 (version 1, store keyed by sample `id`); consent, code and contributor id
@@ -103,3 +105,17 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 <!-- test-js: apps/web/tests/collect.test.mjs :: notes: an unchecked reading waits until it settles, and is sent at once when the app is hidden -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: notes: words written before the setting was on are not sent by themselves -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: notes: with the recogniser off, words are sent without text -->
+
+### Requirement: Uploads SHALL be gzipped, and SHALL still reach a backend that cannot read gzip
+
+#### Scenario: Gzip
+- **GIVEN** a sample to send
+- **WHEN** it is sent
+- **THEN** the request is gzipped and unpacks to exactly the JSON the app would send plain
+<!-- test-js: apps/web/tests/collect.test.mjs :: uploads are gzipped, and hold exactly the JSON the app would send plain -->
+
+#### Scenario: A backend from before gzip
+- **GIVEN** a backend that refuses the gzipped request
+- **WHEN** a batch is sent
+- **THEN** the same batch goes as plain JSON, and later batches on that page go plain at once
+<!-- test-js: apps/web/tests/collect.test.mjs :: a backend that cannot read gzip gets the same batch as plain JSON, and plain JSON from then on -->

@@ -4,8 +4,9 @@
 //
 //   * the note is a file the host owns: `HostStore` reads and writes it in
 //     place of IndexedDB (same interface as NoteStore);
-//   * links to the host's notes are turned on, picked with the host's own
-//     file picker and opened by the host;
+//   * links to the host's files are turned on, picked from the host's
+//     folders and files in the canvas's own picker (link-picker.js) and
+//     opened by the host;
 //   * the host can ask to be shown a place in the note (a search hit, a
 //     link to a word), and can be asked for a link to one.
 //
@@ -14,6 +15,7 @@
 // same code. The protocol is documented in apps/obsidian/README.md.
 
 import { linkType } from './links.js';
+import { LinkPicker } from './link-picker.js';
 
 const params = new URLSearchParams(location.search);
 // The plugin's own page has no address to carry `?host=`: it sets
@@ -73,7 +75,7 @@ export class HostStore {
    *  the file has loaded must never overwrite it. */
   async put(note) {
     if (note.id !== HOST_NOTE) return;
-    await this.rpc.call('write', { data: note.data, title: note.title });
+    await this.rpc.call('write', { data: note.data, title: note.title }, transferable(note.data));
   }
 
   async remove() { /* the host deletes its own files */ }
@@ -88,9 +90,18 @@ export class HostStore {
 
 export const HOST_NOTE = 'host';
 
+/** The buffer of a saved file, to hand to the host without a copy: a
+ *  save is built fresh and not used again once written. Only a buffer the
+ *  bytes fill alone, so nothing else is taken with it. */
+export function transferable(data) {
+  const b = data?.buffer;
+  return data instanceof Uint8Array && b instanceof ArrayBuffer && data.byteOffset === 0 && data.byteLength === b.byteLength ? [b] : [];
+}
+
 function connect() {
   if (!name || window.parent === window) return null;
   const rpc = channel(window.parent);
+  let picker = null;
   document.documentElement.dataset.host = name;
   // The host keeps the list of notes and makes new ones.
   const style = document.createElement('style');
@@ -101,9 +112,9 @@ function connect() {
     available: true,
     // Offered first when making a link.
     preferred: true,
-    /** Ask the host to show its note picker. Resolves to a link target, or
-     *  null if the picker was closed. */
-    pick: (query) => rpc.call('pick-note', { query }),
+    /** Show the vault's folders and files to choose from. Resolves to a
+     *  link target, or null if the picker was closed. */
+    pick: () => (picker ||= new LinkPicker(rpc)).pick(),
     open: (target) => rpc.call('open-link', { type: 'note', target }),
     /** Put a link to a place in this note (the word with this stroke) on
      *  the clipboard, for pasting into one of the host's notes. */
@@ -117,6 +128,9 @@ function connect() {
     store: () => new HostStore(rpc),
     /** Let the host run app functions it needs (e.g. save before closing). */
     on: (event, fn) => rpc.on(event, fn),
+    /** The WebAssembly the host compiled once for all its notes, or null
+     *  (the app then compiles it itself). */
+    wasm: () => rpc.call('wasm').catch(() => null),
     /** Tell the host the app is ready for events. */
     ready: () => rpc.call('ready'),
   };

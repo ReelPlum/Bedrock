@@ -11,7 +11,7 @@ after(async () => { await env?.close(); });
 
 const API = 'http://127.0.0.1:9';
 
-async function fakeBackend(ctx) {
+async function fakeBackend(ctx, link = { down: false }) {
   const sent = [];
   await ctx.addInitScript((api) => {
     try { localStorage.setItem('bedrock.collect.v1', JSON.stringify({ api })); } catch (_) { /* ignore */ }
@@ -19,6 +19,7 @@ async function fakeBackend(ctx) {
     window.bedrockNoLaunchGate = true;
   }, API);
   await ctx.route(`${API}/v1/reports`, async (route) => {
+    if (link.down) return route.abort('internetdisconnected');
     const body = JSON.parse(route.request().postData());
     sent.push(body);
     await route.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ id: body.id }) });
@@ -310,5 +311,27 @@ test('automatic performance reports are off until agreed, send slow entries only
   // Switching it off stops it.
   await page.click('#auto-perf');
   assert.equal(await page.evaluate(() => window.bedrock.autoSender.flush()), 'off');
+  await ctx.close();
+});
+
+test('an automatic report that could not go out offline is sent as soon as the connection is back', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const link = { down: false };
+  const sent = await fakeBackend(ctx, link);
+  const { page } = await openApp(env, { context: ctx });
+  await page.evaluate(() => { window.bedrock.autoSender.on = true; });
+  link.down = true;
+  await ctx.setOffline(true);
+  await page.evaluate(async () => {
+    await new Promise((r) => setTimeout(r, 5));
+    window.bedrockErrors.slow({ what: 'long_job', ms: 2600, message: 'A job took long: save' });
+  });
+  assert.equal(await page.evaluate(() => window.bedrock.autoSender.flush()), 'failed');
+  assert.equal(sent.length, 0);
+  link.down = false;
+  await ctx.setOffline(false); // the browser says "online"
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('bedrock.perf.v1')).count === 1, null, { timeout: 5000 });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].errors.map((e) => e.message), ['A job took long: save']);
   await ctx.close();
 });

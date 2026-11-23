@@ -6,9 +6,12 @@ icon, the "New handwritten note" command, or "New Bedrock note" in a
 folder's menu (hold the folder on iPad, right-click it on desktop), which
 makes the note in that folder.
 
-- **Link to vault notes.** Hold a handwritten word, choose "Make a link…" and
-  Obsidian's own file picker opens to choose the note. Links open with
-  Obsidian, and appear in the graph and backlinks (see below).
+- **Link to vault files.** Hold a handwritten word and choose "Make a link…":
+  the vault's folders and files open over the canvas (with a filter). Tap a
+  note to link it; tap a PDF to link one of its pages (`#page=3`), or a
+  handwritten note to link one of its words; either can be linked whole.
+  Save makes the link. Links open with Obsidian, and appear in the graph and
+  backlinks (see below).
 - **Search the handwriting.** Obsidian only indexes Markdown, so each note
   has an index note (in `Bedrock index/` by default) with the text read from
   the handwriting and the note's links. It is rewritten on every save,
@@ -79,17 +82,20 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | From | Message | Answer |
 |---|---|---|
 | app | `ready` | the app has started |
+| app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
-| app | `write { data, title }` | saves the bytes into the file, then updates its index note |
+| app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes |
 | app | `get-kv { key }` / `set-kv { key, value }` | per-file app state (the camera), kept in the plugin's data |
-| app | `pick-note { query }` | Obsidian's file picker; the chosen note as link text, or null |
+| app | `list-files` | every vault file the link picker offers (not this note or index notes): `[{ path, link }]`, `link` being Obsidian's link text |
+| app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
+| app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
 | app | `open-link { type, target }` | opens the note in Obsidian |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
 | app | `send-report { report }` | posts an error report the person chose to send ("Share with the Bedrock team"), or an automatic performance report (`sent: "auto"`, which gets the plugin's own slow moments and a `mobile` fact added), with `requestUrl`; `{ id }` |
 | view | `flush` | the app saves now (sent before the view closes) |
 | view | `reload` | the file changed elsewhere (sync, another window): the app reloads it |
 | view | `show { strokes }` | the app brings those strokes (each as its whole word) into view and flashes a frame around them; `false` if none is on the page any more |
-| view | `inset { bottom }` | the bottom `bottom` CSS px of the frame are hidden (the iPad's keyboard, which covers Obsidian without resizing it; `src/keyboard.js`): the word menu stays above them |
+| view | `inset { bottom }` | the bottom `bottom` CSS px of the frame are hidden (the iPad's keyboard, which covers Obsidian without resizing it; `src/keyboard.js`): the word menu stays above them, and a text box being typed in slides into sight (`apps/web/src/keep-in-view.js`) |
 
 Requests carry `seq`; answers carry `reply` (the request's `seq`) and
 `result` or `error`.
