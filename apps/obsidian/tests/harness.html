@@ -19,6 +19,7 @@ import { readZip, text } from '/obsidian/src/zip.js';
 import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
 import { askAtLaunch } from '/obsidian/src/consent.js';
 import { InlineApp } from '/obsidian/src/inline-app.js';
+import { watchKeyboard } from '/obsidian/src/keyboard.js';
 
 const webApp = new InlineApp(await (await fetch('/bundle.json')).json());
 
@@ -30,7 +31,24 @@ const cameras = new Map();
 let bridge = null;
 let session = null;
 let file = null;
-let pickAnswer = 'Ideas';
+let keyboard = null;
+
+/** A PDF's page as the plugin draws it (PdfPages, with Obsidian's PDF.js):
+ *  here every PDF has three pages, each a picture saying its number. */
+async function pdfPage(path, page, width) {
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = Math.round(width * 1.3);
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#000';
+  g.font = '40px sans-serif';
+  g.fillText(`${path} p${page}`, 10, 60);
+  const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+  calls.push(['pdf-page', path, page]);
+  return { count: 3, png: await blob.arrayBuffer() };
+}
 
 window.host = {
   vault,
@@ -53,7 +71,13 @@ window.host = {
     });
   },
   calls,
-  setPick(v) { pickAnswer = v; },
+  /** The iPad's on-screen keyboard, as Obsidian reports it: it covers the
+   *  bottom `height` px of the window without resizing anything, sets
+   *  --keyboard-height and fires keyboardWillShow / keyboardWillHide. */
+  keyboard(height) {
+    document.documentElement.style.setProperty('--keyboard-height', `${height}px`);
+    window.dispatchEvent(new Event(height ? 'keyboardWillShow' : 'keyboardWillHide'));
+  },
   get session() { return session; },
   get bridge() { return bridge; },
   /** Open a vault file in the iframe, as the plugin's view does. */
@@ -67,13 +91,25 @@ window.host = {
       file: () => file,
       indexer,
       kv: { get: (k) => cameras.get(k), set: async (k, v) => { cameras.set(k, v); } },
-      pickNote: async (query, source) => { calls.push(['pick', query, source]); return pickAnswer; },
+      // As the plugin's linkableFiles: not this note or index notes; the
+      // link text is the path, without .md for Markdown notes.
+      listFiles: async (source) => {
+        calls.push(['list', source]);
+        return vault.getFiles()
+          .filter((f) => f.path !== source && !f.path.startsWith('Bedrock index/') && !f.path.endsWith('.bedrock.md'))
+          .map((f) => ({ path: f.path, link: f.path.replace(/\.md$/, '') }));
+      },
+      pdfPage,
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
-      onReady: () => ready(),
+      onReady: () => { tellInset(keyboard.covered()); ready(); },
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
     bridge.listen(window);
+    // As the plugin's view does: tell the app how much of it is covered.
+    const tellInset = (bottom) => bridge.send('inset', { bottom }, 1000).catch(() => null);
+    keyboard?.stop();
+    keyboard = watchKeyboard(window, frame, tellInset);
     frame.srcdoc = webApp.page('app');
     await isReady;
   },

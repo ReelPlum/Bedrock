@@ -4,6 +4,8 @@
 // made one word (whatever the automatic word splitting thinks), duplicated,
 // recoloured (Color shows the writer's swatches and the + for a new one),
 // or deleted; linking or correcting a selection makes it one word first.
+// The menu keeps clear of whatever covers the bottom of the page (the iPad's
+// keyboard inside Obsidian, see `setInset`).
 
 import { LINK_TYPES, linkType } from './links.js';
 import { SwatchPicker } from './swatch-picker.js';
@@ -33,6 +35,8 @@ export class WordMenu {
     this.onPaletteChange = onPaletteChange || (() => {});
     this.describe = describe || ((w) => (w.text != null ? { text: w.text } : { waiting: 'Not read yet' }));
     this.word = null;
+    // CSS px at the bottom of the page hidden from view (the host says so).
+    this.inset = 0;
     const $ = (id) => el.querySelector(`#${id}`);
     this.$ = $;
     const types = $('wm-link-type');
@@ -115,12 +119,20 @@ export class WordMenu {
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
     // Tapping elsewhere closes it.
     document.addEventListener('pointerdown', (e) => {
-      if (!this.el.hidden && !this.el.contains(e.target)) this.close();
+      // The link picker opens over the menu, which waits for its answer.
+      if (!this.el.hidden && !this.el.contains(e.target) && !e.target.closest?.('#link-picker')) this.close();
     }, true);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !this.el.hidden) this.close(); });
   }
 
   get isOpen() { return !this.el.hidden; }
+
+  /** The bottom `px` of the page are hidden (by the iPad's keyboard): the
+   *  open menu moves above them, and comes back when they are not. */
+  setInset(px) {
+    this.inset = Math.max(0, Number(px) || 0);
+    if (!this.el.hidden) this._place();
+  }
 
   /** The word under a stage position (CSS px), or null. */
   wordAt(x, y) {
@@ -320,9 +332,11 @@ export class WordMenu {
       $('wm-link-target').value = l ? l.target : '';
       $('wm-link-error').hidden = true;
       this._typeChanged();
-      $('wm-link-target').focus();
-      // A new link to a host note starts in the host's picker.
+      // A new link to a host note starts in the host's picker. The text box
+      // is not focused then: on the iPad that would bring up the keyboard
+      // for nothing.
       if (!l && linkType(types.value).pick) this._browse();
+      else $('wm-link-target').focus();
     } else if (view === 'correct') {
       $('wm-correct-text').value = this.word.text ?? '';
       $('wm-correct-text').focus();
@@ -375,7 +389,8 @@ export class WordMenu {
     this.$('wm-link-browse').hidden = !t.pick;
   }
 
-  /** Choose the target with the link kind's picker; links straight away. */
+  /** Choose the target with the link kind's picker. The chosen note goes
+   *  into the box, where the writer sees it, and Save makes the link. */
   async _browse() {
     const t = linkType(this.$('wm-link-type').value);
     const word = this.word;
@@ -385,7 +400,9 @@ export class WordMenu {
     // Ignore a pick that arrives after the menu moved on to something else.
     if (!target || this.word !== word || this.$('wm-link-type').value !== t.id) return;
     this.$('wm-link-target').value = target;
-    this._saveLink();
+    this.$('wm-link-error').hidden = true;
+    // Save is ready for a tap or Enter (no keyboard on the iPad).
+    this.$('wm-link-form').querySelector('.wm-save')?.focus();
   }
 
   _saveLink() {
@@ -428,13 +445,18 @@ export class WordMenu {
     if (!w) return;
     const [ox, oy, zoom] = this.canvas.camera();
     const r = this.stage.getBoundingClientRect();
+    // The menu sits in the page, which may have slid up for a text box
+    // (keep-in-view.js): place it in the page's own coordinates.
+    const slid = document.body.getBoundingClientRect().top;
+    r.y -= slid;
     const left = r.left + (w.bounds[0] - ox) * zoom;
     const top = r.top + (w.bounds[1] - oy) * zoom;
     const bottom = r.top + (w.bounds[3] - oy) * zoom;
     const mw = this.el.offsetWidth;
     const mh = this.el.offsetHeight;
     const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    // Above what is hidden at the bottom, if the menu fits there at all.
+    const vh = Math.max(mh + 24, window.innerHeight - this.inset);
     const x = Math.max(12, Math.min(left, vw - mw - 12));
     const y = bottom + 10 + mh < vh - 12 ? bottom + 10 : Math.max(12, top - 10 - mh);
     this.el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;

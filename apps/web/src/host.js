@@ -4,8 +4,9 @@
 //
 //   * the note is a file the host owns: `HostStore` reads and writes it in
 //     place of IndexedDB (same interface as NoteStore);
-//   * links to the host's notes are turned on, picked with the host's own
-//     file picker and opened by the host;
+//   * links to the host's files are turned on, picked from the host's
+//     folders and files in the canvas's own picker (link-picker.js) and
+//     opened by the host;
 //   * the host can ask to be shown a place in the note (a search hit, a
 //     link to a word), and can be asked for a link to one.
 //
@@ -14,6 +15,7 @@
 // same code. The protocol is documented in apps/obsidian/README.md.
 
 import { linkType } from './links.js';
+import { LinkPicker } from './link-picker.js';
 
 const params = new URLSearchParams(location.search);
 // The plugin's own page has no address to carry `?host=`: it sets
@@ -91,6 +93,7 @@ export const HOST_NOTE = 'host';
 function connect() {
   if (!name || window.parent === window) return null;
   const rpc = channel(window.parent);
+  let picker = null;
   document.documentElement.dataset.host = name;
   // The host keeps the list of notes and makes new ones.
   const style = document.createElement('style');
@@ -101,9 +104,9 @@ function connect() {
     available: true,
     // Offered first when making a link.
     preferred: true,
-    /** Ask the host to show its note picker. Resolves to a link target, or
-     *  null if the picker was closed. */
-    pick: (query) => rpc.call('pick-note', { query }),
+    /** Show the vault's folders and files to choose from. Resolves to a
+     *  link target, or null if the picker was closed. */
+    pick: () => (picker ||= new LinkPicker(rpc)).pick(),
     open: (target) => rpc.call('open-link', { type: 'note', target }),
     /** Put a link to a place in this note (the word with this stroke) on
      *  the clipboard, for pasting into one of the host's notes. */

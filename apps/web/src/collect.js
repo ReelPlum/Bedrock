@@ -21,9 +21,9 @@ export const CONSENT_VERSION = 3;
  *  only takes effect once `DEFAULT_API` is set: with no server there is
  *  nothing to check a code against. */
 export const LAUNCH_GATE = true;
-/** The backend's address, fixed in the app: people cannot change it. Empty
- *  until the backend is deployed, and saving stays off until it is set. */
-export const DEFAULT_API = '';
+/** The backend's address, fixed in the app: people cannot change it.
+ *  Saving stays off while it is empty. */
+export const DEFAULT_API = 'https://bedrock-collect.reelplum.workers.dev';
 
 /** The host name of the server the page came from. A page that a host
  *  wrote into its iframe (the Obsidian plugin's, `about:srcdoc`) has none
@@ -34,10 +34,13 @@ export function pageHost(g = globalThis) {
 }
 
 /** Where samples go: always `DEFAULT_API`, except on a page served from
- *  this computer (development and tests), which may use a stored address. */
+ *  this computer (development and tests), which may use a stored address,
+ *  and may set `bedrockNoBuiltInApi` before the page loads to act as if
+ *  no address were built in, so tests never reach the real backend. */
 export function apiAddress(stored, host = pageHost()) {
   const local = host === 'localhost' || host === '127.0.0.1';
-  return local && typeof stored === 'string' && stored ? stored : DEFAULT_API;
+  if (local && typeof stored === 'string' && stored) return stored;
+  return local && globalThis.bedrockNoBuiltInApi === true ? '' : DEFAULT_API;
 }
 /** True when the app must ask for the code and consent before it can be
  *  used: the gate is on and a safe server address is built in. A page
@@ -397,12 +400,43 @@ function contributor(s) {
   };
 }
 
+/** `text` gzipped by the browser (CompressionStream), or null where it
+ *  can't. */
+export async function gzipText(text) {
+  if (typeof CompressionStream !== 'function') return null;
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Uploads are gzipped (`Content-Encoding: gzip`): a word's ink is about 2.6x
+// smaller. A backend from before gzip uploads refuses them (or a browser
+// blocks the header); when the same batch then goes through as plain JSON,
+// this page sends plain JSON from then on. A batch refused both ways is a
+// real refusal and changes nothing.
+let gzipUploads = true;
+
+/** POSTs `body` (JSON text) to `url`, gzipped when it can. Throws when
+ *  there is no connection. */
+export async function postJson(url, hdrs, body) {
+  const plain = () => fetch(url, { method: 'POST', headers: hdrs, body });
+  const packed = gzipUploads ? await gzipText(body).catch(() => null) : null;
+  if (!packed) return plain();
+  let res = null;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { ...hdrs, 'Content-Encoding': 'gzip' }, body: packed });
+    if (res.status !== 400 && res.status !== 415) return res;
+  } catch (_) { /* no connection, or the header was refused: try plain */ }
+  const again = await plain();
+  if (again.ok) gzipUploads = false;
+  return again;
+}
+
 /** Sends one batch. Returns the ids to take off the queue, or throws
  *  `{ later: true }` when it should be tried again later. */
 async function send(s, batch) {
   let res;
   try {
-    res = await fetch(`${s.api}/v1/samples`, { method: 'POST', headers: headers(s), body: JSON.stringify({ contributor: contributor(s), samples: batch }) });
+    res = await postJson(`${s.api}/v1/samples`, headers(s), JSON.stringify({ contributor: contributor(s), samples: batch }));
   } catch (_) {
     throw { later: true, problem: 'offline' };
   }

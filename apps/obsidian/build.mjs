@@ -40,7 +40,7 @@ const PAGES = {
 /** Workers, started by their path (src/assets.js). */
 const WORKERS = ['src/save-worker.js', 'src/recognizer-worker.js'];
 /** Binary and data files the app fetches, by their path. */
-const FILES = ['pkg/bedrock_web_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz'];
+const FILES = ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz'];
 
 
 const inlineScript = (js) => js.replace(/<\/(script)/gi, '<\\/$1');

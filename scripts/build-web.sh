@@ -11,11 +11,27 @@ export WASI_SDK_PATH="${WASI_SDK_PATH:-$PWD/.wasi-sdk}"
 PROFILE="${1:-release}"
 FLAG=""
 [ "$PROFILE" = "release" ] && FLAG="--release"
-cargo build -p bedrock-web --target wasm32-unknown-unknown $FLAG
-wasm-bindgen --target web --no-typescript --out-dir apps/web/pkg \
-  "target/wasm32-unknown-unknown/$PROFILE/bedrock_web.wasm"
-if command -v wasm-opt >/dev/null 2>&1 && [ "$PROFILE" = "release" ]; then
-  wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int \
-    apps/web/pkg/bedrock_web_bg.wasm -o apps/web/pkg/bedrock_web_bg.wasm
+# Two modules, built one at a time so the app's does not pick up PDF
+# support: bedrock_web (the app) and bedrock_pdf (PDF import, loaded the
+# first time a PDF is opened).
+for crate in bedrock-web bedrock-pdf; do
+  cargo build -p "$crate" --target wasm32-unknown-unknown $FLAG
+  wasm-bindgen --target web --no-typescript --out-dir apps/web/pkg \
+    "target/wasm32-unknown-unknown/$PROFILE/${crate//-/_}.wasm"
+done
+# binaryen's wasm-opt: about 7% less to download and a fifth less to compile.
+# CI sets BEDROCK_REQUIRE_WASM_OPT=1 so a missing wasm-opt fails the build
+# instead of publishing an unoptimised app.
+if [ "$PROFILE" = "release" ]; then
+  if command -v wasm-opt >/dev/null 2>&1; then
+    for wasm in apps/web/pkg/*_bg.wasm; do
+      wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int "$wasm" -o "$wasm"
+    done
+  elif [ "${BEDROCK_REQUIRE_WASM_OPT:-}" = "1" ]; then
+    echo "wasm-opt (binaryen) is required but was not found" >&2
+    exit 1
+  else
+    echo "note: wasm-opt (binaryen) not found; the WebAssembly is not optimised" >&2
+  fi
 fi
 ls -lh apps/web/pkg

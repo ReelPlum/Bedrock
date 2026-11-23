@@ -2,10 +2,12 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, normalizePath, requestUrl } from 'obsidian';
+import { FileView, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
+import { PdfPages } from './pdf-pages.js';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
 import { HostBridge } from './bridge.js';
+import { watchKeyboard } from './keyboard.js';
 import { askAtLaunch } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
@@ -91,40 +93,6 @@ class ReportModal extends Modal {
   onClose() { this.contentEl?.empty?.(); }
 }
 
-/** Obsidian's own kind of file picker, over every file in the vault. */
-class NotePicker extends FuzzySuggestModal {
-  constructor(app, { query, exclude, isIndex, onDone }) {
-    super(app);
-    this.exclude = exclude;
-    this.isIndex = isIndex;
-    this.onDone = onDone;
-    this.chosen = null;
-    this.setPlaceholder('Link to a note…');
-    this.setInstructions([
-      { command: '↑↓', purpose: 'to navigate' },
-      { command: '↵', purpose: 'to link' },
-      { command: 'esc', purpose: 'to cancel' },
-    ]);
-    if (query) this.inputEl.value = query;
-  }
-
-  getItems() {
-    return this.app.vault.getFiles()
-      .filter((f) => f.path !== this.exclude && !this.isIndex(f.path))
-      .sort((a, b) => b.stat.mtime - a.stat.mtime);
-  }
-
-  getItemText(f) { return f.extension === 'md' ? f.path.slice(0, -3) : f.path; }
-
-  onChooseItem(f) { this.chosen = f; }
-
-  onClose() {
-    super.onClose();
-    // onChooseItem runs before onClose; wait a tick so it has.
-    setTimeout(() => this.onDone(this.chosen), 0);
-  }
-}
-
 class BedrockView extends FileView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -133,6 +101,7 @@ class BedrockView extends FileView {
     this.frame = null;
     this.bridge = null;
     this.session = null;
+    this.keyboard = null;
     // Ink to show once the canvas has loaded the note (a search hit, a link).
     this.pending = null;
     this.appReady = false;
@@ -155,6 +124,11 @@ class BedrockView extends FileView {
     this.bridge.send('show', { strokes }).catch(() => null);
   }
 
+  /** How much of the bottom of the canvas is hidden (by the keyboard). */
+  tellInset(bottom) {
+    if (this.appReady && this.bridge) this.bridge.send('inset', { bottom }, 1000).catch(() => null);
+  }
+
   getViewType() { return VIEW_TYPE; }
 
   getDisplayText() { return this.file ? this.file.basename : 'Bedrock'; }
@@ -171,17 +145,21 @@ class BedrockView extends FileView {
       file: () => this.file,
       indexer: plugin.settings.index ? plugin.indexer : null,
       kv: plugin.kv,
-      pickNote: (query, sourcePath) => plugin.pickNote(query, sourcePath),
+      listFiles: async (sourcePath) => plugin.linkableFiles(sourcePath),
+      pdfPage: (path, page, width) => plugin.pdfPages.page(path, page, width),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
-      onReady: () => { this.appReady = true; this.showPending(); },
+      onReady: () => { this.appReady = true; this.showPending(); this.tellInset(this.keyboard?.covered() || 0); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
     this.frame = frame;
     this.bridge = new HostBridge(() => frame.contentWindow, this.session.handlers);
     this.bridge.listen(frame.ownerDocument.defaultView);
+    // The iPad's keyboard covers the bottom of the view without resizing it:
+    // tell the canvas, so its menus stay above the keyboard.
+    this.keyboard = watchKeyboard(frame.ownerDocument.defaultView, frame, (bottom) => this.tellInset(bottom));
     // The page is written into the frame, not loaded from the plugin
     // folder: Obsidian refuses file requests from inside a view.
     frame.srcdoc = plugin.webApp.page('app');
@@ -190,6 +168,8 @@ class BedrockView extends FileView {
   async onUnloadFile() {
     // Save what was drawn last before the iframe goes away.
     await this.bridge?.send('flush', {}, 3000).catch(() => null);
+    this.keyboard?.stop();
+    this.keyboard = null;
     this.bridge?.close();
     this.frame?.remove();
     this.frame = this.bridge = this.session = null;
@@ -219,6 +199,16 @@ export default class BedrockPlugin extends Plugin {
     this.webApp = new InlineApp(bundle);
     this.register(() => this.webApp.revoke());
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
+    // A PDF's pages for the canvas's link picker, drawn with Obsidian's own PDF.js.
+    this.pdfPages = new PdfPages({
+      pdfjs: () => loadPdfJs(),
+      read: async (path) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile)) throw new Error('No such file.');
+        return { bytes: await this.app.vault.readBinary(f), version: f.stat.mtime };
+      },
+    });
+    this.register(() => this.pdfPages.close());
     this.kv = {
       get: (key) => this.cameras[key],
       set: async (key, value) => {
@@ -380,16 +370,13 @@ export default class BedrockPlugin extends Plugin {
     if (announce) new Notice(`Bedrock: ${n} handwritten note${n === 1 ? '' : 's'} indexed.`);
   }
 
-  /** Show the note picker; resolves to a link target or null. */
-  pickNote(query, sourcePath) {
-    return new Promise((resolve) => {
-      new NotePicker(this.app, {
-        query,
-        exclude: sourcePath,
-        isIndex: (path) => this.settings.index && isIndexPath(path, this.settings.indexFolder),
-        onDone: (f) => resolve(f ? this.app.metadataCache.fileToLinktext(f, '', true) : null),
-      }).open();
-    });
+  /** Every file in the vault the canvas's link picker offers: not the
+   *  note itself or index notes, with the link text Obsidian would use. */
+  linkableFiles(sourcePath) {
+    const isIndex = (path) => path.endsWith('.bedrock.md') || (this.settings.index && isIndexPath(path, this.settings.indexFolder));
+    return this.app.vault.getFiles()
+      .filter((f) => f.path !== sourcePath && !isIndex(f.path))
+      .map((f) => ({ path: f.path, link: this.app.metadataCache.fileToLinktext(f, sourcePath, true) }));
   }
 
   async newNote() {

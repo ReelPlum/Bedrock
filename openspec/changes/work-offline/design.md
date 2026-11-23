@@ -6,7 +6,7 @@ Two caches, both named `bedrock-*` so the service worker knows which are
 its own:
 
 - `bedrock-vN` (the app): network first, `no-cache`, as before. Bumped to
-  v32 so the new worker installs.
+  v33 so the new worker installs.
 - `bedrock-libs-v1` (the recogniser's library): cache first. The URL holds
   an exact version (`@huggingface/transformers@4.3.1`), so the file never
   changes; a new version is a new URL. Only that package is kept: its

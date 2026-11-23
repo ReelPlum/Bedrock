@@ -11,6 +11,7 @@
 //! | `v1-first-release` | commit dc1b86b, the first note format |
 //! | `v1-before-pictures` | commit 46539c1: links, word groups, text/maths, line styles, stabiliser |
 //! | `v1-pictures-and-text-boxes` | Nov 12 2026: pictures, text boxes and per-stroke pen tuning |
+//! | `v1-handwriting-before-points-bin` | commit 90c0a6c (Nov 13 2026), the last writer with every sample in `note.json`: two handwritten words, an i-dot and an underline (`.bedrock` only) |
 
 use bedrock_core::brush::{BrushKind, LineStyle};
 use bedrock_core::document::Document;
@@ -120,6 +121,37 @@ fn notes_with_pictures_and_text_boxes_still_open() {
                 let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
                 assert_eq!(d.assets.get(&pic.file), Some(&png), "{what}: the picture file");
             }
+        }
+    }
+}
+
+/// A `.bedrock` from just before samples moved to `points.bin` opens with
+/// every sample, and saved again (now with `points.bin`) gives back exactly
+/// the same note, value for value.
+#[test]
+fn notes_from_before_points_bin_still_open_and_resave_bit_for_bit() {
+    let d = open("v1-handwriting-before-points-bin", "bedrock");
+    assert_eq!(d.len(), 4, "two words, an i-dot and an underline");
+    let samples: usize = d.strokes().iter().map(|s| s.points.len()).sum();
+    assert_eq!(samples, 558);
+    let again = resave(&d);
+    assert_eq!(format::to_json(&again), format::to_json(&d));
+    let shared = format::load_bytes(&format::to_bedrock_for_sharing(&d), 2).unwrap();
+    assert!(shared.warnings.is_empty());
+    assert_eq!(format::to_json(&shared.doc), format::to_json(&d));
+}
+
+/// Every older fixture, saved with points.bin, keeps every value.
+#[test]
+fn every_old_note_resaves_with_points_bin_bit_for_bit() {
+    for name in ["v1-first-release", "v1-before-pictures", "v1-pictures-and-text-boxes"] {
+        for ext in FORMATS {
+            // A bare JSON file has no picture files to save with it.
+            if name == "v1-pictures-and-text-boxes" && ext == "json" {
+                continue;
+            }
+            let d = open(name, ext);
+            assert_eq!(format::to_json(&resave(&d)), format::to_json(&d), "{name}.{ext}");
         }
     }
 }

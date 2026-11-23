@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
+import { withoutBuiltInApi } from './helpers.mjs';
 const ROOT = new URL('../', import.meta.url);
 
 let server, browser, url;
@@ -35,7 +36,7 @@ before(async () => {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   url = `http://127.0.0.1:${server.address().port}/`;
-  browser = await chromium.launch();
+  browser = withoutBuiltInApi(await chromium.launch());
 });
 after(async () => { await browser?.close(); server?.close(); });
 
