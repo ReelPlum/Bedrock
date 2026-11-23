@@ -50,3 +50,22 @@ export class PdfPages {
     old?.pdf.then((p) => p.destroy?.()).catch(() => {});
   }
 }
+
+/** The page of a PDF open in Obsidian's viewer that the person is looking
+ *  at: under `at` (a right-click) if given, else the page with the most of
+ *  it in sight. PDF.js marks each page `.page[data-page-number]`. 1 if no
+ *  page is drawn yet. */
+export function pdfPageInView(container, at = null) {
+  const hit = at?.closest?.('.page[data-page-number]');
+  if (hit && container.contains(hit)) return Math.max(1, parseInt(hit.dataset.pageNumber, 10) || 1);
+  const view = container.getBoundingClientRect();
+  let best = 1;
+  let most = 0;
+  for (const p of container.querySelectorAll('.page[data-page-number]')) {
+    const r = p.getBoundingClientRect();
+    const seen = Math.max(0, Math.min(r.bottom, view.bottom) - Math.max(r.top, view.top))
+      * Math.max(0, Math.min(r.right, view.right) - Math.max(r.left, view.left));
+    if (seen > most) { most = seen; best = parseInt(p.dataset.pageNumber, 10) || best; }
+  }
+  return best;
+}

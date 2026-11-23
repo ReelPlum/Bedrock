@@ -153,6 +153,28 @@ saving, so a graph can label the link without the ink. Links are saved only
 while all their strokes exist. `links.md` in the archive lists the same links
 as Markdown.
 
+## Links and tags of the whole note (`noteLinks`, `tags` in `note.json`)
+
+```json
+"noteLinks": [{ "target": "Lectures/Week 3.pdf#page=4", "type": "note", "text": "Week 3, page 4" }],
+"tags": ["physics/forces", "exam"]
+```
+
+Both are optional and belong to no ink, so a note with no strokes at all
+can have them. A `noteLinks` entry is a link of the whole note, for example
+the page the note was made about: `target` and `type` as for a word's link
+(`#page=N` and `#^<stroke id>` are Obsidian's page and block links), and
+`text` what to call it. Each target is listed once. `links.md` lists the
+note links first, then the words' links.
+
+`tags` are the note's tags in Obsidian's form, without `#`: letters,
+digits, `_`, `-` and `/` (for nested tags), not only digits, each once
+(ignoring case), in the order they were added. Writers turn spaces into
+`-`. The Markdown sidecar puts them in its front matter.
+
+Added in November 2026 without changing `version`: readers that predate
+them keep both fields as unknown fields and write them back unchanged.
+
 ## The writer's words and maths (`groups`, `kinds` in `note.json`)
 
 ```json
@@ -204,12 +226,13 @@ Beside a note, a Markdown file with the same name plus `.md` makes the
 handwriting searchable in tools that only read Markdown, such as Obsidian.
 The Bedrock Obsidian plugin keeps one for each note (its "index note") and
 the web app writes them when it exports the library. Both make the same
-bytes (`apps/web/src/sidecar.js`), from `recognized.json` and `links.md`:
+bytes (`apps/web/src/sidecar.js`), from `recognized.json`, `links.md` and
+the `tags` in `note.json`:
 
 ```markdown
 ---
 bedrock: "School/Physics/Forces.bedrock"
-tags: [bedrock]
+tags: [bedrock, physics/forces]
 ---
 > Handwritten note: [[School/Physics/Forces.bedrock|Forces]]. This index is written by the Bedrock plugin from the handwriting; changes made here are replaced.
 
@@ -219,10 +242,14 @@ Newton Hooke
 
 ## Links
 
+- [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]
 - [[Ideas]]
 ```
 
-`bedrock` is the note's path from the vault (or export) root. The text is
+`bedrock` is the note's path from the vault (or export) root. `tags` is
+`bedrock` followed by the note's own tags (quoted where YAML would read one
+as something other than text, such as `"true"`); a note without tags has
+`tags: [bedrock]`. The text is
 the recognised items in saved order, separated by spaces, with `[` and `]`
 escaped so handwriting never becomes a link; `_Nothing read yet._` when
 there is none. `## Links` is present only when the note has links, and is

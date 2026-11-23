@@ -79,6 +79,33 @@ test('index note holds the handwriting text and the links', async () => {
   assert.equal(noteOfIndex(md), 'Physics/Forces.bedrock');
 });
 
+test("the index note carries the note's tags and the links of the whole note", async () => {
+  const bytes = zip({
+    // A text box holding `"tags":[` is escaped in JSON, so only the note's own list counts.
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [], texts: [{ text: '"tags":["no"]' }], noteLinks: [{ target: 'Lectures/Week 3.pdf#page=4', type: 'note', text: 'Week 3, page 4' }], tags: ['physics/forces', 'Exam-prep', 'bedrock', 'not a tag', '2026', 'true', 'physics/forces'] }),
+    'recognized.json': recognized('Newton'),
+    'links.md': '# Links in this note\n\n- [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]\n- [[Ideas]]\n',
+  });
+  const t = await readNoteText(bytes);
+  assert.deepEqual(t.tags, ['physics/forces', 'Exam-prep', 'true'], 'only real tags, once, and bedrock is already there');
+  const md = indexMarkdown('Physics/Forces.bedrock', t);
+  assert.match(md, /^---\nbedrock: "Physics\/Forces.bedrock"\ntags: \[bedrock, physics\/forces, Exam-prep, "true"\]\n---\n/);
+  assert.match(md, /## Links\n\n- \[\[Lectures\/Week 3\.pdf#page=4\|Week 3, page 4\]\]\n- \[\[Ideas\]\]\n/, 'the note link first, then the words\' links');
+  assert.equal(noteOfIndex(md), 'Physics/Forces.bedrock');
+  // A damaged list costs the tags, nothing else.
+  const damaged = await readNoteText(zip({ 'note.json': '{"format":"bedrock-note","tags":[1,', 'recognized.json': recognized('Newton') }));
+  assert.deepEqual([damaged.tags, damaged.words], [[], ['Newton']]);
+});
+
+test('index notes from before tags: an untagged note indexes the same, and old index notes still open their note', async () => {
+  const { readFileSync } = await import('node:fs');
+  const old = readFileSync(new URL('./fixtures/index-before-tags.md', import.meta.url), 'utf8');
+  const noteBytes = readFileSync(new URL('../../../crates/bedrock-core/tests/fixtures/old-formats/v1-before-note-links.bedrock', import.meta.url));
+  assert.equal(noteOfIndex(old), 'School/Before note links.bedrock');
+  assert.equal(indexMarkdown('School/Before note links.bedrock', await readNoteText(new Uint8Array(noteBytes))), old,
+    'a note without tags or note links gets the very same index note as before');
+});
+
 test('handwriting that looks like Markdown links does not become a link', () => {
   const md = indexMarkdown('a.bedrock', { words: ['[[Secret]]'], links: [] });
   assert.match(md, /\\\[\\\[Secret\\\]\\\]/);
@@ -331,6 +358,16 @@ test('the app can ask for a link to a word; only real stroke ids are accepted', 
   assert.deepEqual(copied, [['9f2c4e1a7b3d5f60', 'Physics/Forces.bedrock']]);
   // A host without a clipboard just says no.
   assert.equal(await session(vault, file).s.handlers['copy-link']({ stroke: 'ab' }), false);
+});
+
+test("a new note's starting link is handed to its canvas once", async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Lecture 3 notes.bedrock', new ArrayBuffer(0));
+  let start = { noteLinks: [{ target: 'Lecture 3', type: 'note', text: 'Lecture 3' }] };
+  const { s } = session(vault, file, { start: () => { const v = start; start = null; return v; } });
+  assert.deepEqual(await s.handlers.start(), { noteLinks: [{ target: 'Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  assert.equal(await s.handlers.start(), null);
+  assert.equal(await session(vault, file).s.handlers.start(), null, 'a host without starting links');
 });
 
 test('session camera is kept per file; the link picker and links get the note path', async () => {

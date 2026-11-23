@@ -257,6 +257,80 @@ async function holdWord(page, frame) {
 }
 
 /** Click an element of the app's frame with the mouse. */
+test('a note made about a page starts with its link, saved at once; tags and links of the whole note reach the file and the index', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(async () => {
+    await host.vault.create('Lectures/Lecture 3.md', '# Lecture 3');
+    await host.vault.createBinary('Papers/Paper.pdf', new ArrayBuffer(4));
+    // What "New handwritten note linking here" leaves for the canvas.
+    host.starts.set('Lectures/Lecture 3 notes.bedrock', { noteLinks: [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  });
+  const frame = await openFile(page, 'Lectures/Lecture 3 notes.bedrock');
+  // Saved straight away, with no ink at all.
+  await until(page, () => host.vault.files.get('Lectures/Lecture 3 notes.bedrock').data.byteLength > 0);
+  await until(page, async () => (await host.files('Lectures/Lecture 3 notes.bedrock')).index?.includes('[[Lectures/Lecture 3|'));
+  let f = await page.evaluate(() => host.files('Lectures/Lecture 3 notes.bedrock'));
+  assert.equal(f.strokes, 0);
+  assert.deepEqual(f.noteLinks, [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }]);
+  assert.match(f.links, /- \[\[Lectures\/Lecture 3\|Lecture 3\]\]/, 'in links.md');
+  assert.match(f.index, /## Links\n\n- \[\[Lectures\/Lecture 3\|Lecture 3\]\]/, 'and in the index note, so it shows in backlinks and the graph');
+
+  // "Tags and links…" in the menu: add tags, a PDF page from the vault and a website.
+  await clickIn(page, frame, '#btn-menu');
+  await clickIn(page, frame, '#menu [data-action="note-info"]');
+  const panel = await frame.evaluate(() => ({
+    open: !document.getElementById('note-info').hidden,
+    links: [...document.querySelectorAll('#note-info .ni-open')].map((b) => b.textContent),
+    tags: document.querySelector('#note-info .ni-tags').textContent,
+  }));
+  assert.deepEqual(panel, { open: true, links: ['Lecture 3'], tags: 'No tags yet.' });
+  for (const t of ['#Exam prep', 'physics/forces', 'exam-PREP']) {
+    await frame.fill('#note-info .ni-tags + form input', t);
+    await frame.press('#note-info .ni-tags + form input', 'Enter');
+  }
+  assert.match(await frame.textContent('#note-info .wm-error'), /already a tag/, 'the same tag in another case is not added twice');
+  await clickIn(page, frame, '#note-info .ni-browse');
+  await frame.waitForSelector('#link-picker:not([hidden]) .lp-tree');
+  await frame.click('#link-picker .lp-folder[data-path="Papers"]');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Paper.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-page[data-page="2"]');
+  await frame.click('#link-picker .lp-page[data-page="2"]');
+  await until(frame, () => document.querySelectorAll('#note-info .ni-open').length === 2);
+  await frame.fill('#note-info .ni-links ~ form input', 'example.com/course');
+  await frame.press('#note-info .ni-links ~ form input', 'Enter');
+  const shown = await frame.evaluate(() => ({
+    links: [...document.querySelectorAll('#note-info .ni-open')].map((b) => b.title),
+    tags: [...document.querySelectorAll('#note-info .ni-tag span')].map((s) => s.textContent),
+    open: !document.getElementById('note-info').hidden,
+  }));
+  assert.deepEqual(shown, {
+    links: ['Lectures/Lecture 3', 'Papers/Paper.pdf#page=2', 'https://example.com/course'],
+    tags: ['#Exam-prep', '#physics/forces'],
+    open: true,
+  }, 'the panel stays open over the picker and shows what was added');
+  // Remove one tag and one link; open another.
+  await clickIn(page, frame, '#note-info .ni-tag:first-child .ni-remove');
+  await clickIn(page, frame, '#note-info .ni-link:nth-child(3) .ni-remove');
+  await clickIn(page, frame, '#note-info .ni-link:nth-child(2) .ni-open');
+  await until(page, () => host.calls.some((c) => c[0] === 'open'));
+  assert.deepEqual((await page.evaluate(() => host.calls)).filter((c) => c[0] === 'open'), [['open', 'Papers/Paper.pdf#page=2', 'Lectures/Lecture 3 notes.bedrock']]);
+
+  await frame.evaluate(() => bedrock.saveNow());
+  await until(page, async () => (await host.files('Lectures/Lecture 3 notes.bedrock')).index?.includes('physics/forces'));
+  f = await page.evaluate(() => host.files('Lectures/Lecture 3 notes.bedrock'));
+  assert.deepEqual(f.tags, ['physics/forces']);
+  assert.deepEqual(f.noteLinks.map((l) => l.target), ['Lectures/Lecture 3', 'Papers/Paper.pdf#page=2']);
+  assert.match(f.index, /^---\nbedrock: "Lectures\/Lecture 3 notes.bedrock"\ntags: \[bedrock, physics\/forces\]\n---/, 'Obsidian sees the tag');
+  assert.match(f.index, /## Links\n\n- \[\[Lectures\/Lecture 3\|Lecture 3\]\]\n- \[\[Papers\/Paper\.pdf#page=2\]\]\n/);
+
+  // Reopened, it is all still there, and the starting link is not added again.
+  const again = await openFile(page, 'Lectures/Lecture 3 notes.bedrock');
+  const info = await again.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()));
+  assert.deepEqual([info.tags, info.noteLinks.length], [['physics/forces'], 2]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 async function clickIn(page, frame, selector) {
   const b = await frame.evaluate((s) => document.querySelector(s).getBoundingClientRect().toJSON(), selector);
   await page.mouse.click(b.left + b.width / 2, b.top + b.height / 2);

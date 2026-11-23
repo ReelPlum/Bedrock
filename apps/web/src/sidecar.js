@@ -9,8 +9,9 @@
 // dropped into a vault is already indexed. Both use this one module; its
 // output is described in docs/note-format.md ("Markdown sidecar").
 //
-// Everything comes from the saved file (recognized.json and links.md in the
-// ZIP), so a sidecar can be rebuilt from any .bedrock file.
+// Everything comes from the saved file (recognized.json, links.md and the
+// tags in note.json, in the ZIP), so a sidecar can be rebuilt from any
+// .bedrock file.
 
 import { readZip, text } from './zip-read.js';
 
@@ -25,11 +26,19 @@ export function noteOfIndex(markdown) {
 
 const escapeText = (s) => s.replace(/([[\]])/g, '\\$1');
 
-/** Recognised text, in reading order as saved, and the links as Markdown.
+/** A tag as Obsidian takes it (letters, digits, `_`, `-`, `/`, not only
+ *  digits), as bedrock-core's `clean_tag` stores them. */
+export const isTag = (t) => typeof t === 'string' && /^[\p{L}\p{N}_\-/]+$/u.test(t) && !/^[\d/]+$/.test(t);
+
+// YAML would read these as something other than text: quote them.
+const yamlTag = (t) => (/^(true|false|null|yes|no|on|off|y|n|[-+]?[\d_]*\.?[\d_]+(e[-+]?\d+)?)$/i.test(t) ? JSON.stringify(t) : t);
+
+/** Recognised text, in reading order as saved, the links as Markdown and
+ *  the note's tags (`tags` in note.json).
  *  `items` keeps each piece of text with the strokes it was read from, so
  *  a place in the index note can be traced back to ink. */
 export async function readNoteText(bytes) {
-  const files = await readZip(bytes, ['recognized.json', 'links.md']);
+  const files = await readZip(bytes, ['recognized.json', 'links.md', 'note.json']);
   let items = [];
   try {
     const rec = JSON.parse(text(files.get('recognized.json')) || '{}');
@@ -41,18 +50,27 @@ export async function readNoteText(bytes) {
       .filter((i) => i.text);
   } catch (_) { /* damaged: no text */ }
   const links = text(files.get('links.md')).split('\n').filter((l) => /^- /.test(l));
-  return { words: items.map((i) => i.text), items, links };
+  let tags = [];
+  try {
+    // Only the top-level `tags` list is wanted: found without parsing every
+    // stroke of a big note. (Inside a JSON string a quote is escaped, so
+    // `"tags":[` there cannot match.)
+    const m = /[{,]"tags":(\[[^\]]*\])/.exec(text(files.get('note.json')));
+    const list = m ? JSON.parse(m[1]) : [];
+    if (Array.isArray(list)) tags = [...new Set(list.filter(isTag))].filter((t) => t.toLowerCase() !== 'bedrock');
+  } catch (_) { /* damaged: no tags */ }
+  return { words: items.map((i) => i.text), items, links, tags };
 }
 
 /** The index note's Markdown, and where each piece of text sits in it:
  *  `spans` are `{ start, end, strokes }` with offsets into `markdown`.
  *  `notePath` is the note's path from the vault (or export) root. */
-export function indexLayout(notePath, { words, items, links }) {
+export function indexLayout(notePath, { words, items, links, tags = [] }) {
   const name = notePath.split('/').pop().replace(/\.bedrock$/i, '');
   const head = [
     '---',
     `bedrock: ${JSON.stringify(notePath)}`,
-    'tags: [bedrock]',
+    `tags: [${['bedrock', ...tags.map(yamlTag)].join(', ')}]`,
     '---',
     `> Handwritten note: [[${notePath}|${name}]]. This index is written by the Bedrock plugin from the handwriting; changes made here are replaced.`,
     '',

@@ -71,7 +71,7 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   const { plugin, written } = await loaded();
   assert.deepEqual(Object.keys(plugin.views), ['bedrock-note']);
   assert.deepEqual(plugin.extensions, { bedrock: 'bedrock-note' });
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'report-problem', 'reindex']);
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex']);
   assert.equal(plugin.settingTabs.length, 1);
   assert.deepEqual([...written.keys()], [], 'the canvas is not unpacked: Obsidian would not let the view load it');
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
@@ -85,6 +85,91 @@ test('new notes are empty .bedrock files next to the open file, never overwritin
   await plugin.commands.find((c) => c.id === 'new-note').callback();
   assert.deepEqual(opened, ['Physics/Handwritten note.bedrock', 'Physics/Handwritten note 1.bedrock']);
   assert.equal(vault.files.get('Physics/Handwritten note.bedrock').data.byteLength, 0);
+});
+
+/** A PDF open in Obsidian's viewer, its pages `count` tall pages of 1000px
+ *  with the view scrolled to `scroll`: just the DOM pdfPageInView reads. */
+function pdfLeaf(file, count, scroll) {
+  const view = { top: 0, bottom: 800, left: 0, right: 600 };
+  const pages = Array.from({ length: count }, (_, i) => ({
+    dataset: { pageNumber: String(i + 1) },
+    getBoundingClientRect: () => ({ top: i * 1000 - scroll, bottom: (i + 1) * 1000 - scroll, left: 0, right: 600 }),
+    closest(sel) { return sel.startsWith('.page') ? this : null; },
+  }));
+  const containerEl = {
+    getBoundingClientRect: () => view,
+    querySelectorAll: () => pages,
+    contains: (el) => el === containerEl || pages.includes(el),
+    closest: () => null,
+  };
+  return { view: { file, containerEl, getViewType: () => 'pdf' }, pages };
+}
+
+test('a note or PDF offers "New handwritten note linking here": named after the page, it starts with a link to it', async () => {
+  const { plugin, vault, app, opened } = await loaded();
+  const lecture = await vault.create('Lectures/Lecture 3.md', '# Lecture 3');
+  const pdf = await vault.createBinary('Lectures/Week 3.pdf', new ArrayBuffer(0));
+  const index = await vault.create('Bedrock index/Forces.md', 'index');
+  const menuOf = async (event, ...args) => {
+    const menu = new fake.Menu();
+    await app.workspace.trigger(event, menu, ...args);
+    return menu.items.filter((i) => i.title === 'New handwritten note linking here');
+  };
+
+  // Right-click (a long press on the iPad) in a Markdown note.
+  const [fromEditor] = await menuOf('editor-menu', {}, { file: lecture });
+  assert.ok(fromEditor, 'the editor menu offers it');
+  await fromEditor.click();
+  assert.deepEqual(opened, ['Lectures/Lecture 3 notes.bedrock'], 'made next to the page, named after it, and opened');
+  assert.equal(vault.files.get('Lectures/Lecture 3 notes.bedrock').data.byteLength, 0, 'an empty file: the canvas writes the first save');
+  const file = vault.files.get('Lectures/Lecture 3 notes.bedrock');
+  assert.deepEqual(plugin.takeStart(file), { noteLinks: [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  assert.equal(plugin.takeStart(file), null, 'handed to the canvas once');
+
+  // A PDF's menu (its tab's ⋯, a right-click on it) links the page in view.
+  const leaf = pdfLeaf(pdf, 6, 3300);
+  const [fromTab] = await menuOf('file-menu', pdf, 'more-options', leaf);
+  await fromTab.click();
+  const pdfNote = vault.files.get('Lectures/Week 3 page 4 notes.bedrock');
+  assert.ok(pdfNote, `named after the page: ${opened.at(-1)}`);
+  assert.deepEqual(plugin.takeStart(pdfNote).noteLinks, [{ target: 'Lectures/Week 3.pdf#page=4', type: 'note', text: 'Week 3, page 4' }]);
+
+  // Right-clicking inside the PDF links the page under the pointer.
+  app.workspace.getLeavesOfType = (type) => (type === 'pdf' ? [leaf] : []);
+  const right = { fn: (ev) => plugin.pdfContextMenu(ev) };
+  const e = { target: leaf.pages[1], defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  fake.Menu.made.length = 0;
+  right.fn(e);
+  assert.ok(e.defaultPrevented, 'our menu is shown');
+  const [pageItem] = fake.Menu.made[0].items;
+  assert.equal(fake.Menu.made[0].shownAt, e);
+  await pageItem.click();
+  assert.ok(vault.files.get('Lectures/Week 3 page 2 notes.bedrock'), 'the page that was right-clicked');
+  // A right-click Obsidian already answered is left alone.
+  fake.Menu.made.length = 0;
+  right.fn({ target: leaf.pages[0], defaultPrevented: true, preventDefault() {} });
+  assert.equal(fake.Menu.made.length, 0);
+
+  // From the file explorer, a PDF that is not open links the whole file;
+  // index notes, handwritten notes and other files are not offered.
+  app.workspace.getLeavesOfType = () => [];
+  const [fromExplorer] = await menuOf('file-menu', pdf, 'file-explorer');
+  await fromExplorer.click();
+  const whole = vault.files.get('Lectures/Week 3 notes.bedrock');
+  assert.deepEqual(plugin.takeStart(whole).noteLinks, [{ target: 'Lectures/Week 3.pdf', type: 'note', text: 'Week 3' }]);
+  assert.equal((await menuOf('file-menu', index, 'file-explorer')).length, 0, 'not on index notes');
+  assert.equal((await menuOf('file-menu', whole, 'file-explorer')).length, 0, 'not on handwritten notes');
+
+  // The same again never overwrites: the next name is free.
+  await (await menuOf('editor-menu', {}, { file: lecture }))[0].click();
+  assert.equal(opened.at(-1), 'Lectures/Lecture 3 notes 1.bedrock');
+
+  // And from the command palette, for the note in front.
+  app.workspace.getMostRecentLeaf = () => ({ view: { file: lecture } });
+  const command = plugin.commands.find((c) => c.id === 'new-linked-note');
+  assert.equal(command.checkCallback(true), true);
+  app.workspace.getMostRecentLeaf = () => ({ view: { file: index } });
+  assert.equal(command.checkCallback(true), false, 'not for an index note');
 });
 
 test('the link picker is offered every vault file but the note itself and index notes, with its link text', async () => {

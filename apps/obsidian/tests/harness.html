@@ -52,6 +52,8 @@ async function pdfPage(path, page, width) {
 
 window.host = {
   vault,
+  /** Starting links of new notes, as the plugin's newNote leaves them. */
+  starts: new Map(),
   /** What the plugin does when Obsidian starts: ask for the invite code
    *  and consent. The "window" is a div here. Resolves to how it went. */
   launch() {
@@ -102,6 +104,7 @@ window.host = {
       pdfPage,
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
+      start: () => { const st = host.starts.get(file.path) ?? null; host.starts.delete(file.path); return st; },
       onReady: () => { tellInset(keyboard.covered()); ready(); },
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
@@ -119,7 +122,7 @@ window.host = {
     const z = await readZip(f.data);
     const note = JSON.parse(text(z.get('note.json')) || '{}');
     const index = vault.files.get(indexer.pathFor(path))?.data ?? null;
-    return { strokes: (note.strokes || []).length, links: text(z.get('links.md')), index, size: f.data.byteLength };
+    return { strokes: (note.strokes || []).length, links: text(z.get('links.md')), index, size: f.data.byteLength, noteLinks: note.noteLinks ?? null, tags: note.tags ?? null };
   },
   /** Click a search result: `text` as found in the note's index note.
    *  Works out the ink as the plugin does and asks the open view to show

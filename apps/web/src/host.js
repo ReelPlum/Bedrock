@@ -120,6 +120,9 @@ function connect() {
     store: () => new HostStore(rpc),
     /** Let the host run app functions it needs (e.g. save before closing). */
     on: (event, fn) => rpc.on(event, fn),
+    /** What a new note starts with, if the host made it about something:
+     *  `{ noteLinks: [{ target, type, text }], tags: [] }`, or null. */
+    start: () => rpc.call('start'),
     /** Tell the host the app is ready for events. */
     ready: () => rpc.call('ready'),
   };

@@ -1025,6 +1025,28 @@ impl Canvas {
     pub fn set_title(&mut self, t: &str) {
         self.engine.doc.title = t.to_string();
     }
+    /// The whole note's links and tags, not tied to ink:
+    /// `{ "noteLinks": [{target, type, text?}], "tags": [...] }`.
+    pub fn note_info_json(&self) -> String {
+        let d = &self.engine.doc;
+        serde_json::json!({ "noteLinks": d.note_links, "tags": d.tags }).to_string()
+    }
+    /// Link the whole note somewhere (`kind` "url" or "note"); false if the
+    /// target is blank or already linked. `text` "" means none.
+    pub fn add_note_link(&mut self, target: &str, kind: &str, text: &str) -> bool {
+        self.engine.doc.add_note_link(target, kind, Some(text))
+    }
+    pub fn remove_note_link(&mut self, target: &str) -> bool {
+        self.engine.doc.remove_note_link(target)
+    }
+    /// Tag the note; the tag as stored (spaces become `-`, `#` is dropped),
+    /// or "" if it is not a tag or the note already has it.
+    pub fn add_tag(&mut self, tag: &str) -> String {
+        self.engine.doc.add_tag(tag).unwrap_or_default()
+    }
+    pub fn remove_tag(&mut self, tag: &str) -> bool {
+        self.engine.doc.remove_tag(tag)
+    }
     pub fn paper(&self) -> String {
         self.engine.doc.paper.clone()
     }

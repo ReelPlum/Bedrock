@@ -11,6 +11,7 @@
 //! | `v1-first-release` | commit dc1b86b, the first note format |
 //! | `v1-before-pictures` | commit 46539c1: links, word groups, text/maths, line styles, stabiliser |
 //! | `v1-pictures-and-text-boxes` | Nov 12 2026: pictures, text boxes and per-stroke pen tuning |
+//! | `v1-before-note-links` | Nov 23 2026 (commit 8048376), before note links and tags: a link to a PDF page on a word |
 
 use bedrock_core::brush::{BrushKind, LineStyle};
 use bedrock_core::document::Document;
@@ -120,6 +121,27 @@ fn notes_with_pictures_and_text_boxes_still_open() {
                 let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
                 assert_eq!(d.assets.get(&pic.file), Some(&png), "{what}: the picture file");
             }
+        }
+    }
+}
+
+#[test]
+fn notes_from_before_note_links_and_tags_still_open() {
+    for ext in FORMATS {
+        let what = format!("v1-before-note-links.{ext}");
+        let first = open("v1-before-note-links", ext);
+        let again = (ext != "json").then(|| resave(&first));
+        for d in std::iter::once(first).chain(again) {
+            assert_eq!(d.title, "Before note links", "{what}");
+            check_common(&d, &what);
+            let s = d.strokes();
+            assert_eq!(d.live_links().len(), 2, "{what}");
+            assert_eq!(d.links[1].target, "Lectures/Week 3.pdf#page=4", "{what}");
+            assert_eq!(d.links[1].strokes, [s[2].id], "{what}");
+            assert_eq!(d.images().len(), 2, "{what}");
+            assert!(d.note_links.is_empty(), "{what}: no note links before they existed");
+            assert!(d.tags.is_empty(), "{what}: no tags before they existed");
+            assert!(d.extra.is_empty(), "{what}: nothing taken for an unknown field");
         }
     }
 }

@@ -53,6 +53,13 @@ just before the change, kept as a fixture that is never regenerated.
 <!-- test: the_first_note_format_still_opens -->
 <!-- test: notes_from_before_pictures_still_open -->
 <!-- test: notes_with_pictures_and_text_boxes_still_open -->
+<!-- test: notes_from_before_note_links_and_tags_still_open -->
+
+#### Scenario: Index notes from before tags
+- **GIVEN** an index note written before tags existed (`apps/obsidian/tests/fixtures/index-before-tags.md`)
+- **WHEN** its note, which has no tags, is indexed again
+- **THEN** the index note comes out byte for byte the same, and the old one still names its note
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: index notes from before tags: an untagged note indexes the same, and old index notes still open their note -->
 
 #### Scenario: A newer file is read as far as possible
 - **GIVEN** a note from a newer version with fields this version does not know

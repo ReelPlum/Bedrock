@@ -39,6 +39,24 @@
         }
       }
     },
+    "noteLinks": {
+      "description": "Links of the whole note, not tied to any ink (for example the page the note was made about)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target"],
+        "properties": {
+          "target": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "description": "url | note | later kinds; unknown kinds are kept", "default": "url" },
+          "text": { "type": "string", "description": "What to call the link" }
+        }
+      }
+    },
+    "tags": {
+      "description": "The note's tags, in Obsidian's form without '#': letters, digits, '_', '-', '/' for nesting",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[^\\s#]+$" }
+    },
     "groups": {
       "description": "Strokes the writer made into one word, overriding the automatic word split",
       "type": "array",

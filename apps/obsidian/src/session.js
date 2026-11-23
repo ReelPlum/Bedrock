@@ -31,9 +31,10 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {(stroke: string, sourcePath: string) => Promise<void>} [o.copyLink]  put a link to the word with this stroke on the clipboard
  * @param {(report: object) => Promise<string>} [o.sendReport]  send an error report from the canvas ("Share with the Bedrock team")
  * @param {{ job: (name: string, fn: () => any) => any }} [o.perf]  times reads, writes and index updates (perf.js)
+ * @param {() => ({noteLinks: object[]} | null)} [o.start]  what a new note starts with (a link to the page it was made about), once
  * @param {() => void} [o.onReady]
  */
-export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf }) {
+export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, start }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // mtime of our own last write, to tell our saves from outside changes.
   let ownMtime = null;
@@ -45,6 +46,8 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
     isOutsideChange(f) { return f === file() && !inFlight && f.stat.mtime !== ownMtime; },
     handlers: {
       ready: async () => { onReady?.(); return true; },
+      // A new note's starting links ("New handwritten note linking here").
+      start: async () => start?.() ?? null,
       read: async () => {
         const f = file();
         const data = await job('read', () => vault.readBinary(f));

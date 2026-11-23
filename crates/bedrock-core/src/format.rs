@@ -143,6 +143,12 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     if !links.is_empty() {
         root.insert("links".into(), serde_json::to_value(&links).expect("links serialise"));
     }
+    if !doc.note_links.is_empty() {
+        root.insert("noteLinks".into(), serde_json::to_value(&doc.note_links).expect("note links serialise"));
+    }
+    if !doc.tags.is_empty() {
+        root.insert("tags".into(), serde_json::to_value(&doc.tags).expect("tags serialise"));
+    }
     let kinds = doc.live_kinds();
     if !kinds.is_empty() {
         root.insert("kinds".into(), serde_json::to_value(&kinds).expect("kinds serialise"));
@@ -175,7 +181,7 @@ fn json_with(doc: &Document, recognition: bool) -> String {
     serde_json::to_string(&Value::Object(root)).expect("json")
 }
 
-const KNOWN_KEYS: [&str; 16] = [
+const KNOWN_KEYS: [&str; 18] = [
     "format",
     "version",
     "title",
@@ -188,6 +194,8 @@ const KNOWN_KEYS: [&str; 16] = [
     "strokes",
     "recognition",
     "links",
+    "noteLinks",
+    "tags",
     "groups",
     "kinds",
     "images",
@@ -315,6 +323,30 @@ pub fn from_json(json: &str, seed: u64) -> Result<Loaded, FormatError> {
         match serde_json::from_value::<Vec<crate::document::Link>>(l.clone()) {
             Ok(l) => doc.links = l,
             Err(e) => warnings.push(format!("links skipped: {e}")),
+        }
+    }
+    if let Some(l) = obj.get("noteLinks") {
+        match serde_json::from_value::<Vec<crate::document::NoteLink>>(l.clone()) {
+            Ok(l) => {
+                for l in l {
+                    if !doc.add_note_link(&l.target, &l.kind, l.text.as_deref()) {
+                        warnings.push(format!("note link to {:?} skipped: empty or listed twice", l.target));
+                    }
+                }
+            }
+            Err(e) => warnings.push(format!("note links skipped: {e}")),
+        }
+    }
+    if let Some(t) = obj.get("tags") {
+        match serde_json::from_value::<Vec<String>>(t.clone()) {
+            Ok(t) => {
+                for t in t {
+                    if doc.add_tag(&t).as_deref() != Some(t.as_str()) {
+                        warnings.push(format!("tag {t:?} cleaned or skipped: not a tag, or listed twice"));
+                    }
+                }
+            }
+            Err(e) => warnings.push(format!("tags skipped: {e}")),
         }
     }
     if let Some(k) = obj.get("kinds") {
@@ -638,18 +670,22 @@ pub fn recognition_json(doc: &Document) -> String {
 
 /// The note's links as Markdown, one per line: `[[Name]]` for notes (the
 /// form Obsidian's graph understands) and `[text](url)` for web addresses.
-/// The authoritative copy is `links` in note.json, tied to the strokes.
+/// The authoritative copies are `noteLinks` (the whole note's, listed
+/// first) and `links` (tied to strokes) in note.json.
 pub fn links_markdown(doc: &Document) -> String {
     let mut out = format!("# Links in {}\n\n", if doc.title.is_empty() { "this note" } else { &doc.title });
     let esc = |t: &str| t.replace('[', "\\[").replace(']', "\\]");
-    for l in doc.live_links() {
-        let text = l.text.as_deref().filter(|t| !t.is_empty());
-        let line = match l.kind.as_str() {
+    // Links of the whole note first, then the links of words.
+    let whole = doc.note_links.iter().map(|l| (l.kind.clone(), l.target.clone(), l.text.clone()));
+    let words = doc.live_links().into_iter().map(|l| (l.kind, l.target, l.text));
+    for (kind, target, text) in whole.chain(words) {
+        let text = text.as_deref().filter(|t| !t.is_empty());
+        let line = match kind.as_str() {
             "note" => match text {
-                Some(t) if t != l.target => format!("[[{}|{}]]", l.target, esc(t)),
-                _ => format!("[[{}]]", l.target),
+                Some(t) if t != target => format!("[[{}|{}]]", target, esc(t)),
+                _ => format!("[[{}]]", target),
             },
-            _ => format!("[{}](<{}>)", esc(text.unwrap_or(&l.target)), l.target),
+            _ => format!("[{}](<{}>)", esc(text.unwrap_or(&target)), target),
         };
         out.push_str(&format!("- {line}\n"));
     }
@@ -849,6 +885,69 @@ mod tests {
         let d = from_json(json, 0).unwrap().doc;
         let out = to_json(&d);
         assert!(out.contains(r##""layers":[{"name":"a"}]"##));
+    }
+
+    #[test]
+    fn note_links_and_tags_are_saved_without_any_ink() {
+        let mut d = Document::new(1);
+        d.title = "Week 3".into();
+        assert!(d.add_note_link("Lectures/Week 3.pdf#page=4", "note", Some("Week 3, page 4")));
+        assert!(!d.add_note_link("Lectures/Week 3.pdf#page=4", "note", None), "not twice");
+        assert!(!d.add_note_link("  ", "url", None), "not blank");
+        assert!(d.add_note_link("https://example.com/", "url", None));
+        assert_eq!(d.add_tag("#Exam prep").as_deref(), Some("Exam-prep"));
+        assert_eq!(d.add_tag("physics/forces").as_deref(), Some("physics/forces"));
+        assert_eq!(d.add_tag("exam-PREP"), None, "the same tag in another case");
+        assert_eq!(d.add_tag("2026"), None, "only digits is not a tag");
+        assert_eq!(d.add_tag("#"), None);
+        // No strokes at all: both are still saved, in every format.
+        for bytes in [to_bedrock(&d), to_json(&d).into_bytes(), to_svg(&d).into_bytes()] {
+            let back = load_bytes(&bytes, 2).unwrap();
+            assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+            assert_eq!(back.doc.note_links, d.note_links);
+            assert_eq!(back.doc.tags, ["Exam-prep", "physics/forces"]);
+        }
+        let md = links_markdown(&d);
+        assert_eq!(md, "# Links in Week 3\n\n- [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]\n- [https://example.com/](<https://example.com/>)\n");
+        let (files, _) = crate::zip::read(&to_bedrock(&d)).unwrap();
+        let links = &files.iter().find(|(n, _)| n == LINKS_MD).unwrap().1;
+        assert_eq!(std::str::from_utf8(links).unwrap(), md);
+        assert!(d.remove_tag("#exam-prep") && d.remove_note_link("https://example.com/"));
+        assert_eq!((d.tags.len(), d.note_links.len()), (1, 1));
+    }
+
+    #[test]
+    fn note_links_come_before_word_links_in_links_md() {
+        let mut d = Document::new(1);
+        let id = d.next_id();
+        d.add_stroke(Stroke::new(
+            id,
+            Brush::new(BrushKind::Pen, Rgba::rgb(0, 0, 0), 2.0),
+            0.0,
+            InputDevice::Pen,
+            vec![InputPoint::new(0.0, 0.0, 0.5), InputPoint::new(5.0, 0.0, 0.5)],
+        ));
+        d.set_link(&[id], "Ideas", "note");
+        d.add_note_link("Lecture 3", "note", None);
+        let md = links_markdown(&d);
+        assert_eq!(md.lines().filter(|l| l.starts_with("- ")).collect::<Vec<_>>(), ["- [[Lecture 3]]", "- [[Ideas]]"]);
+    }
+
+    #[test]
+    fn damaged_note_links_and_tags_never_cost_ink() {
+        let json = r##"{"format":"bedrock-note","version":1,
+            "strokes":[{"id":"00000000000000aa","brush":{"kind":"pen","color":"#000000ff","size":2},"points":[0,0,0.5,1.5,0,0, 5,0,0.5,1.5,0,4]}],
+            "noteLinks":[{"target":"A","type":"note"},{"target":"A"},{"target":""}],
+            "tags":["ok","has space","ok"]}"##;
+        let back = from_json(json, 0).unwrap();
+        assert_eq!(back.doc.strokes().len(), 1);
+        assert_eq!(back.doc.note_links.len(), 1);
+        assert_eq!(back.doc.tags, ["ok", "has-space"]);
+        assert_eq!(back.warnings.len(), 4, "{:?}", back.warnings);
+        let broken = r##"{"format":"bedrock-note","version":1,"strokes":[],"noteLinks":"nope","tags":{"a":1}}"##;
+        let back = from_json(broken, 0).unwrap();
+        assert!(back.doc.note_links.is_empty() && back.doc.tags.is_empty());
+        assert_eq!(back.warnings.len(), 2, "{:?}", back.warnings);
     }
 
     #[test]
