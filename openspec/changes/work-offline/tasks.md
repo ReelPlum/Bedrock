@@ -13,5 +13,5 @@
 - [x] 2.1 `sw.js`: own caches only, pinned library cache, navigation-only fallback
 - [x] 2.2 `recognizer-worker.js`: no local model requests
 - [x] 2.3 `handwriting.js`: offline failures wait; `retryWaiting`
-- [x] 2.4 `main.js`: register in any secure context, persistent storage, `online` retries
+- [x] 2.4 `main.js`: register in any secure context, `online` retries (persistent storage is in `cut-bandwidth-and-storage`)
 - [x] 2.5 Spec scenarios cite their tests

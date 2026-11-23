@@ -1628,13 +1628,20 @@ async function main() {
   else await newNote();
 
   // Offline (see the web-app-delivery spec): the service worker keeps the
-  // app's files (not inside a host, which has its own copy), the browser is
-  // asked not to clear notes and models when space runs low, and what waited
+  // app's files (not inside a host, which has its own copy), and what waited
   // for a connection goes as soon as there is one again.
   if ('serviceWorker' in navigator && window.isSecureContext && !host) {
+    // The dictionary is downloaded only while spelling is on, so the
+    // service worker does not fetch it at install. On the first visit it
+    // was fetched before the service worker took over: fetch it once more
+    // through it (from the browser's cache when it can), so spelling works
+    // offline too.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!settings.spelling) return;
+      for (const f of ['dict/en.aff', 'dict/en.dic.gz']) fetch(asset(f)).catch(() => {});
+    });
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  if (!host) navigator.storage?.persist?.().catch(() => {});
   window.addEventListener('online', () => {
     handwriting.retryWaiting();
     autoSender.flush().catch(() => {});

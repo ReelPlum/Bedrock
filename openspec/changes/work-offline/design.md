@@ -35,11 +35,19 @@ word's status says it waits for a connection, a toast says so once, and the
 `online` event schedules a pass. `onLine === true` with no real connection
 still counts as a failure, as before.
 
-## Persistent storage
+## Persistent storage and files downloaded on first use
 
-`navigator.storage.persist()` asks the browser to keep IndexedDB (the
-notes) and the caches when space runs low. Safari and Chrome decide without
-asking; Firefox asks the person once. It is not called inside a host.
+Persistent storage (`navigator.storage.persist()`) is asked for by the
+`cut-bandwidth-and-storage` change, after the first save; this change does
+not ask again.
+
+That change also downloads the spelling dictionary only while spelling is
+on, and PDF import only when a PDF is opened. The service worker used to
+fetch the dictionary at install anyway, so it is no longer in `SHELL`: like
+PDF import, it is kept for offline the first time it is used. On the very
+first visit the dictionary is fetched before the service worker takes over,
+so when it does (`controllerchange`) and spelling is on, the app fetches the
+two dictionary files once more through it.
 
 ## Open source used
 

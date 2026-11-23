@@ -42,10 +42,12 @@ Two bugs came out of it:
   counted as a failed try; it shows "Waiting for a connection to download
   the handwriting model" and is read on the `online` event.
 - `main.js`: the service worker is registered in any secure context (also
-  `localhost`, so the tests run with it), not inside a host; asks for
-  persistent storage (`navigator.storage.persist()`) so the browser does not
-  clear notes and models when space runs low; on `online`, waiting words
-  are read and automatic reports are retried.
+  `localhost`, so the tests run with it), not inside a host; on `online`,
+  waiting words are read and automatic reports are retried. (Persistent
+  storage is asked for by `cut-bandwidth-and-storage`.)
+- `sw.js` no longer fetches the spelling dictionary at install, so it is
+  downloaded only while spelling is on (`cut-bandwidth-and-storage`); its
+  first use keeps it for offline.
 
 ## Data formats
 
