@@ -281,7 +281,12 @@ Newton Hooke
 ## Links
 
 - [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]
+- [[School/Physics/Gravity.bedrock#^00000000000000aa|Newton]]
 - [[Ideas]]
+
+## Linked handwritten notes
+
+- [[School/Physics/Gravity.bedrock.md|Gravity]]
 ```
 
 `bedrock` is the note's path from the vault (or export) root. `tags` is
@@ -291,7 +296,13 @@ as something other than text, such as `"true"`); a note without tags has
 the recognised items in saved order, separated by spaces, with `[` and `]`
 escaped so handwriting never becomes a link; `_Nothing read yet._` when
 there is none. `## Links` is present only when the note has links, and is
-the list from `links.md`. A sidecar is derived data: it is rewritten from
+the list from `links.md`. `## Linked handwritten notes` is present only
+when those links lead to other handwritten notes (`.bedrock`): it links
+each one's index note once (its sidecar, or in Obsidian its note in the
+index folder), so a graph that hides `.bedrock` files still shows the link
+between the two notes. Index notes written before this section read and
+open as before; the Obsidian plugin adds the section the next time it
+indexes the vault. A sidecar is derived data: it is rewritten from
 the note, and losing it loses nothing.
 
 ## An exported library

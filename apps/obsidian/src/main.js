@@ -231,7 +231,8 @@ export default class BedrockPlugin extends Plugin {
     // The canvas's pages and files, handed to it from memory (inline-app.js).
     this.webApp = new InlineApp(bundle);
     this.register(() => this.webApp.revoke());
-    this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
+    this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder,
+      (link, source) => this.app.metadataCache.getFirstLinkpathDest?.(link, source)?.path ?? null);
     // A PDF's pages for the canvas's link picker, drawn with Obsidian's own PDF.js.
     this.pdfPages = new PdfPages({
       pdfjs: () => loadPdfJs(),
