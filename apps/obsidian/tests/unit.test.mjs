@@ -263,7 +263,7 @@ function session(vault, file, extra = {}) {
     file: () => file,
     indexer: new Indexer(vault),
     kv: { get: (k) => kvStore.get(k), set: async (k, v) => { kvStore.set(k, v); } },
-    pickNote: async (query, source) => { calls.push(['pick', query, source]); return 'Ideas'; },
+    listFiles: async (source) => { calls.push(['list', source]); return [{ path: 'Ideas.md', link: 'Ideas' }]; },
     openLink: (target, source) => calls.push(['open', target, source]),
     ...extra,
   });
@@ -333,7 +333,7 @@ test('the app can ask for a link to a word; only real stroke ids are accepted', 
   assert.equal(await session(vault, file).s.handlers['copy-link']({ stroke: 'ab' }), false);
 });
 
-test('session camera is kept per file; picker and links get the note path', async () => {
+test('session camera is kept per file; the link picker and links get the note path', async () => {
   const vault = new FakeVault();
   const a = await vault.createBinary('A.bedrock', new ArrayBuffer(0));
   const b = await vault.createBinary('B.bedrock', new ArrayBuffer(0));
@@ -343,9 +343,16 @@ test('session camera is kept per file; picker and links get the note path', asyn
   await sa.s.handlers['set-kv']({ key: 'camera:4f2a', value: [1, 2, 3] });
   assert.deepEqual(await sa.s.handlers['get-kv']({ key: 'camera:other-id' }), [1, 2, 3], 'note ids inside the app do not matter');
   assert.equal(await sb.s.handlers['get-kv']({ key: 'camera:4f2a' }), null);
-  assert.equal(await sa.s.handlers['pick-note']({ query: 'Ide' }), 'Ideas');
+  assert.deepEqual(await sa.s.handlers['list-files'](), [{ path: 'Ideas.md', link: 'Ideas' }]);
   await sa.s.handlers['open-link']({ type: 'note', target: 'Ideas' });
-  assert.deepEqual(sa.calls, [['pick', 'Ide', 'A.bedrock'], ['open', 'Ideas', 'A.bedrock']]);
+  assert.deepEqual(sa.calls, [['list', 'A.bedrock'], ['open', 'Ideas', 'A.bedrock']]);
+  // The picker may read other handwritten notes (for their picture), nothing else.
+  await vault.createBinary('B2.bedrock', new Uint8Array([1, 2, 3]).buffer);
+  await vault.create('Secret.md', 'text');
+  assert.deepEqual([...new Uint8Array((await sa.s.handlers['read-note']({ path: 'B2.bedrock' })).data)], [1, 2, 3]);
+  await assert.rejects(sa.s.handlers['read-note']({ path: 'Secret.md' }), /Not a handwritten note/);
+  await assert.rejects(sa.s.handlers['read-note']({ path: 'Missing.bedrock' }), /Not a handwritten note/);
+  await assert.rejects(sa.s.handlers['pdf-page']({ path: 'Paper.pdf', page: 1, width: 300 }), /Not a PDF/, 'no PDF renderer in this session');
 });
 
 /** Two fake windows joined like a page and its iframe. */
@@ -483,10 +490,10 @@ test('reports are sent with requestUrl, and failures say what to do', async () =
 test('the canvas sends its error reports through the plugin', async () => {
   const vault = new FakeVault();
   const sent = [];
-  const session = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {}, sendReport: async (r) => { sent.push(r); return r.id; } });
+  const session = createSession({ vault, file: () => null, kv: {}, openLink: () => {}, sendReport: async (r) => { sent.push(r); return r.id; } });
   assert.deepEqual(await session.handlers['send-report']({ report: { id: 'x' } }), { id: 'x' });
   assert.deepEqual(sent, [{ id: 'x' }]);
-  const none = createSession({ vault, file: () => null, kv: {}, pickNote: async () => null, openLink: () => {} });
+  const none = createSession({ vault, file: () => null, kv: {}, openLink: () => {} });
   await assert.rejects(none.handlers['send-report']({ report: { id: 'x' } }), /not switched on/);
 });
 
@@ -498,7 +505,7 @@ test('slow reads, writes and index updates are logged with what was running', as
   const perf = pluginWatcher(log, { mobile: true }).configure({ now: () => t });
   const slowVault = Object.create(vault);
   slowVault.modifyBinary = async (f, buf) => { t += 2500; return vault.modifyBinary(f, buf); };
-  const s = createSession({ vault: slowVault, file: () => file, indexer: null, kv: {}, pickNote: async () => null, openLink: () => {}, perf });
+  const s = createSession({ vault: slowVault, file: () => file, indexer: null, kv: {}, openLink: () => {}, perf });
   await s.handlers.read({});
   assert.equal(log.entries().length, 0, 'a quick read is not logged');
   await s.handlers.write({ data: new Uint8Array(note(['Newton'])) });
