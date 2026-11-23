@@ -25,12 +25,20 @@ export const LAUNCH_GATE = true;
  *  Saving stays off while it is empty. */
 export const DEFAULT_API = 'https://bedrock-collect.reelplum.workers.dev';
 
-/** The host name of the server the page came from. A page that a host
- *  wrote into its iframe (the Obsidian plugin's, `about:srcdoc`) has none
- *  of its own: it is the host page's, which its origin tells. */
+/** The host (name and port) of the server the page came from. A page that
+ *  a host wrote into its iframe (the Obsidian plugin's, `about:srcdoc`) has
+ *  none of its own: it is the host page's, which its origin tells. */
 export function pageHost(g = globalThis) {
-  if (g.location?.hostname) return g.location.hostname;
-  try { return new URL(g.origin).hostname; } catch (_) { return ''; }
+  if (g.location?.hostname) return g.location.host || g.location.hostname;
+  try { return new URL(g.origin).host; } catch (_) { return ''; }
+}
+
+/** A page served from this computer for development and tests: always on
+ *  a port. Obsidian on iPad (`capacitor://localhost`) and Android
+ *  (`http://localhost`) is `localhost` too, but with no port, and is the
+ *  real app. */
+function isDevHost(host) {
+  return /^(localhost|127\.0\.0\.1):\d+$/.test(host || '');
 }
 
 /** Where samples go: always `DEFAULT_API`, except on a page served from
@@ -38,7 +46,7 @@ export function pageHost(g = globalThis) {
  *  and may set `bedrockNoBuiltInApi` before the page loads to act as if
  *  no address were built in, so tests never reach the real backend. */
 export function apiAddress(stored, host = pageHost()) {
-  const local = host === 'localhost' || host === '127.0.0.1';
+  const local = isDevHost(host);
   if (local && typeof stored === 'string' && stored) return stored;
   return local && globalThis.bedrockNoBuiltInApi === true ? '' : DEFAULT_API;
 }
@@ -47,7 +55,7 @@ export function apiAddress(stored, host = pageHost()) {
  *  served from this computer may switch it off (tests of the optional
  *  mode set `bedrockNoLaunchGate` before the page loads). */
 export function gateRequired(s = loadState(), host = pageHost()) {
-  const local = host === 'localhost' || host === '127.0.0.1';
+  const local = isDevHost(host);
   if (local && globalThis.bedrockNoLaunchGate === true) return false;
   return LAUNCH_GATE && isSafeApi(s.api);
 }
@@ -66,7 +74,8 @@ export async function checkCode(code, s = loadState()) {
   let res;
   try {
     res = await fetch(`${s.api}/v1/stats`, { headers: { Authorization: `Bearer ${String(code).trim()}` } });
-  } catch (_) {
+  } catch (e) {
+    try { console.warn(`Bedrock: the code could not be checked: no answer from ${s.api} (${e?.message || e}). It is kept and checked when samples are sent.`); } catch (_) { /* no console */ }
     return 'offline';
   }
   if (res.status === 401 || res.status === 403) return 'wrong';
@@ -431,15 +440,33 @@ export async function postJson(url, hdrs, body) {
   return again;
 }
 
+/** Says in the console why samples did not go, so it can be found
+ *  without a debugger. Never includes the code or any ink. */
+function warnNotSent(why) {
+  try { console.warn(`Bedrock: samples were not sent: ${why}`); } catch (_) { /* no console */ }
+}
+
+/** `HTTP 401 invite: a valid invite code is needed`, from the server's
+ *  `{ error, detail }` answer when it gave one. */
+async function refusal(res) {
+  let v = null;
+  try { v = await res.clone().json(); } catch (_) { /* not JSON */ }
+  const code = typeof v?.error === 'string' ? ` ${v.error.slice(0, 40)}` : '';
+  const detail = typeof v?.detail === 'string' ? `: ${v.detail.slice(0, 200)}` : '';
+  return `HTTP ${res.status}${code}${detail}`;
+}
+
 /** Sends one batch. Returns the ids to take off the queue, or throws
  *  `{ later: true }` when it should be tried again later. */
 async function send(s, batch) {
   let res;
   try {
     res = await postJson(`${s.api}/v1/samples`, headers(s), JSON.stringify({ contributor: contributor(s), samples: batch }));
-  } catch (_) {
+  } catch (e) {
+    warnNotSent(`no answer from ${s.api} (offline, or the browser blocked the request: ${e?.message || e})`);
     throw { later: true, problem: 'offline' };
   }
+  if (!res.ok && res.status !== 400 && res.status !== 413) warnNotSent(await refusal(res));
   if (res.status === 401) throw { later: true, problem: 'code', stop: true };
   if (res.status === 400 || res.status === 413) {
     // The request as a whole was refused. One sample at a time finds the

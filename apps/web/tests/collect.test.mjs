@@ -167,7 +167,15 @@ test('people cannot change the server address: there is no field, and only a pag
     return {
       site: c.apiAddress('https://someone-else.example', 'reelplum.github.io'),
       plugin: c.apiAddress('https://someone-else.example', ''),
-      local: c.apiAddress('http://127.0.0.1:8787', '127.0.0.1'),
+      local: c.apiAddress('http://127.0.0.1:8787', '127.0.0.1:8080'),
+      // Bug: Obsidian on iPad and Android runs at capacitor://localhost and
+      // http://localhost (no port). It was taken for a development page, so
+      // an address stored by an older version was used instead of the
+      // backend, and the code check and every upload went nowhere.
+      ipad: c.pageHost({ origin: 'capacitor://localhost' }),
+      mobile: c.apiAddress('https://old.example', c.pageHost({ origin: 'capacitor://localhost' })),
+      android: c.apiAddress('https://old.example', c.pageHost({ location: { host: 'localhost', hostname: 'localhost' } })),
+      dev: c.pageHost({ location: { host: '127.0.0.1:8080', hostname: '127.0.0.1' } }),
       built: c.DEFAULT_API,
       agreed: c.agree({ code: 'x', api: 'https://someone-else.example' }, { getItem: () => null, setItem() {} }).api,
     };
@@ -175,6 +183,10 @@ test('people cannot change the server address: there is no field, and only a pag
   assert.equal(r.site, r.built, 'the site always uses the built-in address');
   assert.equal(r.plugin, r.built);
   assert.equal(r.local, 'http://127.0.0.1:8787');
+  assert.equal(r.ipad, 'localhost');
+  assert.equal(r.mobile, r.built, 'Obsidian on iPad uses the built-in address');
+  assert.equal(r.android, r.built, 'Obsidian on Android uses the built-in address');
+  assert.equal(r.dev, '127.0.0.1:8080');
   assert.notEqual(r.agreed, 'https://someone-else.example', 'agreeing cannot set it either');
   assert.equal(r.built, 'https://bedrock-collect.reelplum.workers.dev', 'the deployed backend is built in');
   await ctx.close();
@@ -403,9 +415,31 @@ test('a wrong invite code keeps the samples and says so', async () => {
   await agree(setup.page);
   server.answer = () => ({ status: 401, body: { error: 'invite' } });
   const { page } = await openTrainer(ctx);
+  const logged = [];
+  page.on('console', (m) => logged.push(`${m.type()}: ${m.text()}`));
   await writeOne(page);
   await settle(page, () => /invite code was not accepted/.test(document.getElementById('saving').textContent));
   assert.equal(await waiting(page), 1);
+  // Bug: nothing was written to the console, so a refused upload could not
+  // be told apart from one that was never tried. It says why, without the code.
+  const line = logged.find((l) => /samples were not sent/.test(l));
+  assert.ok(line, `the console says why: ${logged.join(' | ')}`);
+  assert.match(line, /^warning: .*401.*invite/);
+  assert.ok(!line.includes(CODE), 'the code itself is never logged');
+  await ctx.close();
+});
+
+test('bug: an upload with no connection says so in the console', async () => {
+  const { ctx, server } = await context();
+  const setup = await openSetup(ctx);
+  await agree(setup.page);
+  server.answer = (r) => (r.method === 'POST' ? 'abort' : null);
+  const { page } = await openTrainer(ctx);
+  const logged = [];
+  page.on('console', (m) => logged.push(`${m.type()}: ${m.text()}`));
+  await writeOne(page);
+  await settle(page, () => /1 waiting/.test(document.getElementById('count').textContent));
+  assert.ok(logged.some((l) => /^warning: .*samples were not sent.*no answer/.test(l)), logged.join(' | '));
   await ctx.close();
 });
 
