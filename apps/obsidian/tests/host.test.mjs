@@ -846,6 +846,34 @@ test('on a computer the note is view only: pen and mouse move the page, nothing 
   await ctx.close();
 });
 
+test('a note made on a computer about a page keeps its link, and is view only after that', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(async () => {
+    await host.vault.create('Lectures/Lecture 3.md', '# Lecture 3');
+    // What "New handwritten note linking here" leaves for the canvas.
+    host.starts.set('Lectures/Lecture 3 notes.bedrock', { noteLinks: [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }] });
+  });
+  const frame = await openFile(page, 'Lectures/Lecture 3 notes.bedrock', { viewOnly: true });
+  // The link is saved at once, with no ink, as on the iPad.
+  await until(page, () => host.vault.files.get('Lectures/Lecture 3 notes.bedrock').data.byteLength > 0);
+  await until(page, async () => (await host.files('Lectures/Lecture 3 notes.bedrock')).index?.includes('[[Lectures/Lecture 3|'));
+  const f = await page.evaluate(() => host.files('Lectures/Lecture 3 notes.bedrock'));
+  assert.equal(f.strokes, 0);
+  assert.deepEqual(f.noteLinks, [{ target: 'Lectures/Lecture 3', type: 'note', text: 'Lecture 3' }]);
+  const before = await page.evaluate(() => Array.from(host.vault.files.get('Lectures/Lecture 3 notes.bedrock').data.slice(0)));
+  // After that it is view only: the pen moves the page and nothing is saved.
+  const after = await frame.evaluate(async () => {
+    await t.line(300, 300, 400, 340, { id: 1, type: 'pen', pressure: 0.6, steps: 10 });
+    await bedrock.saveNow();
+    return { strokes: bedrock.canvas.stroke_count(), state: document.getElementById('save-state').textContent, toolbar: getComputedStyle(document.getElementById('toolbar')).display };
+  });
+  assert.deepEqual(after, { strokes: 0, state: 'View only', toolbar: 'none' });
+  await page.evaluate(() => host.bridge.send('flush', {}, 3000));
+  assert.deepEqual(await page.evaluate(() => Array.from(host.vault.files.get('Lectures/Lecture 3 notes.bedrock').data.slice(0))), before);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // ---- Invite code and consent at start ----------------------------------------
 
 const API = 'https://collect.test';

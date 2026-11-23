@@ -347,7 +347,7 @@ test('session reads and writes the open file and keeps its index current', async
   assert.equal((await s.handlers.read({})).data.byteLength, note(['Newton']).byteLength);
 });
 
-test('a view-only session never writes or renames the file and hands out no starting links', async () => {
+test('a view-only session never renames the file, and writes it only once, for the starting links of a new note', async () => {
   const vault = new FakeVault();
   const file = await vault.createBinary('Forces.bedrock', new Uint8Array(note(['Newton'])).buffer);
   const before = vault.files.get('Forces.bedrock').data.slice(0);
@@ -359,10 +359,23 @@ test('a view-only session never writes or renames the file and hands out no star
   assert.deepEqual(new Uint8Array(vault.files.get('Forces.bedrock').data), new Uint8Array(before));
   assert.deepEqual(await s.handlers.rename({ title: 'Gravity' }), { name: 'Forces' });
   assert.deepEqual(renamed, []);
-  assert.equal(await s.handlers.start(), null);
+  // Starting links for a file that is not empty write nothing.
+  assert.deepEqual(await s.handlers.start(), { noteLinks: [{ target: 'Ideas' }] });
+  await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['changed'])) }), new RegExp(VIEW_ONLY));
+  assert.deepEqual(new Uint8Array(vault.files.get('Forces.bedrock').data), new Uint8Array(before));
   // Looking around is kept: the camera, links and the picker still work.
   await s.handlers['set-kv']({ key: 'camera:host', value: [1, 2, 1] });
   assert.deepEqual(await s.handlers['get-kv']({ key: 'camera:host' }), [1, 2, 1]);
+
+  // A new (empty) note made on a computer: its starting links are written once, nothing after.
+  const fresh = await vault.createBinary('Lecture 3 notes.bedrock', new ArrayBuffer(0));
+  const { s: s2 } = session(vault, fresh, { viewOnly: true, start: () => ({ noteLinks: [{ target: 'Lecture 3' }] }) });
+  await assert.rejects(s2.handlers.write({ data: new Uint8Array(note(['a'])) }), new RegExp(VIEW_ONLY), 'not before the links were asked for');
+  assert.ok(await s2.handlers.start());
+  assert.equal(await s2.handlers.write({ data: new Uint8Array(note([])) }), true);
+  assert.equal(vault.files.get('Lecture 3 notes.bedrock').data.byteLength, note([]).byteLength);
+  await assert.rejects(s2.handlers.write({ data: new Uint8Array(note(['ink'])) }), new RegExp(VIEW_ONLY), 'only once');
+  assert.equal(vault.files.get('Lecture 3 notes.bedrock').data.byteLength, note([]).byteLength);
 });
 
 test('session tells its own saves from changes made elsewhere', async () => {

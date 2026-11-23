@@ -89,22 +89,24 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
 });
 
-test('on a desktop computer notes are view only, and no new notes are offered; the iPad edits', async () => {
+test('on a desktop computer notes are view only, and new notes are still made; the iPad edits', async () => {
   fake.Platform.isDesktopApp = true;
   let env;
   try { env = await loaded(); } finally { fake.Platform.isDesktopApp = false; }
   const { plugin, app, vault } = env;
   assert.equal(plugin.viewOnly, true);
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['report-problem', 'reindex', 'graph-filter'], 'no new-note commands');
-  assert.deepEqual(plugin.ribbons, [], 'no "New Bedrock note" button');
-  // No "New Bedrock note" on a folder, no "New handwritten note linking here" on a note.
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex', 'graph-filter'], 'new notes are made on a computer too');
+  assert.deepEqual(plugin.ribbons.map((r) => r.title), ['New Bedrock note']);
+  // "New Bedrock note" on a folder, "New handwritten note linking here" on a note.
   await vault.create('Lecture 3.md', '# Lecture 3');
+  Object.setPrototypeOf(vault.files.get('Lecture 3.md'), fake.TFile.prototype);
   const menu = new fake.Menu();
   await app.workspace.trigger('file-menu', menu, new fake.TFolder('Physics'), 'file-explorer-context-menu');
-  await app.workspace.trigger('file-menu', menu, vault.files.get('Lecture 3.md'), 'file-explorer-context-menu');
   await app.workspace.trigger('editor-menu', menu, {}, { file: vault.files.get('Lecture 3.md') });
-  assert.deepEqual(menu.items, []);
-  assert.equal(await plugin.newNote(), null);
+  assert.deepEqual(menu.items.map((i) => i.title), ['New Bedrock note', 'New handwritten note linking here']);
+  await menu.items[1].click();
+  assert.ok(vault.files.has('Lecture 3 notes.bedrock'), 'the note is made');
+  assert.equal(plugin.starts.get('Lecture 3 notes.bedrock').noteLinks[0].target, 'Lecture 3', 'and starts with its link');
   // The note's name is not changed from the canvas header either.
   const note = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
   Object.setPrototypeOf(note, fake.TFile.prototype);
@@ -121,6 +123,7 @@ test('on a desktop computer notes are view only, and no new notes are offered; t
   await view.onLoadFile(note);
   assert.deepEqual(pages, [['app', { viewOnly: true }]]);
   await assert.rejects(view.session.handlers.write({ data: new Uint8Array([1]) }), /view only/);
+  assert.equal(vault.files.get('Forces.bedrock').data.byteLength, 0);
 
   const ipad = await loaded();
   assert.equal(ipad.plugin.viewOnly, false);

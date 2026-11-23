@@ -252,29 +252,28 @@ export default class BedrockPlugin extends Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new BedrockView(leaf, this));
     this.registerExtensions([EXTENSION], VIEW_TYPE);
 
-    // Making notes is for devices that write in them, not a view-only desktop.
-    if (!this.viewOnly) {
-      this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
-      // Holding a folder (iPad) or right-clicking it: a new note in it.
-      this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
-        if (!(file instanceof TFolder)) return;
-        menu.addItem((item) => item
-          .setTitle('New Bedrock note')
-          .setIcon('pen-tool')
-          .onClick(() => this.newNote(file.path)));
-      }));
-      this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
-      this.addCommand({
-        id: 'new-linked-note',
-        name: 'New handwritten note linking here',
-        checkCallback: (checking) => {
-          const about = this.aboutActive();
-          if (!about) return false;
-          if (!checking) this.newNote(undefined, about);
-          return true;
-        },
-      });
-    }
+    // Notes are made on every device, a view-only desktop too: there they
+    // open view only, to be written on the iPad.
+    this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
+    // Holding a folder (iPad) or right-clicking it (desktop): a new note in it.
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!(file instanceof TFolder)) return;
+      menu.addItem((item) => item
+        .setTitle('New Bedrock note')
+        .setIcon('pen-tool')
+        .onClick(() => this.newNote(file.path)));
+    }));
+    this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
+    this.addCommand({
+      id: 'new-linked-note',
+      name: 'New handwritten note linking here',
+      checkCallback: (checking) => {
+        const about = this.aboutActive();
+        if (!about) return false;
+        if (!checking) this.newNote(undefined, about);
+        return true;
+      },
+    });
     this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
     this.addCommand({ id: 'graph-filter', name: 'Copy graph filter that hides .bedrock files and the #bedrock tag', callback: () => this.copyGraphFilter() });
@@ -300,7 +299,7 @@ export default class BedrockPlugin extends Plugin {
       if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch((e) => this.errors.record('Bedrock: search index not removed', e, 'error'));
     }));
     // "New handwritten note linking here" in the menus of a note or PDF.
-    if (!this.viewOnly) this.registerLinkedNoteMenus();
+    this.registerLinkedNoteMenus();
     // A search result or link that lands on an index note opens the
     // handwriting, at the words that were found.
     this.redirectIndexNotes();
@@ -545,7 +544,6 @@ export default class BedrockPlugin extends Plugin {
    *  open file (or the page it is about). With `about` (`{ file, page }`),
    *  it is named after that page and starts with a link to it. */
   async newNote(inFolder, about = null) {
-    if (this.viewOnly) return null;
     const active = about?.file || this.app.workspace.getActiveFile();
     const folder = inFolder ?? (this.settings.newNoteFolder || active?.parent?.path || '');
     const dir = folder && folder !== '/' ? `${folder}/` : '';
@@ -593,8 +591,6 @@ class BedrockSettings extends PluginSettingTab {
       .setName('Tidy graph view')
       .setDesc(`Shows each handwritten note once (its index note, which keeps its links to notes and PDF pages) and hides the #bedrock tag. Copy the filter, then: ${GRAPH_HOW} The filter is: ${GRAPH_FILTER}`)
       .addButton((b) => b.setButtonText('Copy filter').onClick(() => p.copyGraphFilter()));
-    // No notes are made where they are view only.
-    if (p.viewOnly) return;
     new Setting(containerEl)
       .setName('Folder for new notes')
       .setDesc('Leave empty to create new notes next to the open file.')
