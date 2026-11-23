@@ -2630,3 +2630,25 @@ test('lasso: Color in the selection menu shows the swatches and the +, and gives
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+// The save worker compiled the 2.2 MB WebAssembly a second time on every
+// start. The page compiles it once and sends the module to the worker.
+test('the WebAssembly is fetched and compiled once; the save worker gets the module the page compiled', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const wasm = [];
+  ctx.on('request', (r) => { if (r.url().endsWith('.wasm')) wasm.push(r.url()); });
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.evaluate(async () => {
+    t.ev('pointerdown', 1, 'pen', 300, 300, { pressure: 0.6 });
+    for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', 300 + j * 4, 300 + (j % 2) * 10, { pressure: 0.6 });
+    t.ev('pointerup', 1, 'pen', 340, 300);
+    await t.frame();
+    await bedrock.saveNow();
+  });
+  const r = await page.evaluate(() => ({ background: bedrock.backgroundSaving, stats: { ...bedrock.saveStats } }));
+  assert.equal(r.background, true, 'the save worker runs');
+  assert.ok(r.stats.background >= 1 && r.stats.direct === 0, `saved in the background: ${JSON.stringify(r.stats)}`);
+  assert.equal(wasm.filter((u) => u.includes('bedrock_web_bg')).length, 1, `one request for the WebAssembly: ${wasm}`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

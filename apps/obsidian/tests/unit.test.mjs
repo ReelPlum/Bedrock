@@ -279,8 +279,10 @@ test('session reads and writes the open file and keeps its index current', async
   assert.equal(r.data.byteLength, 0, 'a new note is empty');
   // A correction to what was read reaches search with the next save.
   await s.handlers.write({ data: new Uint8Array(note(['Newtn'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Newtn/);
   await s.handlers.write({ data: new Uint8Array(note(['Newton'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Newton\n/);
   assert.equal((await s.handlers.read({})).data.byteLength, note(['Newton']).byteLength);
 });
@@ -317,7 +319,38 @@ test('one failed save does not stop later saves', async () => {
   await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['a'])) }), /disk full/);
   vault.modifyBinary = real;
   await s.handlers.write({ data: new Uint8Array(note(['b'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /\bb\b/);
+});
+
+// Writing was slower in Obsidian than on the website: every autosave (every
+// 400 ms of writing) also rewrote the index note, and Obsidian re-indexed it
+// on the main thread the canvas shares with it.
+test('while the writer keeps writing, the index note waits for a pause and is written once', async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+  const { s } = session(vault, file, { indexDelayMs: 60 });
+  let indexWrites = 0;
+  for (const m of ['create', 'modify']) {
+    const real = vault[m].bind(vault);
+    vault[m] = async (...a) => { indexWrites++; return real(...a); };
+  }
+  for (const w of ['F', 'Fo', 'For', 'Forc', 'Force']) {
+    await s.handlers.write({ data: new Uint8Array(note([w])) });
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(indexWrites, 0, 'no index note while writing');
+  assert.equal(vault.files.get('Forces.bedrock').data.byteLength, note(['Force']).byteLength, 'every save still reaches the file at once');
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(indexWrites, 1, 'one index note after the pause');
+  assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Force\n/);
+  // Closing the view writes a pending index at once.
+  await s.handlers.write({ data: new Uint8Array(note(['Forces'])) });
+  await s.flushIndex();
+  assert.equal(indexWrites, 2);
+  assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Forces\n/);
+  await s.flushIndex();
+  assert.equal(indexWrites, 2, 'nothing pending: nothing written');
 });
 
 test('the app can ask for a link to a word; only real stroke ids are accepted', async () => {
@@ -389,6 +422,32 @@ test('bridge events get the app\'s answer, or null when it does not answer', asy
   assert.equal(await bridge.send('flush'), 'saved');
   assert.equal(await bridge.send('ignored', {}, 20), null);
   assert.equal(await new HostBridge(() => null, {}).send('flush'), null, 'no iframe yet');
+});
+
+// Each note open (and its save worker) compiled the 2.2 MB WebAssembly
+// again: blob: URLs get no compiled-code cache. The plugin compiles it once.
+test('the WebAssembly is compiled once while the plugin runs, and the session hands it to each canvas', async () => {
+  const empty = btoa(String.fromCharCode(0, 97, 115, 109, 1, 0, 0, 0)); // the smallest valid module
+  const app = new InlineApp({ pages: {}, modules: {}, workers: {}, files: { 'pkg/bedrock_web_bg.wasm': empty } });
+  const compile = WebAssembly.compile;
+  let compiles = 0;
+  WebAssembly.compile = (...a) => { compiles++; return compile(...a); };
+  try {
+    const first = await app.wasmModule();
+    assert.ok(first instanceof WebAssembly.Module);
+    assert.equal(await app.wasmModule(), first, 'the same module for the next note');
+    const vault = new FakeVault();
+    const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+    const { s } = session(vault, file, { wasm: () => app.wasmModule() });
+    assert.equal(await s.handlers.wasm({}), first, 'the canvas asks for it over the bridge');
+    assert.equal(compiles, 1);
+    assert.equal(await session(vault, file).s.handlers.wasm({}), null, 'no module: the canvas compiles its own');
+    app.revoke();
+    await app.wasmModule();
+    assert.equal(compiles, 2, 'compiled again after the plugin is reloaded');
+  } finally {
+    WebAssembly.compile = compile;
+  }
 });
 
 test('the canvas pages are written with their files handed over as blob: URLs, never loaded by address', async () => {
