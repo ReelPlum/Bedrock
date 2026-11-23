@@ -169,6 +169,8 @@ export class Indexer {
       if (f.path === sidecarPath(oldNotePath)) sidecar = true;
       await this.vault.delete(f);
     }
+    // An empty (new) note has nothing to index yet.
+    if (!bytes?.byteLength) return;
     await this.update(newNotePath, bytes, sidecar ? sidecarPath(newNotePath) : indexPath(newNotePath, this.folder()));
   }
 

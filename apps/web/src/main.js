@@ -554,6 +554,9 @@ async function main() {
     if (!rec) return newNote();
     try {
       const warnings = canvas.load(rec.data, ...randomSeed());
+      // In a host the note's name is its file's name; the title stored in
+      // the note follows with the next save.
+      if (host && rec.title) canvas.set_title(rec.title);
       note = { id: rec.id, created: rec.created, folder: rec.folder || null };
       const cam = await store.getKv(`camera:${id}`).catch(() => null);
       if (cam && cam.length === 3) canvas.set_camera(cam[0], cam[1], cam[2]);
@@ -572,6 +575,7 @@ async function main() {
     await shareWordsAndSend();
     const folder = await libraryFolder();
     canvas.new_document(...randomSeed());
+    if (host) canvas.set_title((await store?.list().catch(() => []))?.[0]?.title || '');
     note = { id: host ? host.noteId : newNoteId(), created: Date.now(), folder };
     canvas.set_paper('dots');
     applyDocToUi();
@@ -1135,6 +1139,25 @@ async function main() {
     scheduleSave();
   });
   $('title').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  /** The host renamed the note's file (or kept its name): show and keep it. */
+  function hostNamed(name) {
+    if (typeof name !== 'string' || !name || name === canvas.title()) {
+      if (name) $('title').value = name;
+      return;
+    }
+    canvas.set_title(name);
+    $('title').value = name;
+    savedRevision = -1;
+    scheduleSave();
+  }
+  // In a host the name is the file's name: once it is done (Enter, or
+  // leaving the box), not on every key, the host renames the file.
+  if (host) {
+    $('title').addEventListener('change', async (e) => {
+      const r = await host.rename(e.target.value).catch(() => null);
+      if (r) hostNamed(r.name);
+    });
+  }
 
   // Tags and links of the whole note (note-info.js).
   noteInfo = new NoteInfo($('note-info'), canvas, {
@@ -1695,6 +1718,8 @@ async function main() {
     // A search hit or a link to a place in this note: go there and point
     // it out. True if that ink is still on the page.
     host.on('show', ({ strokes } = {}) => showInk(strokes));
+    // The file was renamed in the host: the header shows its new name.
+    host.on('renamed', ({ name } = {}) => { hostNamed(name); return true; });
     // The bottom of the frame is hidden (the iPad's keyboard in Obsidian):
     // the word menu moves above it, and any other text box being typed in
     // is slid into sight.

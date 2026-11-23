@@ -154,6 +154,7 @@ class BedrockView extends FileView {
       start: () => plugin.takeStart(this.file),
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
+      rename: (name) => plugin.renameNote(this.file, name),
       wasm: () => plugin.webApp.wasmModule(),
       onReady: () => { this.appReady = true; this.showPending(); this.tellInset(this.keyboard?.covered() || 0); },
     });
@@ -180,6 +181,13 @@ class BedrockView extends FileView {
     this.frame?.remove();
     this.frame = this.bridge = this.session = null;
     this.appReady = false;
+  }
+
+  /** Obsidian renamed or moved the file (from anywhere, the canvas
+   *  header included): the header shows the file's name. */
+  async onRename(file) {
+    await super.onRename?.(file);
+    await this.bridge?.send('renamed', { name: file.basename }).catch(() => null);
   }
 
   /** The file changed outside this view (sync, another window). */
@@ -254,12 +262,15 @@ export default class BedrockPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.fileChanged?.(f);
     }));
     this.registerEvent(vault.on('rename', async (f, oldPath) => {
-      if (!(f instanceof TFile) || f.extension !== EXTENSION || !this.settings.index) return;
-      await this.indexer.rename(oldPath, f.path, await vault.readBinary(f)).catch((e) => this.errors.record('Bedrock: search index not renamed', e, 'error'));
+      if (!(f instanceof TFile) || f.extension !== EXTENSION) return;
+      // The camera follows the note whether or not it is searchable.
+      let moved = false;
       for (const k of Object.keys(this.cameras)) {
-        if (k.startsWith(`${oldPath}\u0000`)) { this.cameras[f.path + k.slice(oldPath.length)] = this.cameras[k]; delete this.cameras[k]; }
+        if (k.startsWith(`${oldPath}\u0000`)) { this.cameras[f.path + k.slice(oldPath.length)] = this.cameras[k]; delete this.cameras[k]; moved = true; }
       }
-      this.persist();
+      if (moved) this.persist();
+      if (!this.settings.index) return;
+      await this.indexer.rename(oldPath, f.path, await vault.readBinary(f)).catch((e) => this.errors.record('Bedrock: search index not renamed', e, 'error'));
     }));
     this.registerEvent(vault.on('delete', (f) => {
       if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch((e) => this.errors.record('Bedrock: search index not removed', e, 'error'));
@@ -368,6 +379,29 @@ export default class BedrockPlugin extends Plugin {
     const id = await sendReport(out, requestUrl);
     this.slowSentUpTo = last;
     return id;
+  }
+
+  /** Rename a note to `name` (no extension) in its folder, as typed in
+   *  the canvas header. Obsidian's file manager does it, so links to the
+   *  note are updated as for any rename; the index note and camera follow
+   *  through the vault's rename event. A name another file already has is
+   *  refused with a notice, as Obsidian refuses it. Resolves to the note's
+   *  name after. */
+  async renameNote(file, name) {
+    if (!(file instanceof TFile) || !name || name === file.basename) return file?.basename ?? '';
+    const folder = file.parent?.path && file.parent.path !== '/' ? `${file.parent.path}/` : (file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/') + 1) : '');
+    const path = normalizePath(`${folder}${name}.${EXTENSION}`);
+    const there = this.app.vault.getAbstractFileByPath(path);
+    if (there && there !== file) {
+      new Notice(`“${name}.${EXTENSION}” already exists in this folder, so the note keeps its name.`);
+      return file.basename;
+    }
+    try {
+      await this.app.fileManager.renameFile(file, path);
+    } catch (e) {
+      this.problem(`Bedrock: the note could not be renamed: ${e?.message || e}`, e);
+    }
+    return file.basename;
   }
 
   /** Put a link to a word of a handwritten note on the clipboard. */
