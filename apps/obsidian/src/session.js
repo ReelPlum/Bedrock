@@ -19,6 +19,9 @@ export function strokesOfState(eState) {
   return m ? [m[1].toLowerCase()] : [];
 }
 
+/** Why a write is refused: the note is open view only (desktop). */
+export const VIEW_ONLY = 'This note is view only here.';
+
 /** Longest file name made from a title, before `.bedrock`. */
 const MAX_NAME = 120;
 
@@ -43,6 +46,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
 
 /**
  * @param {object} o
+ * @param {boolean} [o.viewOnly]  the note is only looked at: it is never written or renamed, and gets no starting links
  * @param {object} o.vault       Obsidian Vault
  * @param {() => object} o.file  the open TFile
  * @param {object} o.indexer     Indexer (index-note.js)
@@ -59,7 +63,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
  * @param {() => Promise<WebAssembly.Module|null>} [o.wasm]  the canvas's WebAssembly, compiled once by the plugin
  * @param {number} [o.indexDelayMs]  how long writing must pause before the index note is written
  */
-export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, indexDelayMs = INDEX_DELAY_MS }) {
+export function createSession({ viewOnly = false, vault, file, indexer, kv, listFiles, pdfPage, openLink, copyLink, sendReport, onReady, perf, rename, wasm, start, indexDelayMs = INDEX_DELAY_MS }) {
   const job = (name, fn) => (perf ? perf.job(name, fn) : fn());
   // The index note follows the file once writing pauses, not after every
   // autosave: each index write makes Obsidian re-read the note for search,
@@ -92,7 +96,7 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
     handlers: {
       ready: async () => { onReady?.(); return true; },
       // A new note's starting links ("New handwritten note linking here").
-      start: async () => start?.() ?? null,
+      start: async () => (viewOnly ? null : start?.() ?? null),
       // Sent as a compiled module (structured clone shares its code).
       wasm: async () => (wasm ? (await wasm().catch(() => null)) : null),
       read: async () => {
@@ -101,6 +105,7 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
         return { name: f.basename, created: f.stat.ctime, modified: f.stat.mtime, data };
       },
       write: async ({ data }) => {
+        if (viewOnly) throw new Error(VIEW_ONLY);
         const f = file();
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
         // The app hands the file's buffer over (no copy); copy only a part.
@@ -145,6 +150,7 @@ export function createSession({ vault, file, indexer, kv, listFiles, pdfPage, op
       // asks once the name is done. Answers the file's name after.
       rename: async ({ title } = {}) => {
         const f = file();
+        if (viewOnly) return { name: f.basename };
         const name = fileNameFor(title);
         if (!rename || !name || name === f.basename) return { name: f.basename };
         return { name: await rename(name) };

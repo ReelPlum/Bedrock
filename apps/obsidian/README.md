@@ -80,6 +80,16 @@ folder. Instead (`src/inline-app.js`):
 - the WebAssembly and the word list are `blob:` URLs too, found by the app
   through `globalThis.BEDROCK_ASSETS` (`apps/web/src/assets.js`), and
   `globalThis.BEDROCK_HOST` tells the app it runs in the plugin.
+  `globalThis.BEDROCK_VIEW_ONLY` is `true` in Obsidian's desktop app (Mac,
+  Windows, Linux).
+
+**View only on a computer.** In the desktop app notes open to be looked at:
+the pen, mouse, trackpad and fingers move and zoom the page, links open,
+search hits and links to words land on the ink, and a word's menu says what
+it was read as and copies a link to it. Nothing draws, erases, selects,
+inserts, undoes or renames, the app never asks to `write`, and the plugin's
+session refuses a `write` anyway. No new notes are offered (ribbon button,
+commands, folder and note menus). The iPad and phones edit as before.
 
 The browser features the web app relies on (module workers, WebAssembly,
 WebGL2, Pointer Events with Pencil pressure and tilt) work as in Safari. As
@@ -97,7 +107,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `start` | what a new note starts with: `{ noteLinks: [{ target, type, text }] }` for a note made by "New handwritten note linking here" (once; the app adds the link and saves at once), else `null` |
 | app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
-| app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes |
+| app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes. Refused (an error) when the note is view only |
 | app | `get-kv { key }` / `set-kv { key, value }` | per-file app state (the camera), kept in the plugin's data |
 | app | `list-files` | every vault file the link picker offers (not this note or index notes): `[{ path, link }]`, `link` being Obsidian's link text |
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |

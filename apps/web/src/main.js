@@ -206,6 +206,11 @@ async function main() {
     fatal(`Bedrock needs WebGL2, which this browser does not provide. (${e})`, e);
     return;
   }
+  // View only (the Obsidian plugin on a desktop computer): the note is
+  // looked at, moved around and its links followed; nothing draws, erases,
+  // inserts or changes it, and it is never saved (openspec obsidian-plugin).
+  const viewOnly = !!host?.viewOnly;
+  canvas.set_view_only(viewOnly);
 
   // Inside a host app (the Obsidian plugin) the note is the host's file.
   const store = await (host ? Promise.resolve(host.store()) : NoteStore.open()).catch((e) => {
@@ -221,6 +226,7 @@ async function main() {
   const saveState = $('save-state');
 
   function setSaveState(text, error = false) {
+    if (viewOnly) { text = 'View only'; error = false; }
     saveState.textContent = text;
     saveState.classList.toggle('error', error);
   }
@@ -345,6 +351,7 @@ async function main() {
   const shareWordsAndSend = () => shareWordsNow(true).then(() => { collect.flush().catch(() => {}); });
   setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
+    readOnly: viewOnly,
     onChange: wordChanged,
     // The copy is selected: the lasso drags it (a word's menu can be opened
     // with a pen, which would let go of it).
@@ -472,7 +479,7 @@ async function main() {
   async function saveNowUntimed() {
     clearTimeout(saveTimer);
     saveTimer = null;
-    if (startFailed || !store) return;
+    if (startFailed || !store || viewOnly) return;
     if (canvas.is_drawing()) return scheduleSave();
     const rev = canvas.revision();
     const now = Date.now();
@@ -502,7 +509,7 @@ async function main() {
   }
 
   function scheduleSave() {
-    if (saveTimer) return;
+    if (saveTimer || viewOnly) return;
     setSaveState('Saving…');
     saveTimer = setTimeout(saveNow, AUTOSAVE_MS);
   }
@@ -594,7 +601,7 @@ async function main() {
     setSaveState('New');
     // A note the host made about a page ("New handwritten note linking
     // here" in Obsidian) starts with its link and tags, saved at once.
-    const start = host ? await host.start().catch(() => null) : null;
+    const start = host && !viewOnly ? await host.start().catch(() => null) : null;
     if (start && applyStart(start)) await saveNow();
   }
 
@@ -819,7 +826,7 @@ async function main() {
   let hoverTimer = null;
   function showHover(p) {
     clearTimeout(hoverTimer);
-    if (!p || !settings.hoverPreview || (currentTool() === 'lasso' && !p.eraser)) { hoverEl.hidden = true; return; }
+    if (!p || viewOnly || !settings.hoverPreview || (currentTool() === 'lasso' && !p.eraser)) { hoverEl.hidden = true; return; }
     const zoom = canvas.camera()[2];
     const erasing = p.eraser || currentTool() === 'eraser';
     let d;
@@ -1304,7 +1311,8 @@ async function main() {
   }
   // In a host the name is the file's name: once it is done (Enter, or
   // leaving the box), not on every key, the host renames the file.
-  if (host) {
+  $('title').readOnly = viewOnly;
+  if (host && !viewOnly) {
     $('title').addEventListener('change', async (e) => {
       const r = await host.rename(e.target.value).catch(() => null);
       if (r) hostNamed(r.name);
@@ -1313,6 +1321,7 @@ async function main() {
 
   // Tags and links of the whole note (note-info.js).
   noteInfo = new NoteInfo($('note-info'), canvas, {
+    readOnly: viewOnly,
     onChange: () => { savedRevision = -1; scheduleSave(); },
   });
 
@@ -1443,10 +1452,13 @@ async function main() {
     report: () => window.bedrockErrors?.open({ stage: 'running' }),
     'note-info': () => (noteInfo.open ? noteInfo.close() : noteInfo.show()),
   };
+  // What a view-only note never does, even if asked.
+  const EDITS = new Set(['new', 'open', 'import-pdf', 'insert-image', 'paste']);
   document.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
       menu.hidden = true;
       $('library').hidden = true;
+      if (viewOnly && EDITS.has(el.dataset.action)) return;
       actions[el.dataset.action]?.();
     });
   });
@@ -1772,6 +1784,7 @@ async function main() {
     }
   };
   document.addEventListener('paste', (e) => {
+    if (viewOnly) return;
     const t = e.target;
     // Text fields keep the system's own paste.
     if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable) return;
@@ -1790,6 +1803,7 @@ async function main() {
     if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file' || i.type === 'text/plain')) e.preventDefault();
   });
   stage.addEventListener('drop', (e) => {
+    if (viewOnly) { e.preventDefault(); return; }
     const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (files.length) { e.preventDefault(); insertPictures(files); return; }
     const text = e.dataTransfer?.getData('text/plain');
@@ -1800,6 +1814,11 @@ async function main() {
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     const mod = e.metaKey || e.ctrlKey;
+    if (viewOnly) {
+      // Only what changes nothing: a copy of the note (Save to Files).
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); actions.save(); }
+      return;
+    }
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) canvas.redo(); else canvas.undo();

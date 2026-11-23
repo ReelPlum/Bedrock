@@ -89,8 +89,8 @@ async function openHost() {
 }
 
 /** Open a vault file; returns the app's frame, with pointer helpers. */
-async function openFile(page, path) {
-  await page.evaluate((p) => host.open(p), path);
+async function openFile(page, path, opts = {}) {
+  await page.evaluate(([p, o]) => host.open(p, o), [path, opts]);
   const frame = await frameOf(page, '#frame');
   await frame.waitForFunction(() => window.bedrock?.ready, null, { timeout: 20000 });
   await installPointerHelpers(frame);
@@ -744,6 +744,104 @@ test('the word menu copies a link to the word, for pasting into a vault note', a
   assert.equal(word.closed, true);
   await until(page, () => host.calls.some((c) => c[0] === 'copy'));
   assert.deepEqual(await page.evaluate(() => host.calls.filter((c) => c[0] === 'copy')), [['copy', word.strokes[0], 'Physics.bedrock']]);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// ---- View only on a desktop computer ------------------------------------------
+
+test('on a computer the note is view only: pen and mouse move the page, nothing is drawn, changed or saved, links still open', async () => {
+  const { page, ctx, errors } = await openHost();
+  // Written on the iPad, with a tag and a link of the whole note.
+  let frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await frame.evaluate(async () => {
+    bedrock.canvas.add_tag('physics');
+    bedrock.canvas.add_note_link('Lecture 3', 'note', 'Lecture 3');
+    await bedrock.saveNow();
+  });
+  await until(page, async () => (await host.files('Physics.bedrock')).tags?.length === 1);
+  const before = await page.evaluate(() => Array.from(host.vault.files.get('Physics.bedrock').data.slice(0)));
+
+  frame = await openFile(page, 'Physics.bedrock', { viewOnly: true });
+  const ui = await frame.evaluate(() => {
+    document.getElementById('btn-menu').click();
+    const shown = (sel) => { const el = document.querySelector(sel); return !!el && getComputedStyle(el).display !== 'none' && !el.closest('[hidden]'); };
+    return {
+      viewOnly: document.documentElement.dataset.viewOnly,
+      strokes: bedrock.canvas.stroke_count(),
+      toolbar: shown('#toolbar'), undo: shown('#btn-undo'), redo: shown('#btn-redo'),
+      insert: shown('[data-action="insert-image"]'), paste: shown('[data-action="paste"]'), importPdf: shown('[data-action="import-pdf"]'),
+      fingerDraw: shown('.row:has(#finger-draw)'), fit: shown('[data-action="fit"]'), tagsAndLinks: shown('[data-action="note-info"]'),
+      state: document.getElementById('save-state').textContent,
+      titleReadOnly: document.getElementById('title').readOnly,
+    };
+  });
+  assert.deepEqual(ui, {
+    viewOnly: 'true', strokes: 4, toolbar: false, undo: false, redo: false, insert: false, paste: false, importPdf: false,
+    fingerDraw: false, fit: true, tagsAndLinks: true, state: 'View only', titleReadOnly: true,
+  });
+
+  // The pen, the mouse and a finger move the page; none of them draws.
+  const moved = await frame.evaluate(async () => {
+    const cam0 = Array.from(bedrock.canvas.camera());
+    window.rev0 = bedrock.canvas.revision();
+    bedrock.canvas.set_finger_drawing(true);
+    for (const [id, type] of [[1, 'pen'], [2, 'mouse'], [3, 'touch']]) await t.line(600, 500, 650, 540, { id, type, pressure: 0.6, steps: 10 });
+    // Undo, redo, the tool keys and delete do nothing.
+    for (const key of ['z', 'y']) window.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true }));
+    for (const key of ['1', 'e', 'l', 'Delete']) window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    await t.frame();
+    return { strokes: bedrock.canvas.stroke_count(), drawing: bedrock.canvas.is_drawing(), dx: bedrock.canvas.camera()[0] - cam0[0], undo: bedrock.canvas.undo(), changed: bedrock.canvas.revision() !== window.rev0 };
+  });
+  assert.equal(moved.strokes, 4, 'nothing drawn or undone');
+  assert.equal(moved.changed, false, 'the note did not change');
+  assert.equal(moved.drawing, false);
+  assert.equal(moved.undo, false);
+  assert.ok(moved.dx < -100, `the page moved with each pointer (${moved.dx})`);
+
+  // A word's menu says what it was read as and copies a link; it changes nothing.
+  const menu = await frame.evaluate(() => {
+    const w = JSON.parse(bedrock.canvas.words_json())[0];
+    bedrock.wordMenu.open(w);
+    const shown = [...document.querySelectorAll('#wm-main button')].filter((b) => !b.hidden).map((b) => b.id);
+    bedrock.wordMenu.close();
+    return { shown, reading: document.getElementById('wm-reading').textContent };
+  });
+  assert.deepEqual(menu.shown, ['wm-copy-here']);
+  assert.match(menu.reading, /Newtn/);
+
+  // Tags and links are shown, and a link opens; nothing adds or removes them.
+  const info = await frame.evaluate(() => {
+    bedrock.noteInfo.show();
+    const root = document.getElementById('note-info');
+    const visible = (el) => !el.hidden && !el.closest('[hidden]');
+    const r = {
+      tags: [...root.querySelectorAll('.ni-tag span')].map((s) => s.textContent),
+      inputs: [...root.querySelectorAll('input')].filter(visible).length,
+      removes: root.querySelectorAll('.ni-remove').length,
+      browse: visible(root.querySelector('.ni-browse')),
+    };
+    root.querySelector('.ni-open').click();
+    bedrock.noteInfo.close();
+    return r;
+  });
+  assert.deepEqual(info, { tags: ['#physics'], inputs: 0, removes: 0, browse: false });
+  await until(page, () => host.calls.some((c) => c[0] === 'open' && c[1] === 'Lecture 3'));
+
+  // Pasting text inserts nothing; saving and closing write nothing.
+  await frame.evaluate(async () => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'pasted');
+    document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    await bedrock.saveNow();
+  });
+  await page.evaluate(() => host.bridge.send('flush', {}, 3000));
+  assert.equal(await frame.evaluate(() => bedrock.canvas.revision() === window.rev0), true, 'nothing was pasted');
+  const after = await page.evaluate(() => Array.from(host.vault.files.get('Physics.bedrock').data.slice(0)));
+  assert.deepEqual(after, before, 'the file is not written');
+  // Even if the canvas asked, the plugin would not write it.
+  await assert.rejects(page.evaluate(() => host.session.handlers.write({ data: new Uint8Array([1, 2, 3]) })), /view only/);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

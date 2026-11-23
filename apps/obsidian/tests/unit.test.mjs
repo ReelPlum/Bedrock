@@ -6,7 +6,7 @@ import { FakeVault } from './fake-vault.mjs';
 import { readZip, text } from '../src/zip.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, indexLayout, indexMarkdown, indexPath, isIndexPath, noteForIndex, noteOfIndex, offsetOf, readNoteText, strokesAt, strokesForIndexPlace } from '../src/index-note.js';
 import { libraryFiles } from '../../web/src/library.js';
-import { createSession, fileNameFor, linkToStroke, strokesOfState } from '../src/session.js';
+import { VIEW_ONLY, createSession, fileNameFor, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
 import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
@@ -315,6 +315,24 @@ test('session reads and writes the open file and keeps its index current', async
   assert.equal((await s.handlers.read({})).data.byteLength, note(['Newton']).byteLength);
 });
 
+test('a view-only session never writes or renames the file and hands out no starting links', async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Forces.bedrock', new Uint8Array(note(['Newton'])).buffer);
+  const before = vault.files.get('Forces.bedrock').data.slice(0);
+  const renamed = [];
+  const { s } = session(vault, file, { viewOnly: true, rename: async (n) => { renamed.push(n); return n; }, start: () => ({ noteLinks: [{ target: 'Ideas' }] }) });
+  assert.equal((await s.handlers.read({})).name, 'Forces', 'it still reads');
+  await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['changed'])) }), new RegExp(VIEW_ONLY));
+  await s.flushIndex();
+  assert.deepEqual(new Uint8Array(vault.files.get('Forces.bedrock').data), new Uint8Array(before));
+  assert.deepEqual(await s.handlers.rename({ title: 'Gravity' }), { name: 'Forces' });
+  assert.deepEqual(renamed, []);
+  assert.equal(await s.handlers.start(), null);
+  // Looking around is kept: the camera, links and the picker still work.
+  await s.handlers['set-kv']({ key: 'camera:host', value: [1, 2, 1] });
+  assert.deepEqual(await s.handlers['get-kv']({ key: 'camera:host' }), [1, 2, 1]);
+});
+
 test('session tells its own saves from changes made elsewhere', async () => {
   const vault = new FakeVault();
   const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
@@ -565,6 +583,8 @@ test('the canvas pages are written with their files handed over as blob: URLs, n
   assert.match(worker, /^globalThis\.BEDROCK_ASSETS = \{"pkg\/bedrock_web_bg\.wasm":"blob:test\/1"/, 'the worker is told where the WebAssembly is');
   assert.ok(worker.endsWith('save();'));
   assert.match(app.page('welcome', { probe: true }), /BEDROCK_PROBE = true;/);
+  assert.match(html, /BEDROCK_VIEW_ONLY = false;/);
+  assert.match(app.page('app', { viewOnly: true }), /BEDROCK_VIEW_ONLY = true;/);
   assert.equal(made.length, 5, 'blob: URLs are made once');
   app.revoke();
   assert.equal(revoked.length, 5);

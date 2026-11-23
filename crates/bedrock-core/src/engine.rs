@@ -144,6 +144,10 @@ pub struct Engine {
     /// Eraser radius in screen pixels.
     pub eraser_size: f64,
     pub finger_drawing: bool,
+    /// View only (the Obsidian plugin on a desktop computer): every pointer
+    /// moves the page as a finger does, nothing draws, erases or selects,
+    /// and no gesture or command undoes or redoes.
+    pub view_only: bool,
     /// Scribbling over ink erases it (see [`crate::scribble`]).
     pub scribble_erase: bool,
     /// Pieces the trimmer made during the current swipe.
@@ -187,6 +191,7 @@ impl Engine {
             tool: Tool::Draw,
             eraser_size: 12.0,
             finger_drawing: false,
+            view_only: false,
             scribble_erase: true,
             scribble_erased: 0,
             gesture: None,
@@ -271,7 +276,21 @@ impl Engine {
     fn draws(&self, kind: PointerKind) -> bool {
         match kind {
             PointerKind::Pen | PointerKind::Mouse | PointerKind::PenEraser => true,
-            PointerKind::Touch => self.finger_drawing,
+            PointerKind::Touch => self.fingers_draw(),
+        }
+    }
+
+    /// One finger draws (never in view only).
+    fn fingers_draw(&self) -> bool {
+        self.finger_drawing && !self.view_only
+    }
+
+    /// In view only every pointer is navigation, as a finger is.
+    fn effective_kind(&self, kind: PointerKind) -> PointerKind {
+        if self.view_only {
+            PointerKind::Touch
+        } else {
+            kind
         }
     }
 
@@ -284,6 +303,7 @@ impl Engine {
     }
 
     pub fn pointer_down(&mut self, id: i32, kind: PointerKind, s: ScreenSample) {
+        let kind = self.effective_kind(kind);
         if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
             self.pen_down = true;
             // Palm rejection: a pen always wins over fingers.
@@ -298,7 +318,7 @@ impl Engine {
                 return;
             }
             self.touch_down(id, s);
-            if self.touch.touches.len() > 1 || !self.finger_drawing {
+            if self.touch.touches.len() > 1 || !self.fingers_draw() {
                 return;
             }
         }
@@ -357,6 +377,7 @@ impl Engine {
 
     /// Feed one (coalesced) sample. Call once per sample, in order.
     pub fn pointer_move(&mut self, id: i32, kind: PointerKind, s: ScreenSample) {
+        let kind = self.effective_kind(kind);
         if kind == PointerKind::Touch && self.touch.touches.contains_key(&id) && !self.is_pointer_active(id) {
             self.touch_move(id, s);
             return;
@@ -445,6 +466,7 @@ impl Engine {
     }
 
     pub fn pointer_up(&mut self, id: i32, kind: PointerKind, s: Option<ScreenSample>) {
+        let kind = self.effective_kind(kind);
         if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
             self.pen_down = false;
         }
@@ -509,6 +531,7 @@ impl Engine {
     /// The platform cancelled the pointer (e.g. iOS took over the gesture).
     /// A stroke in progress is discarded.
     pub fn pointer_cancel(&mut self, id: i32, kind: PointerKind) {
+        let kind = self.effective_kind(kind);
         if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
             self.pen_down = false;
         }
@@ -620,7 +643,7 @@ impl Engine {
     }
 
     fn touch_move(&mut self, id: i32, s: ScreenSample) {
-        let nav = !self.finger_drawing || self.touch.touches.len() >= 2;
+        let nav = !self.fingers_draw() || self.touch.touches.len() >= 2;
         let Some(old) = self.touch.touches.get(&id).copied() else { return };
         let (c0, d0) = self.centroid_and_spread();
         self.touch.touches.insert(id, s.pos());
@@ -642,8 +665,9 @@ impl Engine {
             let t = std::mem::take(&mut self.touch);
             let tap = !t.cancelled && time - t.start_time <= TAP_MAX_MS && t.moved <= TAP_MAX_MOVE;
             // One finger counts only when fingers don't draw (then a tap is a dot).
-            let fingers_ok = (2..=3).contains(&t.max_touches) || (t.max_touches == 1 && !self.finger_drawing);
-            if !tap || !fingers_ok {
+            let fingers_ok = (2..=3).contains(&t.max_touches) || (t.max_touches == 1 && !self.fingers_draw());
+            // View only: taps change nothing (no eraser, undo or redo).
+            if !tap || !fingers_ok || self.view_only {
                 self.last_tap = None;
                 return;
             }
@@ -670,6 +694,9 @@ impl Engine {
     // ----- commands --------------------------------------------------------
 
     pub fn undo(&mut self) -> bool {
+        if self.view_only {
+            return false;
+        }
         let r = self.doc.undo();
         if r {
             self.selection.clear();
@@ -679,6 +706,9 @@ impl Engine {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.view_only {
+            return false;
+        }
         let r = self.doc.redo();
         if r {
             self.selection.clear();
@@ -1104,6 +1134,41 @@ mod tests {
         assert!(back.distance(Vec2::new(500.0, 400.0)) < 1.0);
         e.pointer_up(1, PointerKind::Touch, Some(ScreenSample::new(300.0, 400.0, 0.0, 500.0)));
         e.pointer_up(2, PointerKind::Touch, Some(ScreenSample::new(700.0, 400.0, 0.0, 500.0)));
+        assert!(e.doc.is_empty());
+    }
+
+    #[test]
+    fn view_only_pen_and_mouse_move_the_page_and_never_draw() {
+        let mut e = eng();
+        e.view_only = true;
+        e.finger_drawing = true;
+        for kind in [PointerKind::Pen, PointerKind::Mouse, PointerKind::PenEraser, PointerKind::Touch] {
+            draw(&mut e, 1, kind, (100.0, 100.0), (150.0, 130.0), 0.0);
+        }
+        e.tool = Tool::Lasso;
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (10.0, 10.0), 0.0);
+        assert!(e.doc.is_empty());
+        assert!(!e.is_drawing());
+        assert!(e.camera.offset.x < -100.0, "the page moved: {:?}", e.camera.offset);
+    }
+
+    #[test]
+    fn view_only_ignores_undo_redo_and_eraser_taps() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        e.view_only = true;
+        tap(&mut e, 2, 1000.0);
+        tap(&mut e, 2, 1200.0);
+        assert_eq!(e.doc.len(), 1);
+        assert!(!e.undo());
+        assert_eq!(e.doc.len(), 1);
+        tap(&mut e, 1, 2000.0);
+        tap(&mut e, 1, 2200.0);
+        assert!(e.take_gesture().is_none());
+        e.view_only = false;
+        assert!(e.undo());
+        e.view_only = true;
+        assert!(!e.redo());
         assert!(e.doc.is_empty());
     }
 

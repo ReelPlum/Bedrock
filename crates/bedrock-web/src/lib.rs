@@ -816,6 +816,12 @@ impl Canvas {
         self.engine.finger_drawing = on;
     }
 
+    /// View only: every pointer moves the page, nothing draws or erases,
+    /// and undo and redo do nothing (the Obsidian plugin on a computer).
+    pub fn set_view_only(&mut self, on: bool) {
+        self.engine.view_only = on;
+    }
+
     pub fn undo(&mut self) -> bool {
         self.engine.undo()
     }

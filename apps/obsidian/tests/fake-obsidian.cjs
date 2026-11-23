@@ -85,6 +85,9 @@ async function requestUrl(req) {
 requestUrl.calls = [];
 requestUrl.answer = () => ({ status: 200, json: {} });
 
+/** Obsidian's Platform; tests switch `isDesktopApp` (and `isMobile`). */
+const Platform = { isDesktopApp: false, isMobileApp: false, isMobile: false };
+
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+module.exports = { Platform, Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
