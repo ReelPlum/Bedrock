@@ -127,6 +127,17 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **THEN** a PDF opens as its pages (drawn by the plugin with Obsidian's PDF.js) and a page links as `[[File.pdf#page=N]]`; a Bedrock note opens as its picture with its words marked, and a word links as `[[Note.bedrock#^<stroke id>]]`; either can be linked whole instead; the canvas may read other `.bedrock` files and nothing else
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker opens a PDF to link one of its pages, or the whole file -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker opens another Bedrock note to link one of its words, or the whole note -->
+
+#### Scenario: Words of a note saved with points.bin (regression)
+Notes saved since `note.json` version 2 keep their pen samples in
+`points.bin`, and the picker took word bounds from `note.json` only, so a
+note showed no words. It reads `points.bin` too, with a reader that never
+allocates more than the file could hold.
+- **GIVEN** a note saved with its samples in `points.bin`, and a damaged or crafted `points.bin`
+- **WHEN** the link picker reads them
+- **THEN** the note's words are marked where they are, with exactly the samples the version 1 JSON holds, and the damaged one gives no samples without failing
+<!-- test-js: apps/web/tests/link-picker.test.mjs :: the link picker finds the words of a note saved with points.bin, at their place (regression) -->
+<!-- test-js: apps/web/tests/link-picker.test.mjs :: a damaged points.bin gives no samples instead of failing, and a crafted count cannot exhaust memory -->
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: a PDF's pages are drawn for the link picker with Obsidian's PDF.js, and the open PDF is kept for the next page -->
 
 #### Scenario: The iPad keyboard hides no text box
