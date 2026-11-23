@@ -7,6 +7,10 @@ class Events {
 }
 
 class TFile {}
+class TFolder {
+  constructor(path) { this.path = path; this.children = []; }
+  isRoot() { return this.path === '/'; }
+}
 
 class Plugin {
   constructor(app, manifest) {
@@ -83,4 +87,4 @@ requestUrl.answer = () => ({ status: 200, json: {} });
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Menu, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+module.exports = { Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };

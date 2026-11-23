@@ -2,7 +2,9 @@
 
 Handwritten Bedrock notes inside an Obsidian vault, on desktop and iPad.
 `.bedrock` files open in a Bedrock view; new ones come from the ribbon pen
-icon or the "New handwritten note" command.
+icon, the "New handwritten note" command, or "New Bedrock note" in a
+folder's menu (hold the folder on iPad, right-click it on desktop), which
+makes the note in that folder.
 
 - **Link to vault files.** Hold a handwritten word and choose "Make a link…":
   the vault's folders and files open over the canvas (with a filter). Tap a

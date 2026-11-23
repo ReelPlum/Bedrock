@@ -47,6 +47,12 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **THEN** it is an empty `.bedrock` file next to it and never overwrites a file
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: new notes are empty .bedrock files next to the open file, never overwriting one -->
 
+#### Scenario: A new note from a folder's menu
+- **GIVEN** a folder in Obsidian's file explorer
+- **WHEN** the writer holds it (iPad, iPhone) or right-clicks it (desktop) and picks "New Bedrock note"
+- **THEN** an empty `.bedrock` file is made in that folder (the vault's top folder too), whatever the "Folder for new notes" setting says, never overwriting a file, and it opens; a file's menu gets no such item
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: holding (or right-clicking) a folder offers a new Bedrock note in that folder -->
+
 #### Scenario: Saving to the vault file
 - **GIVEN** a note open in the view
 - **WHEN** the writer draws, the file changes outside, and the view closes

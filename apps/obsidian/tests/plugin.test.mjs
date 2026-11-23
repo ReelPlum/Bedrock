@@ -191,6 +191,32 @@ test('a note or PDF offers "New handwritten note linking here": named after the 
   assert.equal(command.checkCallback(true), false, 'not for an index note');
 });
 
+test('holding (or right-clicking) a folder offers a new Bedrock note in that folder', async () => {
+  const { plugin, vault, app, opened } = await loaded();
+  await vault.createFolder('Physics');
+  // The folder for new notes and the open file do not matter: the folder held does.
+  plugin.settings.newNoteFolder = 'Inbox';
+  app.workspace.active = { parent: { path: 'Maths' } };
+  const menuFor = async (file) => {
+    const menu = new fake.Menu();
+    await app.workspace.trigger('file-menu', menu, file, 'file-explorer-context-menu');
+    return menu.items.filter((i) => i.title === 'New Bedrock note');
+  };
+  const [item] = await menuFor(new fake.TFolder('Physics'));
+  assert.ok(item, 'the folder menu has the item');
+  assert.equal(item.icon, 'pen-tool');
+  await item.click();
+  await (await menuFor(new fake.TFolder('Physics')))[0].click();
+  assert.deepEqual(opened, ['Physics/Handwritten note.bedrock', 'Physics/Handwritten note 1.bedrock']);
+  assert.equal(vault.files.get('Physics/Handwritten note.bedrock').data.byteLength, 0);
+  // The vault's top folder.
+  await (await menuFor(new fake.TFolder('/')))[0].click();
+  assert.equal(opened.at(-1), 'Handwritten note.bedrock');
+  // A file's menu is left alone.
+  const file = vault.files.get('Physics/Handwritten note.bedrock');
+  assert.deepEqual(await menuFor(file), []);
+});
+
 test('the link picker is offered every vault file but the note itself and index notes, with its link text', async () => {
   const { plugin, vault } = await loaded();
   await vault.create('Ideas.md', '# Ideas');

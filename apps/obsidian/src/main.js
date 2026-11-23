@@ -2,7 +2,7 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
+import { FileView, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
 import { PdfPages, pdfPageInView } from './pdf-pages.js';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
@@ -241,6 +241,14 @@ export default class BedrockPlugin extends Plugin {
     this.registerExtensions([EXTENSION], VIEW_TYPE);
 
     this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
+    // Holding a folder (iPad) or right-clicking it (desktop): a new note in it.
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      if (!(file instanceof TFolder)) return;
+      menu.addItem((item) => item
+        .setTitle('New Bedrock note')
+        .setIcon('pen-tool')
+        .onClick(() => this.newNote(file.path)));
+    }));
     this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
     this.addCommand({
       id: 'new-linked-note',
@@ -248,7 +256,7 @@ export default class BedrockPlugin extends Plugin {
       checkCallback: (checking) => {
         const about = this.aboutActive();
         if (!about) return false;
-        if (!checking) this.newNote(about);
+        if (!checking) this.newNote(undefined, about);
         return true;
       },
     });
@@ -468,7 +476,7 @@ export default class BedrockPlugin extends Plugin {
   addLinkedNoteItem(menu, about) {
     if (!about) return;
     menu.addItem((item) => {
-      item.setTitle('New handwritten note linking here').setIcon('pen-tool').onClick(() => this.newNote(about));
+      item.setTitle('New handwritten note linking here').setIcon('pen-tool').onClick(() => this.newNote(undefined, about));
       item.setSection?.('action');
     });
   }
@@ -509,12 +517,13 @@ export default class BedrockPlugin extends Plugin {
     return start || null;
   }
 
-  /** A new, empty note next to the open file (or in the new note folder).
-   *  With `about` (`{ file, page }`), it is named after that page and
-   *  starts with a link to it. */
-  async newNote(about = null) {
+  /** Makes an empty note and opens it: in `inFolder` when given (a
+   *  folder's menu), otherwise in the folder for new notes or beside the
+   *  open file (or the page it is about). With `about` (`{ file, page }`),
+   *  it is named after that page and starts with a link to it. */
+  async newNote(inFolder, about = null) {
     const active = about?.file || this.app.workspace.getActiveFile();
-    const folder = this.settings.newNoteFolder || active?.parent?.path || '';
+    const folder = inFolder ?? (this.settings.newNoteFolder || active?.parent?.path || '');
     const dir = folder && folder !== '/' ? `${folder}/` : '';
     const base = about ? `${about.file.basename}${about.page ? ` page ${about.page}` : ''} notes`.replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim() : 'Handwritten note';
     let path;
