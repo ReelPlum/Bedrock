@@ -10,7 +10,8 @@ hopping at its end and starting again, and "Opening note…" for screen
 readers. It SHALL show from the first paint, before the scripts and
 WebAssembly have loaded, wait a moment before fading in so a quick open
 shows nothing, and go once the note is open. The nib SHALL stay on the end
-of the line as it is drawn. With reduced motion nothing SHALL move.
+of the line as it is drawn. With reduced motion nothing SHALL move; the
+short wait before it shows SHALL still apply.
 
 #### Scenario: Starting up
 - **GIVEN** the app's WebAssembly is slow to arrive
@@ -33,7 +34,7 @@ of the line as it is drawn. With reduced motion nothing SHALL move.
 #### Scenario: Reduced motion
 - **GIVEN** the device asks for reduced motion
 - **WHEN** a note opens
-- **THEN** the finished line is shown with the pen resting at its end, and nothing moves
+- **THEN** after the same short wait as with motion (so a quick open shows nothing and nothing flickers), the finished line is shown at once, without a fade, with the pen resting at its end, and nothing moves
 <!-- test-js: apps/web/tests/note-loading.test.mjs :: with reduced motion the pen rests at the end of a finished line, still -->
 
 #### Scenario: In Obsidian
