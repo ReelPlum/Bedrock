@@ -5,14 +5,16 @@
 // recoloured (Color shows the writer's swatches and the + for a new one),
 // or deleted; linking or correcting a selection makes it one word first.
 // The menu keeps clear of whatever covers the bottom of the page (the iPad's
-// keyboard inside Obsidian, see `setInset`). Read only (a view-only note),
-// it only says what the word was read as, and opens or copies links.
+// keyboard inside Obsidian, see `setInset`). With the ink locked (a
+// view-only note) the reading can still be corrected and links opened or
+// copied, but the ink and its links do not change.
 
 import { LINK_TYPES, linkType } from './links.js';
 import { SwatchPicker } from './swatch-picker.js';
 
-/** The buttons that change the note, not shown when it is read only. */
-export const READ_ONLY_HIDDEN = ['wm-link', 'wm-unlink', 'wm-right', 'wm-correct', 'wm-kind', 'wm-drawing', 'wm-group', 'wm-ungroup', 'wm-color', 'wm-duplicate', 'wm-delete'];
+/** The buttons that change the ink or its links, not shown when it is
+ *  locked (correcting the reading stays). */
+export const READ_ONLY_HIDDEN = ['wm-link', 'wm-unlink', 'wm-group', 'wm-ungroup', 'wm-color', 'wm-duplicate', 'wm-delete'];
 
 /** How much a held stroke grows as it lifts, and how long that takes. */
 const LIFT_SCALE = 1.06;

@@ -2,6 +2,8 @@
 // Takes Obsidian's objects as arguments (no imports), so tests can pass
 // stand-ins.
 
+import { readZip, text } from './zip.js';
+
 /** How long writing pauses before the index note is brought up to date. */
 export const INDEX_DELAY_MS = 2500;
 
@@ -21,6 +23,42 @@ export function strokesOfState(eState) {
 
 /** Why a write is refused: the note is open view only (desktop). */
 export const VIEW_ONLY = 'This note is view only here.';
+
+/** The ink of a .bedrock file, to compare: its strokes (without their
+ *  samples), pictures and text boxes from note.json, and points.bin. An
+ *  empty file (a new note) has none. Null if it cannot be read. */
+async function inkOf(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (!b.byteLength) return { strokes: '[]', images: '[]', texts: '[]', points: null, samples: '[]' };
+  const z = await readZip(b).catch(() => null);
+  const json = z && text(z.get('note.json'));
+  if (!json) return null;
+  let note;
+  try { note = JSON.parse(json); } catch (_) { return null; }
+  const strokes = Array.isArray(note.strokes) ? note.strokes : [];
+  const list = (v) => JSON.stringify(Array.isArray(v) ? v : []);
+  return {
+    strokes: JSON.stringify(strokes.map(({ points: _p, ...rest }) => rest)),
+    samples: JSON.stringify(strokes.map((s) => s.points ?? null)),
+    images: list(note.images),
+    texts: list(note.texts),
+    points: z.get('points.bin') ?? null,
+  };
+}
+
+const sameBytes = (a, b) => a.byteLength === b.byteLength && a.every((v, i) => v === b[i]);
+
+/** True if `after` keeps the ink, pictures and text boxes of `before`
+ *  exactly (what a view-only canvas may save: tags, corrections, links of
+ *  the whole note). Samples are compared where both files keep them the
+ *  same way (points.bin, or in note.json). */
+export async function sameInk(before, after) {
+  const [a, b] = await Promise.all([inkOf(before), inkOf(after)]);
+  if (!a || !b || a.strokes !== b.strokes || a.images !== b.images || a.texts !== b.texts) return false;
+  if (a.points && b.points) return sameBytes(a.points, b.points);
+  if (!a.points && !b.points) return a.samples === b.samples;
+  return true;
+}
 
 /** Longest file name made from a title, before `.bedrock`. */
 const MAX_NAME = 120;
@@ -46,7 +84,7 @@ export const linkToStroke = (linktext, stroke) => `[[${linktext}#^${stroke}]]`;
 
 /**
  * @param {object} o
- * @param {boolean} [o.viewOnly]  the note is only looked at: it is never renamed, and written only once, to save the starting links of a new (empty) note
+ * @param {boolean} [o.viewOnly]  the ink is locked (a computer): the file is never renamed, and only written with its ink, pictures and text boxes exactly as they are
  * @param {object} o.vault       Obsidian Vault
  * @param {() => object} o.file  the open TFile
  * @param {object} o.indexer     Indexer (index-note.js)
@@ -86,8 +124,6 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
   let ownMtime = null;
   let writing = Promise.resolve();
   let inFlight = 0;
-  // View only: a new note's starting links may be written once.
-  let startWrite = false;
   const session = {
     get ownMtime() { return ownMtime; },
     /** Write the index note now if a save is waiting for it (the view
@@ -98,12 +134,7 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
     handlers: {
       ready: async () => { onReady?.(); return true; },
       // A new note's starting links ("New handwritten note linking here").
-      start: async () => {
-        const st = start?.() ?? null;
-        // View only, the canvas may save these links once, into the empty file.
-        if (viewOnly && st) startWrite = true;
-        return st;
-      },
+      start: async () => start?.() ?? null,
       // Sent as a compiled module (structured clone shares its code).
       wasm: async () => (wasm ? (await wasm().catch(() => null)) : null),
       read: async () => {
@@ -113,11 +144,8 @@ export function createSession({ viewOnly = false, vault, file, indexer, kv, list
       },
       write: async ({ data }) => {
         const f = file();
-        if (viewOnly) {
-          const ok = startWrite && !(await vault.readBinary(f)).byteLength;
-          startWrite = false;
-          if (!ok) throw new Error(VIEW_ONLY);
-        }
+        // View only, tags, corrections and starting links are saved, never ink.
+        if (viewOnly && !(await sameInk(await vault.readBinary(f), data))) throw new Error(VIEW_ONLY);
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
         // The app hands the file's buffer over (no copy); copy only a part.
         const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;

@@ -245,6 +245,8 @@ async function main() {
   const frameStats = { full: 0, inkOnly: 0 }; // for the tests
   let scribbleToastShown = false;
   const input = new InputController(stage, canvas, {
+    // View only (a computer): dragging moves the page, scrolling zooms.
+    wheelZooms: viewOnly,
     onFrame: (drew, latency) => {
       perf.frame({ latency, drawing: canvas.is_drawing(), moving: input.active.size > 0, interval: input.frames.interval });
       // While the pen is writing, a frame is only the stroke under it: the
@@ -335,7 +337,7 @@ async function main() {
     dictionary = handwriting.loadDictionary().then((ok) => { if (!ok) dictionary = null; input.requestFrame(); });
   };
   ensureDictionary();
-  const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
+  const wordChanged = () => { savedRevision = -1; saveChange(); input.requestFrame(); recognizerView?.update(); };
   // "Send every word I write in notes": each word's ink, moved to 0,0, with
   // what the recogniser read as an unchecked label, and again when the
   // writer checks it (see share-words.js).
@@ -476,11 +478,13 @@ async function main() {
   let keepAsked = false; // keepStorage(), once per page load
   /** Timed as the `save` job (perf.js). */
   function saveNow(opts) { return perf.job('save', () => saveNowUntimed(opts)); }
-  /** View only, nothing is saved but a new note's starting links (`start`). */
-  async function saveNowUntimed({ start = false } = {}) {
+  /** View only, nothing is saved by itself (no autosave, so opening a
+   *  note on a computer never writes it): only what the person changed
+   *  there (`asked`: tags, a corrected reading, a new note's starting links). */
+  async function saveNowUntimed({ asked = false } = {}) {
     clearTimeout(saveTimer);
     saveTimer = null;
-    if (startFailed || !store || (viewOnly && !start)) return;
+    if (startFailed || !store || (viewOnly && !asked)) return;
     if (canvas.is_drawing()) return scheduleSave();
     const rev = canvas.revision();
     const now = Date.now();
@@ -507,6 +511,13 @@ async function main() {
       problem(`Could not save this note on this device: ${e && e.message ? e.message : e}. Use “Save to iCloud Drive / Files” to keep a copy.`, 10000, e);
     });
     return saving;
+  }
+
+  /** Something the person changed that is not ink (tags, a reading):
+   *  saved soon, view only too. */
+  function saveChange() {
+    if (viewOnly) saveNow({ asked: true });
+    else scheduleSave();
   }
 
   function scheduleSave() {
@@ -604,7 +615,7 @@ async function main() {
     // here" in Obsidian) starts with its link and tags, saved at once.
     // View only (a computer) too: the link is part of making the note.
     const start = host ? await host.start().catch(() => null) : null;
-    if (start && applyStart(start)) await saveNow({ start: true });
+    if (start && applyStart(start)) await saveNow({ asked: true });
   }
 
   /** Put the host's starting links and tags into the new note. */
@@ -1323,8 +1334,8 @@ async function main() {
 
   // Tags and links of the whole note (note-info.js).
   noteInfo = new NoteInfo($('note-info'), canvas, {
-    readOnly: viewOnly,
-    onChange: () => { savedRevision = -1; scheduleSave(); },
+    lockLinks: viewOnly,
+    onChange: () => { savedRevision = -1; saveChange(); },
   });
 
   // ----- menu ------------------------------------------------------------------

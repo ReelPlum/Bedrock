@@ -2,8 +2,9 @@
 // belong to no ink (`tags` and `noteLinks` in note.json, see
 // docs/note-format.md). A tag is added by typing it; a link by the host's
 // picker (a vault file, PDF page or word in Obsidian) or by typing a web
-// address. Each can be opened (links) or removed. Read only (a view-only
-// note), it only shows them, and links still open.
+// address. Each can be opened (links) or removed. With `lockLinks` (a
+// view-only note) tags are still added and removed, and links only shown
+// and opened.
 
 import { LINK_TYPES, linkType } from './links.js';
 
@@ -16,9 +17,9 @@ const el = (tag, props = {}, ...children) => {
 export class NoteInfo {
   /** `canvas` is the WebAssembly canvas; `onChange()` is called after the
    *  note's tags or links changed (to save it). */
-  constructor(root, canvas, { onChange, readOnly = false } = {}) {
+  constructor(root, canvas, { onChange, lockLinks = false } = {}) {
     this.root = root;
-    this.readOnly = readOnly;
+    this.lockLinks = lockLinks;
     this.canvas = canvas;
     this.onChange = onChange || (() => {});
     root.classList.add('word-menu', 'note-info');
@@ -52,7 +53,7 @@ export class NoteInfo {
         el('div', { className: 'ni-label', textContent: 'Tags' }), this.tags, tagForm,
         el('div', { className: 'ni-label', textContent: 'Links of the whole note' }), this.links, this.browse, urlForm, this.error),
     );
-    if (readOnly) tagForm.hidden = urlForm.hidden = true;
+    if (lockLinks) urlForm.hidden = true;
     document.addEventListener('pointerdown', (e) => {
       // The link picker opens over the panel, which waits for its answer.
       if (!root.hidden && !root.contains(e.target) && !e.target.closest?.('#link-picker') && !e.target.closest?.('[data-action="note-info"]')) this.close();
@@ -85,7 +86,7 @@ export class NoteInfo {
     this.tags.replaceChildren(...tags.map((t) => {
       const x = el('button', { type: 'button', className: 'ni-remove', textContent: '×', ariaLabel: `Remove tag ${t}` });
       x.addEventListener('click', () => { if (this.canvas.remove_tag(t)) this.changed(); });
-      return el('li', { className: 'ni-tag' }, el('span', { textContent: `#${t}` }), ...(this.readOnly ? [] : [x]));
+      return el('li', { className: 'ni-tag' }, el('span', { textContent: `#${t}` }), x);
     }));
     if (!tags.length) this.tags.append(el('li', { className: 'ni-none', textContent: 'No tags yet.' }));
     this.links.replaceChildren(...noteLinks.map((l) => {
@@ -95,10 +96,10 @@ export class NoteInfo {
       open.addEventListener('click', () => type?.open(l.target));
       const x = el('button', { type: 'button', className: 'ni-remove', textContent: '×', ariaLabel: `Remove link to ${label}` });
       x.addEventListener('click', () => { if (this.canvas.remove_note_link(l.target)) this.changed(); });
-      return el('li', { className: 'ni-link' }, open, ...(this.readOnly ? [] : [x]));
+      return el('li', { className: 'ni-link' }, open, ...(this.lockLinks ? [] : [x]));
     }));
     if (!noteLinks.length) this.links.append(el('li', { className: 'ni-none', textContent: 'No links yet.' }));
-    this.browse.hidden = this.readOnly || !LINK_TYPES.some((t) => t.available && t.pick);
+    this.browse.hidden = this.lockLinks || !LINK_TYPES.some((t) => t.available && t.pick);
   }
 
   changed() {
