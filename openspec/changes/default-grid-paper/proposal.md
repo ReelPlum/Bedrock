@@ -38,8 +38,8 @@ plugin can keep a setting, which is what was asked for.
 - The note format is not changed: `paper` keeps its values and meaning, and
   what a file without it opens with (dots) is unchanged.
 
-Approval: asked of Frederik in the project thread, with this reason, before
-merge (pending).
+Approval: asked of Frederik in the project thread, with this reason;
+Frederik approved adding the field on 2026-11-23.
 
 ## Open source used
 

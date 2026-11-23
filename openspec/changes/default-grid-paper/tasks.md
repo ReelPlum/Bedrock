@@ -4,4 +4,4 @@
 - [x] 2. Web app (`main.js`, `host.js`, `index.html`): new notes start on grid, or on the host's `defaults().paper`.
 - [x] 3. Plugin (`main.js`, `session.js`): `newNotePaper` setting with a dropdown, `defaults` answered from it.
 - [x] 4. Specs (`canvas-navigation`, `obsidian-plugin`), `docs/note-format.md`, plugin README.
-- [ ] 5. Frederik approves the `data.json` field.
+- [x] 5. Frederik approves the `data.json` field.
