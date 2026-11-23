@@ -60,7 +60,7 @@ files (for example PDFs).
 | `version` | Format version. Readers should still try to read newer versions and keep fields they do not understand. |
 | `created`, `modified` | Unix time in milliseconds. |
 | `background` | Paper colour, `#rrggbbaa`. |
-| `paper` | `plain`, `dots`, `grid` or `lines`. |
+| `paper` | `plain`, `dots`, `grid` or `lines`. A note without it opens with `dots`. (New notes made in Bedrock start on `grid` and always write it.) |
 | `units` | World units. `px` means 1 unit is one CSS pixel at 100% zoom (1/96 inch). The canvas is infinite; coordinates may be negative. Y points down, like SVG. |
 | `channels` | Names of the numbers stored per sample in each stroke's `points`, in order. |
 | `strokes` | Strokes in drawing order (later strokes are on top, highlighters are drawn underneath ink). |

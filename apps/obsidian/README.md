@@ -36,6 +36,9 @@ makes the note in that folder.
   setting is (no second copy in `Bedrock index/`), the sidecar opens the
   note beside it, moves with the note when it is renamed, and is fixed up
   once if the folder was not dropped into the vault's root.
+- **Paper for new notes.** New notes start on grid paper. The setting
+  "Paper for new notes" picks grid, dots, lines or plain instead. Notes you
+  already have keep their own paper, and each note's menu can change it.
 - **A handwritten note about a page.** Right-click in a note (a long press
   on the iPad), or open a note's or PDF's ⋯ menu (also the tab header and
   the file explorer), and choose "New handwritten note linking here"; a
@@ -114,6 +117,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 |---|---|---|
 | app | `ready` | the app has started |
 | app | `start` | what a new note starts with: `{ noteLinks: [{ target, type, text }] }` for a note made by "New handwritten note linking here" (once; the app adds the link and saves at once), else `null` |
+| app | `defaults` | what every new note starts with: `{ paper }`, from the "Paper for new notes" setting (`grid`, `dots`, `lines` or `plain`; `grid` unless changed) |
 | app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
 | app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes. View only, refused (an error) unless the ink, pictures and text boxes are exactly as in the file |

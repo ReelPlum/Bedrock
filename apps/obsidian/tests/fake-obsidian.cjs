@@ -72,8 +72,40 @@ class WorkspaceLeaf {
   constructor() { this.opened = []; this.view = null; }
   async openFile(file, openState) { this.opened.push({ path: file.path, openState }); }
 }
-class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; } }
-class Setting {}
+/** Its `containerEl` keeps the settings shown, as `settings`. */
+class PluginSettingTab {
+  constructor(app, plugin) {
+    this.app = app;
+    this.plugin = plugin;
+    this.containerEl = { settings: [], empty() { this.settings = []; } };
+  }
+}
+/** Records `{ name, desc, control }`; the control keeps what it was given
+ *  (`options`, `value`) and its `change` handler. */
+class Setting {
+  constructor(el) { el?.settings?.push(this); }
+  setName(n) { this.name = n; return this; }
+  setDesc(d) { this.desc = d; return this; }
+  add(kind, fn) {
+    const c = { kind, options: {} };
+    const api = {
+      addOptions(o) { Object.assign(c.options, o); return api; },
+      addOption(v, t) { c.options[v] = t; return api; },
+      setValue(v) { c.value = v; return api; },
+      setPlaceholder(p) { c.placeholder = p; return api; },
+      setButtonText(t) { c.text = t; return api; },
+      onChange(f) { c.change = f; return api; },
+      onClick(f) { c.click = f; return api; },
+    };
+    fn(api);
+    this.control = c;
+    return this;
+  }
+  addToggle(fn) { return this.add('toggle', fn); }
+  addText(fn) { return this.add('text', fn); }
+  addButton(fn) { return this.add('button', fn); }
+  addDropdown(fn) { return this.add('dropdown', fn); }
+}
 class Notice { constructor(msg) { Notice.shown.push(msg); } }
 Notice.shown = [];
 

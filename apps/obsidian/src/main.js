@@ -154,6 +154,7 @@ class BedrockView extends FileView {
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
       start: () => plugin.takeStart(this.file),
+      paper: () => plugin.settings.newNotePaper,
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
       rename: (name) => plugin.renameNote(this.file, name),
@@ -204,7 +205,10 @@ export function isViewOnly(platform) {
   return !!platform?.isDesktopApp && !platform?.isMobileApp;
 }
 
-const DEFAULT_SETTINGS = { index: true, indexFolder: DEFAULT_INDEX_FOLDER, newNoteFolder: '' };
+/** Paper patterns a note can have, as the setting names them. */
+export const PAPERS = { grid: 'Grid', dots: 'Dots', lines: 'Lines', plain: 'Plain' };
+
+const DEFAULT_SETTINGS = { index: true, indexFolder: DEFAULT_INDEX_FOLDER, newNoteFolder: '', newNotePaper: 'grid' };
 
 export default class BedrockPlugin extends Plugin {
   async onload() {
@@ -596,6 +600,13 @@ class BedrockSettings extends PluginSettingTab {
       .setDesc('Leave empty to create new notes next to the open file.')
       .addText((t) => t.setValue(p.settings.newNoteFolder).onChange(async (v) => {
         p.settings.newNoteFolder = v.trim() ? normalizePath(v.trim()) : '';
+        await p.persist();
+      }));
+    new Setting(containerEl)
+      .setName('Paper for new notes')
+      .setDesc('The paper a new note starts with. Notes you already have keep their own paper, and each note can be changed in its menu.')
+      .addDropdown((d) => d.addOptions(PAPERS).setValue(PAPERS[p.settings.newNotePaper] ? p.settings.newNotePaper : 'grid').onChange(async (v) => {
+        p.settings.newNotePaper = PAPERS[v] ? v : 'grid';
         await p.persist();
       }));
   }

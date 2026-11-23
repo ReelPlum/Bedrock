@@ -158,6 +158,9 @@ function connect() {
     /** What a new note starts with, if the host made it about something:
      *  `{ noteLinks: [{ target, type, text }], tags: [] }`, or null. */
     start: () => rpc.call('start'),
+    /** What every new note starts with: `{ paper }`, the paper chosen in
+     *  the host's settings. */
+    defaults: () => rpc.call('defaults'),
     /** The note's name is its file's name: ask the host to rename the
      *  file to `title`. Resolves to `{ name }`, the file's name after. */
     rename: (title) => rpc.call('rename', { title }),

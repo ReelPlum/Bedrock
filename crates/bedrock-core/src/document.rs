@@ -164,7 +164,9 @@ pub struct Document {
     pub created: f64,
     pub modified: f64,
     pub background: crate::color::Rgba,
-    /// Paper pattern: "plain", "dots", "grid" or "lines".
+    /// Paper pattern: "plain", "dots", "grid" or "lines". "dots" here is
+    /// what a file that names no paper opens with; new notes made in the
+    /// app start on grid (apps/web/src/main.js, newNotePaper).
     pub paper: String,
     strokes: Vec<Stroke>,
     pub recognition: Vec<RecognizedText>,

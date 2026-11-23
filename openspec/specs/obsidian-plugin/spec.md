@@ -19,7 +19,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **Note links and tags**: `noteLinks` and `tags` in `note.json`
   (`note-format`); the index note's front matter lists the tags.
 - **Plugin data** (Obsidian's `data.json`): `{ ...settings, cameras }`: the settings
-  (`index`, `indexFolder`, `newNoteFolder`) and the camera per vault file
+  (`index`, `indexFolder`, `newNoteFolder`, `newNotePaper`) and the camera per vault file
   (only the most recent are kept).
 
 ## Requirements
@@ -52,6 +52,13 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **WHEN** the writer holds it (iPad, iPhone) or right-clicks it (desktop) and picks "New Bedrock note"
 - **THEN** an empty `.bedrock` file is made in that folder (the vault's top folder too), whatever the "Folder for new notes" setting says, never overwriting a file, and it opens; a file's menu gets no such item
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: holding (or right-clicking) a folder offers a new Bedrock note in that folder -->
+
+#### Scenario: Paper for new notes
+- **GIVEN** the plugin's settings
+- **WHEN** "Paper for new notes" is left alone, or set to grid, dots, lines or plain, and a new note is opened
+- **THEN** it is grid by default, the choice is saved with the settings (settings saved before it existed get grid, anything else is never kept), the canvas asks the plugin for it (`defaults`, answered `{ paper }`) and the new note starts on it; notes already saved keep their own paper
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: new notes start on grid paper; the settings choose another paper for new notes, and it is remembered -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a new note starts on the paper chosen in the settings, grid unless changed; a saved note keeps its own -->
 
 #### Scenario: Saving to the vault file
 - **GIVEN** a note open in the view

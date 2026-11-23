@@ -169,6 +169,22 @@ test('a new note in the vault: drawn, saved into the file, and indexed for searc
   await ctx.close();
 });
 
+test('a new note starts on the paper chosen in the settings, grid unless changed; a saved note keeps its own', async () => {
+  const { page, ctx, errors } = await openHost();
+  let frame = await openFile(page, 'Grid.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.paper()), 'grid', 'grid by default');
+  await writeWord(frame);
+  await until(page, () => host.vault.files.get('Grid.bedrock').data.byteLength > 0);
+  await page.evaluate(() => { host.paper = 'lines'; });
+  frame = await openFile(page, 'Lines.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.paper()), 'lines', 'the setting chose lines');
+  // The grid note keeps its grid.
+  frame = await openFile(page, 'Grid.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.paper()), 'grid');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // Writing was slower in Obsidian than on the website. The canvas shares
 // Obsidian's main thread, so each save there must cost Obsidian little: the
 // file is handed over without a copy, and the index note waits for a pause.

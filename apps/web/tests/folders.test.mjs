@@ -280,3 +280,28 @@ test('export: the library becomes folders of notes, each with its Obsidian sidec
   assert.deepEqual(errors, []);
   await context.close();
 });
+
+test('a new note starts on grid paper; a note that is opened again keeps its own paper', async () => {
+  const context = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const { page, errors } = await openApp(env, { context });
+  assert.equal(await page.evaluate(() => bedrock.canvas.paper()), 'grid', 'the first note');
+  assert.equal(await page.inputValue('#paper'), 'grid', 'the menu shows it');
+  // A note on dots paper, then a new one: grid again.
+  const dots = await page.evaluate(async () => {
+    const p = document.getElementById('paper');
+    p.value = 'dots';
+    p.dispatchEvent(new Event('change'));
+    await t.line(200, 300, 600, 300);
+    await bedrock.saveNow();
+    return bedrock.noteId;
+  });
+  await openLibrary(page);
+  await newNote(page);
+  assert.equal(await page.evaluate(() => bedrock.canvas.paper()), 'grid', 'a new note');
+  // The dots note opens on dots.
+  await page.evaluate((id) => bedrock.openNote(id), dots);
+  assert.equal(await page.evaluate(() => bedrock.canvas.paper()), 'dots', 'its own paper');
+  assert.equal(await page.inputValue('#paper'), 'dots');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
