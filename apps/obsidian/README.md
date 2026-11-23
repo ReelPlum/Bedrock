@@ -22,6 +22,13 @@ makes the note in that folder.
   off or move it beside each note as `Name.bedrock.md`. "Rebuild search index
   of handwritten notes" re-indexes notes edited elsewhere (this also runs at
   start-up).
+- **A tidy graph view.** Run "Copy graph filter that hides .bedrock files
+  and the #bedrock tag" (or "Copy filter" in the settings), open the graph,
+  turn on "Attachments" so PDFs show, and paste it into "Search files":
+  `-file:/\.bedrock$/ -(#bedrock)`. Each handwritten note is then one node,
+  its index note, with edges to the notes and PDFs it links, and the
+  `#bedrock` tag node is gone. Obsidian has no way for a plugin to set the
+  graph's filters, so this is a paste.
 - **Notes from the website drop straight in.** The website's "Export all
   notes" unzips to your folders with each note's index already beside it as
   `Name.bedrock.md`. Drag that folder anywhere into the vault: a note with a

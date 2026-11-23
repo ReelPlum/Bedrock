@@ -83,7 +83,7 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   const { plugin, written } = await loaded();
   assert.deepEqual(Object.keys(plugin.views), ['bedrock-note']);
   assert.deepEqual(plugin.extensions, { bedrock: 'bedrock-note' });
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex']);
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex', 'graph-filter']);
   assert.equal(plugin.settingTabs.length, 1);
   assert.deepEqual([...written.keys()], [], 'the canvas is not unpacked: Obsidian would not let the view load it');
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
@@ -95,7 +95,7 @@ test('on a desktop computer notes are view only, and no new notes are offered; t
   try { env = await loaded(); } finally { fake.Platform.isDesktopApp = false; }
   const { plugin, app, vault } = env;
   assert.equal(plugin.viewOnly, true);
-  assert.deepEqual(plugin.commands.map((c) => c.id), ['report-problem', 'reindex'], 'no new-note commands');
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['report-problem', 'reindex', 'graph-filter'], 'no new-note commands');
   assert.deepEqual(plugin.ribbons, [], 'no "New Bedrock note" button');
   // No "New Bedrock note" on a folder, no "New handwritten note linking here" on a note.
   await vault.create('Lecture 3.md', '# Lecture 3');
@@ -124,7 +124,7 @@ test('on a desktop computer notes are view only, and no new notes are offered; t
 
   const ipad = await loaded();
   assert.equal(ipad.plugin.viewOnly, false);
-  assert.deepEqual(ipad.plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex']);
+  assert.deepEqual(ipad.plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex', 'graph-filter']);
 });
 
 test('soon after Obsidian starts, the WebAssembly is compiled once, ready for the first note', async () => {

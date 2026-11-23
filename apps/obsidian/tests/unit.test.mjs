@@ -11,6 +11,7 @@ import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
 import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
 import { packWebApp } from '../build.mjs';
+import { GRAPH_FILTER, copyGraphFilter } from '../src/graph.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
 /** A ZIP like zip.rs writes: each entry deflated if that is smaller. */
@@ -105,6 +106,37 @@ test('index notes from before tags: an untagged note indexes the same, and old i
   assert.equal(noteOfIndex(old), 'School/Before note links.bedrock');
   assert.equal(indexMarkdown('School/Before note links.bedrock', await readNoteText(new Uint8Array(noteBytes))), old,
     'a note without tags or note links gets the very same index note as before');
+});
+
+test('the graph filter hides .bedrock files and the #bedrock tag node, and keeps index notes, sidecars and PDFs', async () => {
+  assert.equal(GRAPH_FILTER, '-file:/\\.bedrock$/ -(#bedrock)');
+  // `-file:/\.bedrock$/`: the regular expression Obsidian runs on file names.
+  const hidden = (name) => /\.bedrock$/.test(name);
+  assert.ok(hidden('Forces.bedrock'));
+  for (const kept of ['Forces.bedrock.md', 'Forces.md', 'Week 3.pdf', 'Ideas.md']) assert.ok(!hidden(kept), `${kept} stays in the graph`);
+  // `-(#bedrock)` keeps every index note: none says `#bedrock` in its
+  // text (the tag is only in the front matter), and the edge to a PDF page
+  // stays, since it starts at the index note.
+  const bytes = zip({
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [], noteLinks: [{ target: 'Lectures/Week 3.pdf#page=4', type: 'note', text: 'Week 3, page 4' }], tags: ['physics'] }),
+    'recognized.json': recognized('Newton'),
+    'links.md': '# Links in this note\n\n- [[Lectures/Week 3.pdf#page=4|Week 3, page 4]]\n',
+  });
+  const md = indexMarkdown('Physics/Forces.bedrock', await readNoteText(bytes));
+  assert.doesNotMatch(md, /#bedrock/i);
+  assert.match(md, /^tags: \[bedrock, physics\]$/m, 'the tag the filter hides');
+  assert.match(md, /\[\[Lectures\/Week 3\.pdf#page=4\|/);
+});
+
+test('the graph filter goes on the clipboard, or is shown where the clipboard is refused', async () => {
+  const said = [];
+  let copied = null;
+  assert.equal(await copyGraphFilter({ writeText: async (t) => { copied = t; } }, (m) => said.push(m)), true);
+  assert.equal(copied, GRAPH_FILTER);
+  assert.match(said[0], /copied.*Attachments.*Search files/);
+  assert.equal(await copyGraphFilter({ writeText: async () => { throw new Error('denied'); } }, (m) => said.push(m)), false);
+  assert.ok(said[1].includes(GRAPH_FILTER), 'the filter is shown to copy by hand');
+  assert.equal(await copyGraphFilter(undefined, (m) => said.push(m)), false, 'no clipboard at all');
 });
 
 test('handwriting that looks like Markdown links does not become a link', () => {

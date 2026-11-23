@@ -11,6 +11,7 @@ import { watchKeyboard } from './keyboard.js';
 import { askAtLaunch } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
+import { GRAPH_FILTER, GRAPH_HOW, copyGraphFilter } from './graph.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
@@ -276,6 +277,7 @@ export default class BedrockPlugin extends Plugin {
     }
     this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
+    this.addCommand({ id: 'graph-filter', name: 'Copy graph filter that hides .bedrock files and the #bedrock tag', callback: () => this.copyGraphFilter() });
     this.addSettingTab(new BedrockSettings(this.app, this));
 
     const vault = this.app.vault;
@@ -442,6 +444,12 @@ export default class BedrockPlugin extends Plugin {
     await this.saveData({ settings: this.settings, cameras: this.cameras });
   }
 
+  /** The graph filter goes on the clipboard: Obsidian offers plugins no
+   *  way to set the graph's filters (graph.js). */
+  copyGraphFilter() {
+    return copyGraphFilter(globalThis.navigator?.clipboard, (msg) => new Notice(msg, 12000));
+  }
+
   async reindex(announce) {
     if (!this.settings.index) return;
     const n = await this.indexer.sync().catch((e) => {
@@ -581,6 +589,10 @@ class BedrockSettings extends PluginSettingTab {
         p.settings.indexFolder = normalizePath(v.trim() || '/').replace(/^\/$/, '');
         await p.persist();
       }));
+    new Setting(containerEl)
+      .setName('Tidy graph view')
+      .setDesc(`Shows each handwritten note once (its index note, which keeps its links to notes and PDF pages) and hides the #bedrock tag. Copy the filter, then: ${GRAPH_HOW} The filter is: ${GRAPH_FILTER}`)
+      .addButton((b) => b.setButtonText('Copy filter').onClick(() => p.copyGraphFilter()));
     // No notes are made where they are view only.
     if (p.viewOnly) return;
     new Setting(containerEl)
