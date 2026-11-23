@@ -2657,7 +2657,10 @@ test('lasso: Color in the selection menu shows the swatches and the +, and gives
 test('the WebAssembly is fetched and compiled once; the save worker gets the module the page compiled', async () => {
   const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
   const wasm = [];
-  ctx.on('request', (r) => { if (r.url().endsWith('.wasm')) wasm.push(r.url()); });
+  // The page's and the save worker's requests. The service worker also
+  // fetches the app once when it installs, to keep it for offline use
+  // (sw.js); that copy is not the page loading it twice.
+  ctx.on('request', (r) => { if (r.url().endsWith('.wasm') && !r.serviceWorker()) wasm.push(r.url()); });
   const { page, errors } = await openApp(env, { context: ctx });
   await page.evaluate(async () => {
     t.ev('pointerdown', 1, 'pen', 300, 300, { pressure: 0.6 });
