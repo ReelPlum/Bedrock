@@ -17,6 +17,27 @@ test('starts without errors and renders the paper', async () => {
   await ctx.close();
 });
 
+test('the app starts without downloading PDF import or, with spelling off, the dictionary', async () => {
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  await ctx.addInitScript(() => {
+    const s = JSON.parse(localStorage.getItem('bedrock.settings.v1') || '{}');
+    localStorage.setItem('bedrock.settings.v1', JSON.stringify({ ...s, spelling: false }));
+  });
+  const fetched = [];
+  ctx.on('request', (r) => fetched.push(new URL(r.url()).pathname));
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.waitForTimeout(500);
+  assert.ok(fetched.some((p) => p.endsWith('/bedrock_web_bg.wasm')), 'the app itself');
+  assert.deepEqual(fetched.filter((p) => /bedrock_pdf|\/dict\//.test(p)), []);
+  // Turning spelling on fetches the dictionary then.
+  await page.evaluate(() => { const c = document.getElementById('spelling'); c.checked = true; c.dispatchEvent(new Event('change')); });
+  await page.waitForFunction(() => window.bedrock.handwriting.dictionaryReady, null, { timeout: 10000 });
+  await page.waitForTimeout(300);
+  assert.ok(fetched.some((p) => p.includes('/dict/en.aff')), `fetched ${fetched.filter((p) => p.includes('dict'))}`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // The Duplicate update failed to start for a writer whose browser kept the
 // old page (without the Duplicate button) while loading the new scripts.
 test('a page from an older version than its scripts reloads once by itself and starts; if that does not help it says so with a Reload button', async () => {

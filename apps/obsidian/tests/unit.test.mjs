@@ -446,7 +446,8 @@ test('the plugin packs the current web app, host adapter and WebAssembly include
   assert.match(b.modules.app, /BEDROCK_ASSETS/);
   assert.doesNotMatch(b.modules.app, /^import .* from ['"]\./m, 'one module, no imports of neighbours');
   assert.deepEqual(Object.keys(b.workers), ['src/save-worker.js', 'src/recognizer-worker.js']);
-  for (const f of ['pkg/bedrock_web_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  for (const f of ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  assert.match(b.modules.app, /bedrock_pdf_bg\.wasm/, 'PDF import finds its WebAssembly among the handed over files');
   assert.equal(b.hash, (await packWebApp()).hash, 'the version hash is stable');
 });
 

@@ -6,7 +6,16 @@
   "required": ["format", "strokes"],
   "properties": {
     "format": { "const": "bedrock-note" },
-    "version": { "type": "integer", "minimum": 1 },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1: every stroke has its points here. 2: note.json inside a .bedrock whose samples are in pointsFile"
+    },
+    "pointsFile": {
+      "type": "string",
+      "examples": ["points.bin"],
+      "description": "Inside a .bedrock: the archive entry holding the samples of the strokes that have no points here, in order (docs/note-format.md)"
+    },
     "title": { "type": "string" },
     "created": { "type": "number", "description": "Unix time, ms" },
     "modified": { "type": "number", "description": "Unix time, ms" },
@@ -86,12 +95,14 @@
     }
   },
   "additionalProperties": true,
+  "if": { "not": { "required": ["pointsFile"] } },
+  "then": { "properties": { "strokes": { "items": { "required": ["points"] } } } },
   "$defs": {
     "color": { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" },
     "strokeId": { "type": "string", "pattern": "^[0-9a-f]{1,16}$" },
     "stroke": {
       "type": "object",
-      "required": ["id", "brush", "points"],
+      "required": ["id", "brush"],
       "properties": {
         "id": { "$ref": "#/$defs/strokeId" },
         "brush": {

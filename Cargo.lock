@@ -59,6 +59,7 @@ dependencies = [
  "hayro-syntax",
  "ink-stroke-modeler",
  "jsonschema",
+ "leb128",
  "png",
  "proptest",
  "roxmltree",
@@ -67,6 +68,15 @@ dependencies = [
  "serde_json",
  "spellbook",
  "zip",
+]
+
+[[package]]
+name = "bedrock-pdf"
+version = "0.1.0"
+dependencies = [
+ "bedrock-core",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -496,6 +506,12 @@ dependencies = [
  "serde_json",
  "zmij",
 ]
+
+[[package]]
+name = "leb128"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
 
 [[package]]
 name = "libc"

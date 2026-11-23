@@ -1,4 +1,4 @@
-# Bedrock note format (version 1)
+# Bedrock note format (version 2)
 
 Bedrock promises that your notes outlive the app. This document is the
 complete description of a note file; anyone should be able to read one in an
@@ -17,10 +17,11 @@ afternoon without Bedrock's code. The machine readable schema for
 
 | Entry | Content |
 |---|---|
-| `note.json` | All ink with raw pen samples. The source of truth. |
+| `note.json` | All ink: every stroke, its brush and times. The source of truth, together with `points.bin`. |
+| `points.bin` | The raw pen samples of the strokes in `note.json`, in a small binary form (see [`points.bin`](#pointsbin)). Written since version 2; a file without it has every sample in `note.json`. |
 | `recognized.json` | Text recognised from handwriting, linked to stroke ids. Kept separate so recognition can never damage ink. |
 | `links.md` | The note's links as Markdown (`[[Note]]`, `[text](https://…)`), for tools such as Obsidian's graph. Generated from `links` in `note.json`. |
-| `preview.svg` | The note rendered as vector paths. Opens in any browser, forever. |
+| `preview.svg` | The note rendered as vector paths, outline points to 0.1 units. Opens in any browser, forever. A picture only: the ink is in `note.json` and `points.bin`. |
 | `images/<hash>.<ext>` | Pictures placed on the page, as ordinary PNG, JPEG, WebP or GIF files (stored, not compressed again). Named by their content's SHA-256, so one picture used twice is stored once. |
 | `README.txt` | A short human explanation of the above. |
 
@@ -79,7 +80,7 @@ it (`altitude` ↔ InkML `OE`, `azimuth` ↔ `OA`, `pressure` ↔ `F`).
 
 Writers may change the order or omit channels other than `x` and `y`; readers
 must use `channels` and fall back to defaults (pressure 0.5, altitude π/2,
-azimuth 0, t 0). Values are rounded to 2 decimals for positions, 3 for pressure
+azimuth 0, t 0). Values are rounded to 3 decimals for positions, 3 for pressure
 and angles, 1 for time.
 
 ### Strokes
@@ -106,6 +107,43 @@ The device's pressure curve and steady-hand smoothing are reader settings, not s
 
 How brushes turn samples into shapes is a rendering choice, not part of the
 format. `preview.svg` shows exactly how Bedrock drew the note when it was saved.
+
+## `points.bin`
+
+Inside a `.bedrock`, `note.json` is written as version 2 with
+`"pointsFile": "points.bin"`, and its strokes have no `points`: their
+samples are in the archive entry `points.bin`, in the order of the strokes,
+so the first stroke without `points` has the first record, and so on. A
+stroke whose values the binary form cannot hold exactly keeps `points` in
+`note.json` and has no record. The bare `.json` and the `.svg` export are
+always version 1, with every sample in the JSON.
+
+The file holds exactly the numbers `note.json` would hold. Each value is a
+whole number of its channel's smallest step: `value = integer / 10^decimals`,
+with the decimals named in the file (3 for positions, pressure and angles, 1
+for time, as in [Channels](#channels)). So reading it gives the same values,
+bit for bit, as reading them from JSON text. It is about a third of the size.
+
+All integers are LEB128, the variable-length encoding of WebAssembly and
+DWARF (7 bits per byte, low bits first, the top bit set on every byte but
+the last); "signed" means signed LEB128.
+
+| Part | Encoding |
+|---|---|
+| Magic | the 4 bytes `BDPT` |
+| Version | unsigned, `1` |
+| Channel count `C` | unsigned; the same channels, in the same order, as `channels` in `note.json` |
+| Each channel | name length (unsigned), the name in UTF-8, decimals (unsigned) |
+| Stroke count `N` | unsigned |
+| Each stroke | sample count `n` (unsigned), then `n × C` signed integers |
+
+Within a stroke the integers run sample by sample, channel by channel, and
+each is the difference from the same channel of the sample before (the
+first sample's from 0). For example, x values 100.5, 101.75 with 3 decimals
+are the integers 100500, 101750, stored as 100500 and 1250.
+
+A reader in any language is about 30 lines; Bedrock's is
+`crates/bedrock-core/src/points_bin.rs`.
 
 ## `recognized.json`
 
@@ -258,7 +296,9 @@ covered by fuzz-style tests in `crates/bedrock-core/src/format.rs`.
 ## Versioning
 
 `version` is bumped only by a breaking change: removing a field, or changing
-what an existing field means. A new optional field that older readers can
+what an existing field means. Version 2 (November 2026) moved the samples of
+a `.bedrock` into `points.bin`, so a stroke there may have no `points`;
+everything else is as in version 1, and readers read both. A new optional field that older readers can
 ignore (they keep fields they do not know, see above) keeps the version;
 pictures, text boxes, word groups, `kinds` and pen tuning were all added this
 way within version 1. Either way, a change to this format is agreed with the

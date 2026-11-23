@@ -27,7 +27,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Registering the view
 - **GIVEN** the plugin is enabled
 - **WHEN** Obsidian loads it
-- **THEN** the `.bedrock` view, commands and settings are registered, the web app's pages travel inside `main.js`, and nothing is written into the plugin folder
+- **THEN** the `.bedrock` view, commands and settings are registered, the web app's pages travel inside `main.js` (with both WebAssembly modules, the app's and PDF import's, which the web app downloads only when a PDF is opened), and nothing is written into the plugin folder
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: registers the .bedrock view, commands and settings, and writes nothing into the plugin folder -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: the plugin packs the current web app, host adapter and WebAssembly included -->
 
