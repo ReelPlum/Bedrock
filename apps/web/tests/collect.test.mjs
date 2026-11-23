@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
-import { launch, openApp, installPointerHelpers } from './helpers.mjs';
+import { launch, openApp, installPointerHelpers, goodnotesLikePdf } from './helpers.mjs';
 
 let env;
 before(async () => { env = await launch(); });
@@ -665,30 +665,6 @@ test('notes: two words written on one line are sent as one line, cut into its wo
  *  of short pieces, and the handwriting's reading as invisible text placed
  *  with a large offset. Page 1: a word of three strokes read as "hi", and
  *  one read as "ok". Page 2: one stroke the PDF has no reading for. */
-function goodnotesLikePdf() {
-  const stroke = (x, y) => {
-    let c = '';
-    for (const [a, b] of [[[x, y], [x + 5, y + 10]], [[x + 5, y + 10], [x + 10, y + 20]]]) {
-      c += `${a[0]} ${a[1]} m ${b[0]} ${b[1]} l ${b[0] + 2} ${b[1]} l ${a[0] + 2} ${a[1]} l h `;
-    }
-    return `${c}f\n`;
-  };
-  const page1 = '0.1 0.1 0.1 sc\n' + stroke(100, 300) + stroke(115, 300) + stroke(130, 300) + stroke(300, 300)
-    + '3 Tr q 1 0 0 1 5100 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (hi) Tj ET Q\n'
-    + 'q 1 0 0 1 5300 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (ok) Tj ET Q\n';
-  const page2 = '0 0 1 sc\n' + stroke(200, 200);
-  const objs = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 600 400] >>',
-    '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
-    `<< /Length ${page1.length} >>\nstream\n${page1}\nendstream`,
-    '<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>',
-    `<< /Length ${page2.length} >>\nstream\n${page2}\nendstream`,
-  ];
-  const text = `%PDF-1.4\n${objs.map((o, i) => `${i + 1} 0 obj\n${o}\nendobj\n`).join('')}trailer << /Root 1 0 R >>\n%%EOF\n`;
-  return [...text].map((c) => c.charCodeAt(0));
-}
-
 test("importing a PDF: each page becomes a note, and every line is sent with the PDF's reading", async () => {
   const { ctx, server } = await context();
   const setup = await openSetup(ctx);
@@ -728,6 +704,29 @@ test('importing a PDF without saving set up keeps it on the device', async () =>
   const words = await page.evaluate(() => JSON.parse(bedrock.canvas.words_json()).map((w) => [w.text, w.engine]));
   assert.deepEqual(words, [[null, null]], 'page 2 has no reading');
   assert.equal(await page.evaluate(() => bedrock.handwriting.isCareful({ text: 'hi', engine: 'pdf-text', kind: 'text' })), true, 'a reading from the PDF is not redone');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// Bug: an imported PDF was not saved: opening another note and then the
+// imported one showed a blank note.
+test('bug: an imported PDF is saved, and is still there after opening another note and coming back', async () => {
+  const { ctx } = await context();
+  const { page, errors } = await openApp(env, { context: ctx });
+  await page.evaluate(() => { bedrock.handwriting.enabled = false; });
+  await page.evaluate(async (bytes) => bedrock.importPdf({ name: 'Lecture 8.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  const ids = await page.evaluate(async () => Object.fromEntries((await bedrock.store.list()).map((n) => [n.title, n.id])));
+  await page.evaluate(() => bedrock.newNote());
+  assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 0);
+  for (const [title, strokes] of [['Lecture 8 (page 1)', 4], ['Lecture 8 (page 2)', 1]]) {
+    await page.evaluate((id) => bedrock.openNote(id), ids[title]);
+    assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), strokes, title);
+  }
+  // And after the app is opened again.
+  await page.reload();
+  await page.waitForFunction(() => window.bedrock?.ready, null, { timeout: 20000 });
+  await page.evaluate((id) => bedrock.openNote(id), ids['Lecture 8 (page 1)']);
+  assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 4, 'after a reload');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

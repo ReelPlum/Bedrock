@@ -77,6 +77,40 @@ pub fn is_pdf(bytes: &[u8]) -> bool {
 /// Every page with ink as a note. `start_ms` is the time given to the first
 /// stroke (Unix ms); `seed` makes the stroke ids (see [`Document::new`]).
 pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, String> {
+    import_pages(bytes, seed, start_ms, false)
+}
+
+/// Space left between pages stacked in one note (page units).
+pub const PAGE_GAP: f64 = 40.0;
+
+/// Every page with ink in one note, one page below another with
+/// [`PAGE_GAP`] between them, in page order. For a note that must stay one
+/// file (a note in Obsidian). `Ok(None)` if no page has ink or pictures.
+pub fn import_as_one_note(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Option<PdfPage>, String> {
+    let mut pages = import_pages(bytes, seed, start_ms, true)?.into_iter();
+    let Some(mut one) = pages.next() else { return Ok(None) };
+    for p in pages {
+        let mut strokes = one.doc.strokes().to_vec();
+        strokes.extend(p.doc.strokes().iter().cloned());
+        one.doc.set_strokes(strokes);
+        let mut images = one.doc.images().to_vec();
+        images.extend(p.doc.images().iter().cloned());
+        one.doc.set_images(images);
+        one.doc.recognition.extend(p.doc.recognition);
+        one.doc.assets.extend(p.doc.assets);
+        one.readings += p.readings;
+        for w in p.warnings {
+            if !one.warnings.contains(&w) {
+                one.warnings.push(w);
+            }
+        }
+    }
+    Ok(Some(one))
+}
+
+/// The pages with ink; `stacked` places each below the one before (as
+/// [`import_as_one_note`] needs), otherwise each at the top of its own note.
+fn import_pages(bytes: &[u8], seed: u64, start_ms: f64, stacked: bool) -> Result<Vec<PdfPage>, String> {
     if !is_pdf(bytes) {
         return Err("not a PDF file".into());
     }
@@ -90,19 +124,38 @@ pub fn import(bytes: &[u8], seed: u64, start_ms: f64) -> Result<Vec<PdfPage>, St
     }
     let mut out = Vec::new();
     let mut t = start_ms;
+    let mut top = 0.0;
     let mut pictures = Pictures::new();
     for (i, page) in pages.iter().enumerate() {
         let mut ink = Ink::default();
         run(&page_content(page.raw()), page.resources(), IDENTITY, &mut ink, 0);
-        let seed = seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut p = build_page(&ink, media_box(page.raw()), seed, &mut t, &mut pictures);
+        // Ids come from a counter stepped by this same constant, so pages
+        // seeded a step apart share most of their ids. Fine for a note per
+        // page; pages stacked in one note get well mixed seeds instead.
+        let seed = if stacked {
+            mix(seed ^ (i as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93))
+        } else {
+            seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        };
+        let media = media_box(page.raw());
+        let mut p = build_page(&ink, media, top, seed, &mut t, &mut pictures);
         if !p.doc.is_empty() || !p.doc.images().is_empty() {
             p.doc.created = start_ms;
             p.doc.modified = start_ms;
             out.push(p);
+            if stacked {
+                top += media.height() + PAGE_GAP;
+            }
         }
     }
     Ok(out)
+}
+
+/// A 64 bit mix (the finaliser of splitmix64).
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// The page's media box: its own, or the nearest one up the page tree, or
@@ -1018,10 +1071,10 @@ fn pressure_for(width: f64, size: f64) -> f32 {
     r.powf(1.0 / 0.8) as f32
 }
 
-fn build_page(ink: &Ink<'_>, media: Rect, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
+fn build_page(ink: &Ink<'_>, media: Rect, top: f64, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
     let mut doc = Document::new(seed);
     doc.paper = "plain".into();
-    let to_page = |p: Vec2| Vec2::new(p.x - media.min.x, media.max.y - p.y);
+    let to_page = |p: Vec2| Vec2::new(p.x - media.min.x, top + media.max.y - p.y);
     let mut strokes = Vec::new();
     let mut warnings = Vec::new();
     let mut shapes = 0;
@@ -1227,6 +1280,24 @@ mod tests {
     /// A small PDF like a GoodNotes export: each stroke a filled outline of
     /// pieces, plus an invisible text layer placed with a large offset.
     pub(crate) fn sample_pdf(compress: bool) -> Vec<u8> {
+        let c = sample_content();
+        let (data, filter) =
+            if compress { (zlib(c.as_bytes()), " /Filter /FlateDecode") } else { (c.into_bytes(), "") };
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 400] >> endobj\n");
+        pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << >> >> endobj\n");
+        pdf.extend_from_slice(format!("4 0 obj << /Length 5 0 R{filter} >>\nstream\n").as_bytes());
+        pdf.extend_from_slice(&data);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        pdf.extend_from_slice(format!("5 0 obj {} endobj\n", data.len()).as_bytes());
+        pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+
+    /// The page of [`sample_pdf`]: four strokes ("hi" and "ok" in its
+    /// hidden text) and a piece of typed text, on a 600 by 400 page.
+    fn sample_content() -> String {
         let mut c = String::new();
         c.push_str("q 1 1 1 sc 0 0 600 400 re f Q\n");
         // Three "letters": short strokes 20 units tall, at x = 100, 130, 160
@@ -1258,18 +1329,61 @@ mod tests {
         c.push_str("3 Tr q 1 0 0 1 5100 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (h\\151) Tj ET Q\n");
         c.push_str("q 1 0 0 1 5300 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf [(o) -5 (k)] TJ ET Q\n");
         c.push_str("0 Tr BT 12 0 0 12 50 50 Tm /F1 1 Tf (typed) Tj ET\n");
-        let (data, filter) =
-            if compress { (zlib(c.as_bytes()), " /Filter /FlateDecode") } else { (c.into_bytes(), "") };
+        c
+    }
+
+    /// A PDF of three 600 by 400 pages: the sample page, an empty page, and
+    /// the sample page again.
+    fn three_pages_one_empty() -> Vec<u8> {
+        let pages = [sample_content(), String::new(), sample_content()];
         let mut pdf = b"%PDF-1.4\n".to_vec();
         pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
-        pdf.extend_from_slice(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 400] >> endobj\n");
-        pdf.extend_from_slice(b"3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << >> >> endobj\n");
-        pdf.extend_from_slice(format!("4 0 obj << /Length 5 0 R{filter} >>\nstream\n").as_bytes());
-        pdf.extend_from_slice(&data);
-        pdf.extend_from_slice(b"\nendstream\nendobj\n");
-        pdf.extend_from_slice(format!("5 0 obj {} endobj\n", data.len()).as_bytes());
+        pdf.extend_from_slice(
+            b"2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 /MediaBox [0 0 600 400] >> endobj\n",
+        );
+        for (i, c) in pages.iter().enumerate() {
+            let (page, content) = (3 + 2 * i, 4 + 2 * i);
+            pdf.extend_from_slice(
+                format!(
+                    "{page} 0 obj << /Type /Page /Parent 2 0 R /Contents {content} 0 R /Resources << >> >> endobj\n"
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(
+                format!("{content} 0 obj << /Length {} >>\nstream\n{c}\nendstream\nendobj\n", c.len()).as_bytes(),
+            );
+        }
         pdf.extend_from_slice(b"trailer << /Root 1 0 R >>\n%%EOF\n");
         pdf
+    }
+
+    #[test]
+    fn pdf_pages_can_be_stacked_in_one_note() {
+        let one = import_as_one_note(&three_pages_one_empty(), 7, 1_000.0).unwrap().unwrap();
+        let doc = &one.doc;
+        assert_eq!(doc.len(), 8, "both pages with ink, the empty one left out");
+        // The second page sits one page height (400) and a gap below the first.
+        let (a, b) = (&doc.strokes()[0], &doc.strokes()[4]);
+        let (pa, pb) = (a.points[0], b.points[0]);
+        assert!((pa.x - pb.x).abs() < 1e-9, "same place across");
+        assert!((pb.y - pa.y - (400.0 + PAGE_GAP)).abs() < 1e-9, "{} then {}", pa.y, pb.y);
+        // Ids are all different, times run on from page to page.
+        let ids: std::collections::HashSet<_> = doc.strokes().iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 8);
+        assert!(doc.strokes().windows(2).all(|w| w[1].start_time > w[0].start_time));
+        // Each page keeps its own readings, and a warning is said once.
+        assert_eq!(one.readings, 4);
+        let mut texts: Vec<&str> = doc.recognition.iter().map(|r| r.text.as_str()).collect();
+        texts.sort();
+        assert_eq!(texts, ["hi", "hi", "ok", "ok"]);
+        assert_eq!(one.warnings.iter().filter(|w| w.contains("typed text")).count(), 1, "{:?}", one.warnings);
+        // Saved and opened again, it is the same note.
+        let back = crate::format::load_bytes(&crate::format::to_bedrock(doc), 2).unwrap().doc;
+        assert_eq!(back.len(), 8);
+        assert_eq!(back.recognition.len(), 4);
+        // A PDF with no ink at all gives no note.
+        let blank = page_pdf("q 1 1 1 sc 0 0 600 400 re f Q");
+        assert!(import_as_one_note(&blank, 7, 0.0).unwrap().is_none());
     }
 
     #[test]
