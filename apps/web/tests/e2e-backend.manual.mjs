@@ -6,7 +6,6 @@
 // Not part of `npm test`: it needs the private backend repository (with
 // `npm install` done in its worker folder).
 import { spawn, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,14 +17,19 @@ import { installPointerHelpers } from './helpers.mjs';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const worker = join(process.env.BACKEND || '../../../Bedrock-Backend', 'worker');
 const wrangler = join(worker, 'node_modules', '.bin', 'wrangler');
-const sha = (s) => createHash('sha256').update(s).digest('hex');
+// The backend keeps codes as keyed BLAKE3 hashes (docs/security.md). Node has
+// no BLAKE3, so the hashes of the two codes under this test key are written
+// out (made with `bedrock-data hash` and BEDROCK_CODE_KEY set to CODE_KEY).
+const CODE_KEY = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';
+const INVITE_HASH = 'b3:8e17709cd503ad150d4a4a9bba16c58b46d32c2013991feadaacfab801cada8d';
+const ADMIN_HASH = 'b3:8feca8359a9ff321bba76167f9fa5132b49c40d1572a39cc956c46bebeda2ee7';
 const [INVITE, ADMIN, PORT, APP_PORT] = ['e2e-invite', 'e2e-admin', 8798, 8797];
 const API = `http://127.0.0.1:${PORT}`;
 const localEnv = { ...process.env, CI: '1', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
 
 const state = mkdtempSync(join(tmpdir(), 'bedrock-e2e-'));
 execFileSync(wrangler, ['d1', 'migrations', 'apply', 'bedrock-training', '--local', '--persist-to', state], { cwd: worker, stdio: 'pipe', env: localEnv });
-const dev = spawn(wrangler, ['dev', '--local', '--port', String(PORT), '--persist-to', state, '--var', `INVITE_HASHES:${sha(INVITE)}`, '--var', `ADMIN_HASHES:${sha(ADMIN)}`, '--var', `ALLOWED_ORIGINS:http://127.0.0.1:${APP_PORT}`], { cwd: worker, stdio: 'ignore', env: localEnv });
+const dev = spawn(wrangler, ['dev', '--local', '--port', String(PORT), '--persist-to', state, '--var', `CODE_KEY:${CODE_KEY}`, '--var', `INVITE_HASHES:${INVITE_HASH}`, '--var', `ADMIN_HASHES:${ADMIN_HASH}`, '--var', `ALLOWED_ORIGINS:http://127.0.0.1:${APP_PORT}`], { cwd: worker, stdio: 'ignore', env: localEnv });
 const server = await startServer(APP_PORT);
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 try {

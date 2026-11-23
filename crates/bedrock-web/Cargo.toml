@@ -9,7 +9,8 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bedrock-core = { path = "../bedrock-core" }
+# Without PDF import: that is crates/bedrock-pdf, loaded on first use.
+bedrock-core = { path = "../bedrock-core", default-features = false }
 wasm-bindgen = "=0.2.130"
 js-sys = "0.3"
 serde_json = "1"

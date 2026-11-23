@@ -169,6 +169,74 @@ test('a new note in the vault: drawn, saved into the file, and indexed for searc
   await ctx.close();
 });
 
+// Writing was slower in Obsidian than on the website. The canvas shares
+// Obsidian's main thread, so each save there must cost Obsidian little: the
+// file is handed over without a copy, and the index note waits for a pause.
+test('saves hand the file to Obsidian without a copy, and the index note waits for writing to pause', async () => {
+  const { page, ctx, errors } = await openHost();
+  const frame = await openFile(page, 'Quick.bedrock');
+  // Watched from inside the canvas: a message posted by the harness's own
+  // code would no longer come from the frame.
+  await frame.evaluate(() => {
+    window.writes = [];
+    const parent = window.parent;
+    const post = parent.postMessage.bind(parent);
+    parent.postMessage = (m, origin, transfer = []) => {
+      if (m?.method === 'write') window.writes.push({ size: m.args.data.byteLength, handedOver: transfer.includes(m.args.data.buffer) });
+      return post(m, origin, transfer);
+    };
+  });
+  await writeWord(frame);
+  await until(frame, () => window.writes.length > 0);
+  await until(page, () => host.vault.files.get('Quick.bedrock').data.byteLength > 0);
+  const w = await frame.evaluate(() => window.writes[0]);
+  assert.equal(w.handedOver, true, 'the saved file is transferred, not copied');
+  assert.equal((await page.evaluate(() => host.files('Quick.bedrock'))).index, null, 'no index note right after the save');
+  await until(page, async () => (await host.files('Quick.bedrock')).index?.includes('Newtn'));
+  assert.equal((await page.evaluate(() => host.files('Quick.bedrock'))).strokes, 4);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// Each note opened in Obsidian compiled the WebAssembly twice (the canvas
+// and its save worker), with no compiled-code cache for blob: URLs.
+test('the WebAssembly is compiled once for all notes; each canvas and its save worker reuse it', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+  // Counts compiles from bytes or files in every window (Obsidian's and
+  // each canvas's).
+  await ctx.addInitScript(() => {
+    window.compiles = 0;
+    for (const name of ['compile', 'compileStreaming', 'instantiateStreaming']) {
+      const f = WebAssembly[name];
+      WebAssembly[name] = function (...a) { window.compiles++; return f.apply(this, a); };
+    }
+    const instantiate = WebAssembly.instantiate;
+    WebAssembly.instantiate = function (m, ...a) { if (!(m instanceof WebAssembly.Module)) window.compiles++; return instantiate.call(this, m, ...a); };
+  });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await blockLikeObsidian(page);
+  await page.goto(`http://127.0.0.1:${server.address().port}/obsidian/tests/harness.html`);
+  await page.waitForFunction(() => window.host);
+  const inCanvas = [];
+  for (const name of ['One.bedrock', 'Two.bedrock']) {
+    const frame = await openFile(page, name);
+    await writeWord(frame);
+    await frame.evaluate(() => bedrock.saveNow());
+    inCanvas.push(await frame.evaluate(() => ({ compiles: window.compiles, background: bedrock.backgroundSaving, stats: { ...bedrock.saveStats } })));
+  }
+  assert.equal(await page.evaluate(() => window.compiles), 1, 'compiled once, by the plugin');
+  for (const c of inCanvas) {
+    assert.equal(c.compiles, 0, 'the canvas compiles nothing');
+    assert.equal(c.background, true);
+    assert.ok(c.stats.background >= 1 && c.stats.direct === 0, `the save worker saved with the shared module: ${JSON.stringify(c.stats)}`);
+  }
+  assert.equal((await page.evaluate(() => host.files('One.bedrock'))).strokes, 4);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('making a link opens the vault note picker, and the link reaches the file, the index and Obsidian', async () => {
   const { page, ctx, errors } = await openHost();
   await page.evaluate(() => host.vault.create('Ideas.md', '# Ideas'));
@@ -429,6 +497,9 @@ test('the link picker opens another Bedrock note to link one of its words, or th
   await writeWord(frame, 200, 200);
   await frame.evaluate(() => bedrock.saveNow());
   await until(page, async () => (await host.files('Maths.bedrock')).strokes === 4);
+  // The word as read is in the file too (its index note is made from the
+  // file), before the note is closed: the harness closes without a save.
+  await until(page, async () => (await host.files('Maths.bedrock')).index?.includes('Newtn'));
   const mathsStrokes = await frame.evaluate(() => JSON.parse(bedrock.canvas.words_json())[0].strokes);
   frame = await openFile(page, 'Physics.bedrock');
   await writeWord(frame);

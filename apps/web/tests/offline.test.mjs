@@ -80,3 +80,73 @@ test('after an update the page itself comes from the server too, so it never mix
   assert.equal(await page.textContent('#v'), '2', 'the new page, not the one the browser kept');
   await ctx.close();
 });
+
+/** A page of the test site with the service worker in control. */
+async function controlled(ctx) {
+  const page = await ctx.newPage();
+  await page.goto(url + 'icons/');
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+  });
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  return page;
+}
+
+// The bug: on every update the service worker deleted every cache of the
+// site, Transformers.js's `transformers-cache` too, so the handwriting
+// models (hundreds of MB) were downloaded again and reading stopped working
+// offline after each update.
+test('an update keeps the handwriting models Transformers.js downloaded, and clears only old copies of the app (regression)', async () => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto(url + 'icons/');
+  await page.evaluate(async () => {
+    await (await caches.open('transformers-cache')).put('https://huggingface.co/x/resolve/main/model.onnx', new Response('model'));
+    await (await caches.open('bedrock-v1')).put('/old.js', new Response('old'));
+  });
+  await page.close();
+  const app = await controlled(ctx);
+  const keys = await app.evaluate(() => caches.keys());
+  assert.ok(keys.includes('transformers-cache'), `the models are kept: ${keys}`);
+  assert.ok(!keys.includes('bedrock-v1'), `an old copy of the app is cleared: ${keys}`);
+  assert.equal(await app.evaluate(async () => (await (await caches.open('transformers-cache')).match('https://huggingface.co/x/resolve/main/model.onnx'))?.text()), 'model');
+  await ctx.close();
+});
+
+test('offline, a page opens the app but a missing file is not answered with the page', async () => {
+  const ctx = await browser.newContext();
+  const page = await controlled(ctx);
+  await ctx.setOffline(true);
+  const missing = await page.evaluate(async () => {
+    try {
+      const res = await fetch('/models/Xenova/trocr-small-handwritten/config.json');
+      return `answered ${res.status} ${res.headers.get('content-type')}`;
+    } catch (_) { return 'failed'; }
+  });
+  assert.equal(missing, 'failed', 'Transformers.js must not read the app page as a model file');
+  await page.goto(url + 'a/page/never/seen/');
+  assert.match(await page.title(), /Bedrock/, 'a page still opens the app offline');
+  await ctx.close();
+});
+
+test('the recogniser library from the CDN is kept by the service worker and works offline', async () => {
+  const ctx = await browser.newContext();
+  const LIB = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
+  let served = 0;
+  await ctx.route(LIB, (route) => {
+    served++;
+    route.fulfill({ body: 'export const lib = 1;\n', contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
+  });
+  const page = await controlled(ctx);
+  const get = () => page.evaluate(async (u) => {
+    try { return (await (await fetch(u)).text()).trim(); } catch (_) { return 'failed'; }
+  }, LIB);
+  assert.equal(await get(), 'export const lib = 1;');
+  await ctx.unroute(LIB);
+  await ctx.route(LIB, (route) => route.abort('internetdisconnected'));
+  await ctx.setOffline(true);
+  assert.equal(await get(), 'export const lib = 1;', 'served from the service worker offline');
+  assert.equal(served, 1, 'fetched once');
+  await ctx.close();
+});

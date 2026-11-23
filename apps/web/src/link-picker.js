@@ -42,11 +42,60 @@ export function fileTree(files) {
   return root;
 }
 
+/** The strokes' samples in a `points.bin` entry (docs/note-format.md):
+ *  one flat array of values per stroke, channel by channel, as `points` in
+ *  note.json holds them. Throws on a damaged entry. */
+export function readPointsBin(bytes) {
+  if (!bytes) return [];
+  let at = 0;
+  const byte = () => {
+    if (at >= bytes.length) throw new Error('points.bin ends early');
+    return bytes[at++];
+  };
+  const unsigned = () => {
+    let v = 0;
+    for (let shift = 0; ; shift += 7) {
+      const b = byte();
+      v += (b & 0x7f) * 2 ** shift;
+      if (!(b & 0x80)) return v;
+    }
+  };
+  const signed = () => {
+    let v = 0;
+    let shift = 0;
+    let b;
+    do { b = byte(); v += (b & 0x7f) * 2 ** shift; shift += 7; } while (b & 0x80);
+    return b & 0x40 ? v - 2 ** shift : v;
+  };
+  if (String.fromCharCode(byte(), byte(), byte(), byte()) !== 'BDPT') throw new Error('not points.bin');
+  if (unsigned() !== 1) throw new Error('unknown points.bin version');
+  const scales = [];
+  for (let c = unsigned(); c > 0; c--) {
+    const name = unsigned();
+    at += name; // the channel's name: the same channels as note.json
+    scales.push(10 ** unsigned());
+  }
+  const strokes = [];
+  for (let n = unsigned(); n > 0; n--) {
+    const count = unsigned();
+    const last = scales.map(() => 0);
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      for (let c = 0; c < scales.length; c++) {
+        last[c] += signed();
+        out.push(last[c] / scales[c]);
+      }
+    }
+    strokes.push(out);
+  }
+  return strokes;
+}
+
 /** Where the words of a Bedrock note are, from its file: the picture
  *  (preview.svg), its viewBox, and each recognised word's bounds and first
  *  stroke, in the picture's coordinates. */
 export async function notePicture(bytes) {
-  const z = await readZip(bytes, ['preview.svg', 'note.json', 'recognized.json']);
+  const z = await readZip(bytes, ['preview.svg', 'note.json', 'recognized.json', 'points.bin']);
   const svg = text(z.get('preview.svg'));
   const vb = /viewBox="([-\d.e]+) ([-\d.e]+) ([-\d.e]+) ([-\d.e]+)"/.exec(svg);
   if (!svg || !vb) return null;
@@ -59,9 +108,16 @@ export async function notePicture(bytes) {
   const stride = channels.length || 2;
   const cx = Math.max(0, channels.indexOf('x'));
   const cy = Math.max(0, channels.indexOf('y'));
+  // Since version 2 the samples of most strokes are in points.bin, one
+  // record per stroke without `points`, in order (docs/note-format.md).
+  let records = [];
+  if (note.pointsFile) {
+    try { records = readPointsBin(z.get(note.pointsFile)); } catch { records = []; }
+  }
+  let next = 0;
   const box = new Map();
   for (const s of note.strokes || []) {
-    const p = s.points || [];
+    const p = Array.isArray(s.points) ? s.points : records[next++] || [];
     let b = null;
     for (let i = 0; i + stride <= p.length; i += stride) {
       const px = p[i + cx];

@@ -75,7 +75,7 @@ export class HostStore {
    *  the file has loaded must never overwrite it. */
   async put(note) {
     if (note.id !== HOST_NOTE) return;
-    await this.rpc.call('write', { data: note.data, title: note.title });
+    await this.rpc.call('write', { data: note.data, title: note.title }, transferable(note.data));
   }
 
   async remove() { /* the host deletes its own files */ }
@@ -89,6 +89,14 @@ export class HostStore {
 }
 
 export const HOST_NOTE = 'host';
+
+/** The buffer of a saved file, to hand to the host without a copy: a
+ *  save is built fresh and not used again once written. Only a buffer the
+ *  bytes fill alone, so nothing else is taken with it. */
+export function transferable(data) {
+  const b = data?.buffer;
+  return data instanceof Uint8Array && b instanceof ArrayBuffer && data.byteOffset === 0 && data.byteLength === b.byteLength ? [b] : [];
+}
 
 function connect() {
   if (!name || window.parent === window) return null;
@@ -123,6 +131,9 @@ function connect() {
     /** What a new note starts with, if the host made it about something:
      *  `{ noteLinks: [{ target, type, text }], tags: [] }`, or null. */
     start: () => rpc.call('start'),
+    /** The WebAssembly the host compiled once for all its notes, or null
+     *  (the app then compiles it itself). */
+    wasm: () => rpc.call('wasm').catch(() => null),
     /** Tell the host the app is ready for events. */
     ready: () => rpc.call('ready'),
   };

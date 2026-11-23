@@ -25,8 +25,10 @@ pub mod handwriting;
 pub mod input;
 pub mod mirror;
 pub mod overview;
+#[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod pen;
+pub mod points_bin;
 pub mod scene;
 pub mod scribble;
 pub mod selection;

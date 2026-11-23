@@ -16,6 +16,8 @@ import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, 
 export const VIEW_TYPE = 'bedrock-note';
 const EXTENSION = 'bedrock';
 const MAX_CAMERAS = 500;
+/** How long after Obsidian starts the WebAssembly is compiled. */
+const WASM_WARM_MS = 1500;
 
 /** "Share with the Bedrock team" for the plugin's own errors: the exact
  *  report, an optional comment, and Send. (The canvas has its own panel.) */
@@ -152,6 +154,7 @@ class BedrockView extends FileView {
       start: () => plugin.takeStart(this.file),
       sendReport: (report) => plugin.sendReport(report),
       perf: plugin.perf,
+      wasm: () => plugin.webApp.wasmModule(),
       onReady: () => { this.appReady = true; this.showPending(); this.tellInset(this.keyboard?.covered() || 0); },
     });
     const frame = this.contentEl.createEl('iframe', { cls: 'bedrock-frame', attr: { allow: 'clipboard-read; clipboard-write' } });
@@ -169,6 +172,8 @@ class BedrockView extends FileView {
   async onUnloadFile() {
     // Save what was drawn last before the iframe goes away.
     await this.bridge?.send('flush', {}, 3000).catch(() => null);
+    // And bring its index note up to date (it waits for writing to pause).
+    await this.session?.flushIndex().catch(() => null);
     this.keyboard?.stop();
     this.keyboard = null;
     this.bridge?.close();
@@ -278,6 +283,10 @@ export default class BedrockPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.reindex(false);
       this.askConsent();
+      // Compile the canvas's WebAssembly soon after Obsidian has started
+      // (compiling runs off the main thread), so the first note need not
+      // wait for it; every note after reuses it (inline-app.js).
+      this.wasmWarm = new Promise((r) => setTimeout(r, WASM_WARM_MS)).then(() => this.webApp?.wasmModule()).catch(() => null);
     });
   }
 

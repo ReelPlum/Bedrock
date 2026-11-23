@@ -9,6 +9,7 @@ import { libraryFiles } from '../../web/src/library.js';
 import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
+import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
 import { packWebApp } from '../build.mjs';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
@@ -19,7 +20,7 @@ function zip(entries) {
   const central = [];
   let offset = 0;
   for (const [name, content] of Object.entries(entries)) {
-    const data = enc.encode(content);
+    const data = typeof content === 'string' ? enc.encode(content) : content;
     const deflated = deflateRawSync(data);
     const [method, body] = deflated.length < data.length ? [8, deflated] : [0, data];
     const n = enc.encode(name);
@@ -306,8 +307,10 @@ test('session reads and writes the open file and keeps its index current', async
   assert.equal(r.data.byteLength, 0, 'a new note is empty');
   // A correction to what was read reaches search with the next save.
   await s.handlers.write({ data: new Uint8Array(note(['Newtn'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Newtn/);
   await s.handlers.write({ data: new Uint8Array(note(['Newton'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Newton\n/);
   assert.equal((await s.handlers.read({})).data.byteLength, note(['Newton']).byteLength);
 });
@@ -344,7 +347,38 @@ test('one failed save does not stop later saves', async () => {
   await assert.rejects(s.handlers.write({ data: new Uint8Array(note(['a'])) }), /disk full/);
   vault.modifyBinary = real;
   await s.handlers.write({ data: new Uint8Array(note(['b'])) });
+  await s.flushIndex();
   assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /\bb\b/);
+});
+
+// Writing was slower in Obsidian than on the website: every autosave (every
+// 400 ms of writing) also rewrote the index note, and Obsidian re-indexed it
+// on the main thread the canvas shares with it.
+test('while the writer keeps writing, the index note waits for a pause and is written once', async () => {
+  const vault = new FakeVault();
+  const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+  const { s } = session(vault, file, { indexDelayMs: 60 });
+  let indexWrites = 0;
+  for (const m of ['create', 'modify']) {
+    const real = vault[m].bind(vault);
+    vault[m] = async (...a) => { indexWrites++; return real(...a); };
+  }
+  for (const w of ['F', 'Fo', 'For', 'Forc', 'Force']) {
+    await s.handlers.write({ data: new Uint8Array(note([w])) });
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(indexWrites, 0, 'no index note while writing');
+  assert.equal(vault.files.get('Forces.bedrock').data.byteLength, note(['Force']).byteLength, 'every save still reaches the file at once');
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(indexWrites, 1, 'one index note after the pause');
+  assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Force\n/);
+  // Closing the view writes a pending index at once.
+  await s.handlers.write({ data: new Uint8Array(note(['Forces'])) });
+  await s.flushIndex();
+  assert.equal(indexWrites, 2);
+  assert.match(vault.files.get(`${DEFAULT_INDEX_FOLDER}/Forces.md`).data, /Forces\n/);
+  await s.flushIndex();
+  assert.equal(indexWrites, 2, 'nothing pending: nothing written');
 });
 
 test('the app can ask for a link to a word; only real stroke ids are accepted', async () => {
@@ -435,6 +469,32 @@ test('bridge events get the app\'s answer, or null when it does not answer', asy
   assert.equal(await new HostBridge(() => null, {}).send('flush'), null, 'no iframe yet');
 });
 
+// Each note open (and its save worker) compiled the 2.2 MB WebAssembly
+// again: blob: URLs get no compiled-code cache. The plugin compiles it once.
+test('the WebAssembly is compiled once while the plugin runs, and the session hands it to each canvas', async () => {
+  const empty = btoa(String.fromCharCode(0, 97, 115, 109, 1, 0, 0, 0)); // the smallest valid module
+  const app = new InlineApp({ pages: {}, modules: {}, workers: {}, files: { 'pkg/bedrock_web_bg.wasm': empty } });
+  const compile = WebAssembly.compile;
+  let compiles = 0;
+  WebAssembly.compile = (...a) => { compiles++; return compile(...a); };
+  try {
+    const first = await app.wasmModule();
+    assert.ok(first instanceof WebAssembly.Module);
+    assert.equal(await app.wasmModule(), first, 'the same module for the next note');
+    const vault = new FakeVault();
+    const file = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+    const { s } = session(vault, file, { wasm: () => app.wasmModule() });
+    assert.equal(await s.handlers.wasm({}), first, 'the canvas asks for it over the bridge');
+    assert.equal(compiles, 1);
+    assert.equal(await session(vault, file).s.handlers.wasm({}), null, 'no module: the canvas compiles its own');
+    app.revoke();
+    await app.wasmModule();
+    assert.equal(compiles, 2, 'compiled again after the plugin is reloaded');
+  } finally {
+    WebAssembly.compile = compile;
+  }
+});
+
 test('the canvas pages are written with their files handed over as blob: URLs, never loaded by address', async () => {
   const made = [];
   const revoked = [];
@@ -483,7 +543,8 @@ test('the plugin packs the current web app, host adapter and WebAssembly include
   assert.match(b.modules.app, /BEDROCK_ASSETS/);
   assert.doesNotMatch(b.modules.app, /^import .* from ['"]\./m, 'one module, no imports of neighbours');
   assert.deepEqual(Object.keys(b.workers), ['src/save-worker.js', 'src/recognizer-worker.js']);
-  for (const f of ['pkg/bedrock_web_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  for (const f of ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  assert.match(b.modules.app, /bedrock_pdf_bg\.wasm/, 'PDF import finds its WebAssembly among the handed over files');
   assert.equal(b.hash, (await packWebApp()).hash, 'the version hash is stable');
 });
 
@@ -570,4 +631,53 @@ test("the plugin's slow moments go with the canvas's automatic reports, once, an
   assert.deepEqual(withPluginSlow(canvas, log, { since: last }).report.errors.length, 1, 'not sent twice');
   const person = { ...canvas, sent: 'person' };
   assert.equal(withPluginSlow(person, log).report, person, 'a report the person saw goes as they saw it');
+});
+
+// Bug: the link picker found no words in notes saved since points.bin
+// (note format version 2): it looked for the samples in note.json only.
+test('the link picker finds the words of notes with their samples in points.bin, and of older notes', async () => {
+  const channels = ['x', 'y', 'pressure'];
+  const strokes = [
+    { id: 'a1', points: [10.5, -20.25, 0.5, 300.125, 40, 0.75] },
+    { id: 'b2', points: [-5, 7.001, 1, 8, 9, 0.25] },
+    { id: 'c3', points: [100, 100, 0.5] },
+  ];
+  // points.bin as docs/note-format.md describes it (3 decimals each).
+  const leb = (v, signed) => {
+    const out = [];
+    for (;;) {
+      const b = v & 0x7f;
+      v = Math.floor(v / 128);
+      const done = signed ? (v === 0 && !(b & 0x40)) || (v === -1 && (b & 0x40)) : v === 0;
+      out.push(done ? b : b | 0x80);
+      if (done) return out;
+    }
+  };
+  const bin = [...new TextEncoder().encode('BDPT'), ...leb(1), ...leb(channels.length)];
+  for (const c of channels) bin.push(...leb(c.length), ...new TextEncoder().encode(c), ...leb(3));
+  // The last stroke keeps its points in note.json: no record.
+  bin.push(...leb(2));
+  for (const s of strokes.slice(0, 2)) {
+    bin.push(...leb(s.points.length / 3));
+    const prev = [0, 0, 0];
+    s.points.forEach((v, i) => { const k = Math.round(v * 1000); bin.push(...leb(k - prev[i % 3], true)); prev[i % 3] = k; });
+  }
+  assert.deepEqual(readPointsBin(Uint8Array.from(bin)), strokes.slice(0, 2).map((s) => s.points));
+  const svg = '<svg viewBox="0 0 400 400"></svg>';
+  const rec = JSON.stringify({ format: 'bedrock-recognition', version: 1, items: [{ id: 'r1', text: 'Newton', strokes: ['a1', 'b2'] }, { id: 'r2', text: 'x', strokes: ['c3'] }] });
+  const v1 = zip({ 'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, channels, strokes }), 'recognized.json': rec, 'preview.svg': svg });
+  const v2 = zip({
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 2, channels, pointsFile: 'points.bin', strokes: [{ id: 'a1' }, { id: 'b2' }, strokes[2]] }),
+    'points.bin': Uint8Array.from(bin),
+    'recognized.json': rec,
+    'preview.svg': svg,
+  });
+  const before = await notePicture(new Uint8Array(v1));
+  const after = await notePicture(new Uint8Array(v2));
+  assert.deepEqual(before.words, [
+    { text: 'Newton', stroke: 'a1', bounds: [-5, -20.25, 300.125, 40] },
+    { text: 'x', stroke: 'c3', bounds: [100, 100, 100, 100] },
+  ]);
+  assert.deepEqual(after.words, before.words);
+  assert.throws(() => readPointsBin(Uint8Array.from(bin.slice(0, -1))), /ends early/);
 });

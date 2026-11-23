@@ -84,6 +84,8 @@ window.host = {
   get bridge() { return bridge; },
   /** Open a vault file in the iframe, as the plugin's view does. */
   async open(path) {
+    // As the view does when it closes: write a waiting index note.
+    await session?.flushIndex();
     bridge?.close();
     file = vault.files.get(path) || (await vault.createBinary(path, new ArrayBuffer(0)));
     let ready;
@@ -105,6 +107,7 @@ window.host = {
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
       start: () => { const st = host.starts.get(file.path) ?? null; host.starts.delete(file.path); return st; },
+      wasm: () => webApp.wasmModule(),
       onReady: () => { tellInset(keyboard.covered()); ready(); },
     });
     bridge = new HostBridge(() => frame.contentWindow, session.handlers);
