@@ -9,7 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installPointerHelpers, withoutBuiltInApi } from '../../web/tests/helpers.mjs';
+import { installPointerHelpers, withoutBuiltInApi, goodnotesLikePdf } from '../../web/tests/helpers.mjs';
 import { packWebApp } from '../build.mjs';
 
 const require = createRequire(import.meta.url);
@@ -666,6 +666,53 @@ test('opening a note never overwrites the file with an empty note', async () => 
   assert.equal(afterOpen.strokes, before.strokes);
   assert.equal(afterOpen.size, before.size);
   assert.deepEqual(await page.evaluate(() => host.vault.log.filter((l) => l[1] === 'Physics.bedrock')), []);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+// Bug: a PDF imported into a note in Obsidian (iPad) was never saved:
+// opening another note and coming back showed a blank note. The import
+// saved under a new note id, and only the vault file's own note is written.
+test('bug: a PDF imported into a vault note is saved into that file, and is there when the note is opened again', async () => {
+  const { page, ctx, errors } = await openHost();
+  let frame = await openFile(page, 'Lectures/Lecture 8.bedrock');
+  await frame.evaluate(() => { bedrock.handwriting.enabled = false; });
+  await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  await until(page, async () => (await host.files('Lectures/Lecture 8.bedrock')).strokes === 4);
+  await openFile(page, 'Other.bedrock');
+  frame = await openFile(page, 'Lectures/Lecture 8.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4, 'the imported page is in the note');
+  assert.equal(await frame.evaluate(() => document.getElementById('title').value), 'Lecture 8', "the note keeps its file's name");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("a PDF imported into a note made about a page keeps the note's link; a note with writing is never replaced", async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(async () => {
+    await host.vault.create('Lectures/Lecture 9.md', '# Lecture 9');
+    host.starts.set('Lectures/Lecture 9 notes.bedrock', { noteLinks: [{ target: 'Lectures/Lecture 9', type: 'note', text: 'Lecture 9' }] });
+  });
+  let frame = await openFile(page, 'Lectures/Lecture 9 notes.bedrock');
+  await until(page, () => host.vault.files.get('Lectures/Lecture 9 notes.bedrock').data.byteLength > 0);
+  await frame.evaluate(() => { bedrock.handwriting.enabled = false; });
+  const pages = await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  assert.equal(pages, 1, 'only the first page: the note is one file');
+  assert.match(await frame.evaluate(() => document.getElementById('toast')?.textContent || ''), /1 more page was left out/);
+  await until(page, async () => (await host.files('Lectures/Lecture 9 notes.bedrock')).strokes === 4);
+  const f = await page.evaluate(() => host.files('Lectures/Lecture 9 notes.bedrock'));
+  assert.deepEqual(f.noteLinks, [{ target: 'Lectures/Lecture 9', type: 'note', text: 'Lecture 9' }]);
+
+  // A note that has writing: importing leaves it as it is.
+  frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await frame.evaluate(() => bedrock.saveNow());
+  const before = await page.evaluate(() => host.files('Physics.bedrock'));
+  assert.equal(await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf()), 0);
+  assert.match(await frame.evaluate(() => document.getElementById('toast')?.textContent || ''), /not imported/);
+  await frame.evaluate(() => bedrock.saveNow());
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4);
+  assert.equal((await page.evaluate(() => host.files('Physics.bedrock'))).size, before.size);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

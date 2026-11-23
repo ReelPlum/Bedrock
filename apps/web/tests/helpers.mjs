@@ -99,3 +99,29 @@ export async function installPointerHelpers(page) {
     };
   });
 }
+
+/** A two page PDF written like GoodNotes writes one, as bytes: page 1 has
+ *  four strokes ("hi" and "ok" in its hidden text), page 2 one. */
+export function goodnotesLikePdf() {
+  const stroke = (x, y) => {
+    let c = '';
+    for (const [a, b] of [[[x, y], [x + 5, y + 10]], [[x + 5, y + 10], [x + 10, y + 20]]]) {
+      c += `${a[0]} ${a[1]} m ${b[0]} ${b[1]} l ${b[0] + 2} ${b[1]} l ${a[0] + 2} ${a[1]} l h `;
+    }
+    return `${c}f\n`;
+  };
+  const page1 = '0.1 0.1 0.1 sc\n' + stroke(100, 300) + stroke(115, 300) + stroke(130, 300) + stroke(300, 300)
+    + '3 Tr q 1 0 0 1 5100 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (hi) Tj ET Q\n'
+    + 'q 1 0 0 1 5300 5302 cm BT 20 0 0 20 0 0 Tm /F1 1 Tf (ok) Tj ET Q\n';
+  const page2 = '0 0 1 sc\n' + stroke(200, 200);
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 600 400] >>',
+    '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+    `<< /Length ${page1.length} >>\nstream\n${page1}\nendstream`,
+    '<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>',
+    `<< /Length ${page2.length} >>\nstream\n${page2}\nendstream`,
+  ];
+  const text = `%PDF-1.4\n${objs.map((o, i) => `${i + 1} 0 obj\n${o}\nendobj\n`).join('')}trailer << /Root 1 0 R >>\n%%EOF\n`;
+  return [...text].map((c) => c.charCodeAt(0));
+}

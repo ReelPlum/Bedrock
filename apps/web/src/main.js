@@ -1376,6 +1376,7 @@ async function main() {
       toast(`No handwriting found in ${f.name}.`, 6000);
       return;
     }
+    if (host) return importPdfIntoHostNote(f, pages);
     const base = f.name.replace(/\.pdf$/i, '');
     const warnings = new Set();
     let sent = 0;
@@ -1394,6 +1395,35 @@ async function main() {
     const extra = [sent ? `${sent} words sent for training` : '', ...warnings].filter(Boolean).join('; ');
     toast(`Imported ${what}${extra ? ` (${extra})` : ''}.`, 6000);
     return pages.length;
+  }
+
+  /** In a host (Obsidian) the open note is the host's file, the only note
+   *  the app may write: the PDF's first page goes into it, keeping the
+   *  note's id, file name, links and tags. A note that already has writing
+   *  or pictures is never replaced. Resolves to the pages imported. */
+  async function importPdfIntoHostNote(f, pages) {
+    if (canvas.stroke_count() > 0 || JSON.parse(canvas.images_json()).length > 0) {
+      toast(`${f.name} was not imported: this note already has writing. Import it into a new, empty note.`, 8000);
+      return 0;
+    }
+    if (saveTimer) await saveNow();
+    const page = pages[0];
+    const keep = { title: canvas.title(), info: JSON.parse(canvas.note_info_json()) };
+    canvas.load(page.bedrock, ...randomSeed());
+    canvas.set_title(keep.title);
+    applyStart(keep.info);
+    applyDocToUi();
+    savedRevision = -1;
+    await saveNow();
+    const sent = await wordSharer.scan({ imported: true }).catch(() => 0);
+    const left = pages.length - 1;
+    const extra = [
+      left ? `only page 1: a note in Obsidian holds one page, ${left} more ${left === 1 ? 'page was' : 'pages were'} left out` : '',
+      sent ? `${sent} words sent for training` : '',
+      ...page.warnings,
+    ].filter(Boolean).join('; ');
+    toast(`Imported ${f.name}${extra ? ` (${extra})` : ''}.`, left ? 10000 : 6000);
+    return 1;
   }
 
   const actions = {

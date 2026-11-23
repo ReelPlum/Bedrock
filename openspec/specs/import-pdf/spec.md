@@ -73,6 +73,34 @@ Importing SHALL NOT change the note format. Strokes, recognised text and picture
 - **THEN** each page becomes its own note, named `<file> (page N)`
 <!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every line is sent with the PDF's reading -->
 
+#### Scenario: Saved, and still there after opening another note
+- **GIVEN** a two page handwritten PDF imported on the website
+- **WHEN** another note is opened, then each imported page, and again after the app is reloaded
+- **THEN** each page opens with its strokes
+<!-- test-js: apps/web/tests/collect.test.mjs :: bug: an imported PDF is saved, and is still there after opening another note and coming back -->
+
+### Requirement: In Obsidian a PDF SHALL be imported into the open note
+
+Inside a host (the Obsidian plugin) the open note is the vault file, the only
+note the app may write. Importing SHALL put the PDF's first page into that
+file and save it, keeping the file's name and the note's links and tags. A
+note that already has writing or pictures SHALL NOT be replaced. Before this,
+the import was saved under a new note id that the host never writes, so it
+was lost when another note was opened (a bug).
+
+#### Scenario: Importing into a new vault note
+- **GIVEN** an empty `.bedrock` note open in Obsidian
+- **WHEN** a PDF is imported, another note is opened, and the first is opened again
+- **THEN** the first page's strokes are in the file and on the canvas, and the note keeps its file's name
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: a PDF imported into a vault note is saved into that file, and is there when the note is opened again -->
+
+#### Scenario: More pages, a note made about a page, and a note with writing
+- **GIVEN** a note made with "New handwritten note linking here", and a two page PDF
+- **WHEN** the PDF is imported
+- **THEN** page 1 goes into the note, which keeps its link, and the message says the other page was left out
+- **AND** importing into a note that already has writing leaves the note as it was and says so
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a PDF imported into a note made about a page keeps the note's link; a note with writing is never replaced -->
+
 ### Requirement: Imported words SHALL be sent for training only with consent
 
 Importing is the writer's own act, so with saving set up on `/train` every word of an imported page SHALL be sent at once, marked `unchecked`, with the PDF's reading as `model_reading` and `model_engine: "pdf-text"`. The training wire format (`bedrock-training` version 2) SHALL NOT change.
