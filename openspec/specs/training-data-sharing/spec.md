@@ -76,6 +76,12 @@ note word is in `bedrock.sharedWords.v1` (the newest 5000).
 <!-- test-js: apps/web/tests/collect.test.mjs :: a sample the server will never take is dropped; one it could not store is kept -->
 <!-- test-js: apps/web/tests/collect.test.mjs :: a wrong invite code keeps the samples and says so -->
 
+#### Scenario: Times are sent never going backwards
+- **GIVEN** ink, saved before the fix, whose times go backwards within a stroke
+- **WHEN** it is sent as a sample (training page, word or line)
+- **THEN** each time is raised to the one before it, so the backend takes it; ink without times is left alone
+<!-- test-js: apps/web/tests/share-words.test.mjs :: bug: times that go backwards within a stroke are sent never going backwards -->
+
 #### Scenario: The console says why samples were not sent
 - **GIVEN** queued samples
 - **WHEN** an upload gets no answer, or the server turns it down, or the gate could not check a code

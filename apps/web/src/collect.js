@@ -232,7 +232,7 @@ function sample({ source, kind, label, labelSource, language, strokes, channels,
     ...(words ? { words } : {}),
     channels,
     // Only what a recogniser needs: no brush, colour or stroke id.
-    strokes: strokes.map((s) => ({ start: s.start, points: s.points })),
+    strokes: strokes.map((s) => ({ start: s.start, points: forwardTimes(s.points, channels) })),
   };
 }
 
@@ -313,6 +313,22 @@ export function fromLine({ words, channels, supersedes }) {
     }),
     ...(engine ? { model_engine: shortTag(engine, 80) } : {}),
   };
+}
+
+/** `points` with each time no earlier than the one before it. An iPad can
+ *  give a coalesced Apple Pencil sample an earlier time than the last one,
+ *  and the backend refuses a stroke whose times go backwards. */
+export function forwardTimes(points, channels) {
+  const n = channels.length;
+  const it = channels.indexOf('t');
+  if (it < 0 || !Array.isArray(points)) return points;
+  const out = points.slice();
+  let last = -Infinity;
+  for (let i = it; i < out.length; i += n) {
+    if (out[i] < last) out[i] = last;
+    else last = out[i];
+  }
+  return out;
 }
 
 /** The ink moved so its top left corner is at 0,0. */

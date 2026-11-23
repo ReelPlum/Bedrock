@@ -393,7 +393,7 @@ impl Engine {
                 *last_screen = s.pos();
                 let start = stroke.start_time;
                 let w = self.camera.screen_to_world(s.pos());
-                let p = InputPoint {
+                let mut p = InputPoint {
                     x: w.x,
                     y: w.y,
                     pressure: s.pressure,
@@ -402,6 +402,11 @@ impl Engine {
                     t: s.time - start,
                 }
                 .sanitized();
+                // An iPad can give a coalesced sample an earlier time than
+                // the one before it: times within a stroke never go back.
+                if let Some(l) = last {
+                    p.t = p.t.max(l.t);
+                }
                 stroke.push(p);
                 self.live_dirty = true;
                 // Would lifting the pen now erase something? Checked every
@@ -1014,6 +1019,21 @@ mod tests {
         assert_eq!(s.points[20].t, 80.0);
         assert_eq!(s.device, InputDevice::Pen);
         assert!(e.live_stroke().is_none());
+    }
+
+    #[test]
+    fn bug_a_sample_with_an_earlier_time_does_not_go_back_in_time() {
+        // An iPad can give a coalesced Apple Pencil sample an earlier time
+        // than the one before it; the backend refuses such ink.
+        let mut e = eng();
+        e.pointer_down(1, PointerKind::Pen, ScreenSample::new(10.0, 10.0, 0.5, 1_000.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(20.0, 10.0, 0.5, 1_008.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(30.0, 10.0, 0.5, 1_004.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(40.0, 10.0, 0.5, 996.0));
+        e.pointer_move(1, PointerKind::Pen, ScreenSample::new(50.0, 10.0, 0.5, 1_012.0));
+        e.pointer_up(1, PointerKind::Pen, None);
+        let t: Vec<f64> = e.doc.strokes()[0].points.iter().map(|p| p.t).collect();
+        assert_eq!(t, vec![0.0, 8.0, 8.0, 8.0, 12.0]);
     }
 
     #[test]
