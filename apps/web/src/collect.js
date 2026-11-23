@@ -446,6 +446,16 @@ function warnNotSent(why) {
   try { console.warn(`Bedrock: samples were not sent: ${why}`); } catch (_) { /* no console */ }
 }
 
+/** Says in the console which samples the server refused and why, so a
+ *  refusal is never silent. Codes and reasons only. */
+function warnRefused(reasons) {
+  const counts = new Map();
+  for (const r of reasons) counts.set(r, (counts.get(r) || 0) + 1);
+  const list = [...counts].map(([r, n]) => (n > 1 ? `${r} x${n}` : r)).join('; ');
+  const n = reasons.length;
+  try { console.warn(`Bedrock: ${n} sample${n === 1 ? ' was' : 's were'} refused: ${list}`); } catch (_) { /* no console */ }
+}
+
 /** `HTTP 401 invite: a valid invite code is needed`, from the server's
  *  `{ error, detail }` answer when it gave one. */
 async function refusal(res) {
@@ -471,7 +481,10 @@ async function send(s, batch) {
   if (res.status === 400 || res.status === 413) {
     // The request as a whole was refused. One sample at a time finds the
     // one at fault; a single sample that is refused is dropped.
-    if (batch.length === 1) return { done: [batch[0].id], stored: 0 };
+    if (batch.length === 1) {
+      warnRefused([`${await refusal(res)}`]);
+      return { done: [batch[0].id], stored: 0 };
+    }
     let done = [];
     let stored = 0;
     for (const one of batch) {
@@ -486,7 +499,9 @@ async function send(s, batch) {
   const accepted = Array.isArray(v.accepted) ? v.accepted : [];
   // Refused for good (it will never pass the checks): drop it. Refused
   // because storage failed: keep it and try again.
-  const dropped = (Array.isArray(v.refused) ? v.refused : []).filter((r) => r.code !== 'storage' && r.id).map((r) => r.id);
+  const refusedAll = Array.isArray(v.refused) ? v.refused : [];
+  if (refusedAll.length) warnRefused(refusedAll.map((r) => `${String(r?.code ?? '?').slice(0, 40)} (${String(r?.detail ?? '').slice(0, 200)})`));
+  const dropped = refusedAll.filter((r) => r.code !== 'storage' && r.id).map((r) => r.id);
   return { done: accepted.concat(dropped), stored: accepted.length };
 }
 

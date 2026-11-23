@@ -403,8 +403,12 @@ test('a sample the server will never take is dropped; one it could not store is 
   assert.equal(await waiting(page), 1, 'kept: storage failed');
 
   server.answer = (r) => ({ body: { accepted: [], refused: [{ id: r.body.samples[0].id, code: 'label', detail: 'label is missing' }] } });
+  const logged = [];
+  page.on('console', (m) => logged.push(`${m.type()}: ${m.text()}`));
   await page.evaluate(async () => (await import('/src/collect.js')).flush());
   assert.equal(await waiting(page), 0, 'dropped: it would be refused every time');
+  // Bug: a refused sample was dropped without a word anywhere.
+  assert.ok(logged.some((l) => /^warning: Bedrock: 1 sample was refused: label \(label is missing\)/.test(l)), logged.join(' | '));
   assert.equal(await page.evaluate(async () => (await import('/src/collect.js')).loadState().sent), 0);
   await ctx.close();
 });
