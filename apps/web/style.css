@@ -293,6 +293,42 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .rv-chips button { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--chrome-border); background: rgba(255, 255, 255, 0.8); }
 
 /* Hold a word: its menu (link, correct). */
+/* The picker for a link into the vault (link-picker.js): folders and
+   files, a PDF's pages, another note's words. Over the word menu. */
+.link-picker {
+  position: fixed; z-index: 4; inset: max(12px, env(safe-area-inset-top)) 12px 12px; margin: 0 auto; max-width: 520px;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+}
+.link-picker[hidden] { display: none; }
+.lp-head { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--chrome-border); }
+.lp-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 4px; }
+.lp-head button { padding: 8px 10px; border-radius: 9px; font-size: 14px; color: var(--accent); }
+.lp-filter { margin: 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--chrome-border); background: var(--paper); color: var(--ink); font: inherit; }
+.lp-filter[hidden] { display: none; }
+.lp-body { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 0 0 8px; -webkit-user-select: none; user-select: none; }
+.lp-tree { list-style: none; margin: 0; padding: 0; }
+.lp-tree button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 10px 12px; font-size: 15px; border-radius: 0; }
+.lp-tree button:active, .lp-tree button:hover { background: rgba(0, 0, 0, 0.05); }
+.lp-folder::before { content: "▸"; display: inline-block; width: 1em; color: var(--muted); }
+.lp-folder[aria-expanded="true"]::before { content: "▾"; }
+.lp-file::before { content: ""; display: inline-block; width: 1em; }
+.lp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-folder-of { margin-left: auto; font-size: 12px; color: var(--muted); }
+.lp-more { margin-left: auto; color: var(--muted); }
+.lp-pdf .lp-name::after { content: " · PDF"; color: var(--muted); font-size: 12px; }
+.lp-bedrock .lp-name::after { content: " · handwritten"; color: var(--muted); font-size: 12px; }
+.lp-note { margin: 8px 12px; color: var(--muted); font-size: 13px; list-style: none; }
+.lp-whole { margin: 8px 12px 0; padding: 10px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 15px; width: calc(100% - 24px); }
+.lp-inside { padding: 0 12px; }
+.lp-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+.lp-page { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 9px; font-size: 12px; color: var(--muted); }
+.lp-page img { width: 100%; min-height: 120px; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
+.lp-paper { position: relative; margin: 0 auto; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
+.lp-paper img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.lp-word { position: absolute; border-radius: 6px; border: 1.5px solid color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.lp-word:active, .lp-word:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .word-menu {
   position: fixed; z-index: 3; left: 0; top: 0; width: min(300px, calc(100vw - 24px)); padding: 8px;
   background: var(--chrome); border: 1px solid var(--chrome-border); border-radius: var(--radius); box-shadow: var(--shadow);

@@ -1,14 +1,15 @@
-import init, { Canvas, ZipBuilder, peek_title, import_pdf } from '../pkg/bedrock_web.js';
+import init, { Canvas, ZipBuilder, peek_title, pack_for_sharing } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
 import { DOCKS, defaultLayout, loadLayouts, mapRect, orientationOf, placeAlong, snapDock, snapMap, stepAside } from './layout.js';
 import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
+import { KeepInView } from './keep-in-view.js';
 import { SelectionView } from './selection-view.js';
 import { SwatchPicker } from './swatch-picker.js';
 import { PictureLoader, preparePicture, measureText, tidyText, TEXT_SIZE_CSS } from './images.js';
-import { NoteStore, randomSeed, newNoteId } from './storage.js';
+import { NoteStore, randomSeed, newNoteId, keepStorage } from './storage.js';
 import { saveFile, pickFile, safeFileName } from './files.js';
 import { cleanName, folderContents, folderNameProblem, folderTrail, libraryFiles } from './library.js';
 import { host } from './host.js';
@@ -18,7 +19,7 @@ import { showGate, gateStyles } from './consent.js';
 import { perf, AutoSender } from './perf.js';
 import { buildReport, context as reportContext, sendReport } from './report-panel.js';
 import * as reportPanel from './report-panel.js';
-import { asset, handedOver } from './assets.js';
+import { asset, compileWasm, handedOver } from './assets.js';
 
 // errors.js (a classic script) opens the report panel with this when the
 // module cannot be loaded by its address (inside the Obsidian plugin).
@@ -184,10 +185,18 @@ function askAtLaunch() {
 /** Set when start-up failed: the half-started app must not save (its
  *  note may be incomplete, and parts it needs may not exist yet). */
 let startFailed = false;
+/** The compiled WebAssembly, shared with the save worker. */
+let wasmModule = null;
 
 async function main() {
   askAtLaunch();
-  await init({ module_or_path: asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)) });
+  // Compiled once here (or once per session by the host) and shared with
+  // the save worker.
+  wasmModule = await compileWasm(
+    asset('pkg/bedrock_web_bg.wasm', () => new URL('../pkg/bedrock_web_bg.wasm', import.meta.url)),
+    host ? await host.wasm() : null,
+  );
+  await init({ module_or_path: wasmModule });
   const stage = $('stage');
   let canvas;
   try {
@@ -293,7 +302,13 @@ async function main() {
     onTextChanged: () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); },
     onWordStatus: () => recognizerView?.update(),
     onStatus: (m) => {
-      if (m.status === 'loading' && !modelToastShown) {
+      if (m.offline) {
+        // Not an error: the model downloads once there is a connection.
+        if (!handwriting.offlineShown) {
+          handwriting.offlineShown = true;
+          toast('No connection, so handwriting is read once you are back online. Writing and saving work as usual.', 6000);
+        }
+      } else if (m.status === 'loading' && !modelToastShown) {
         modelToastShown = true;
         toast('Downloading the handwriting model. This happens once; it then runs on this device.', 6000);
       } else if (m.error && !handwriting.errorShown) {
@@ -305,7 +320,13 @@ async function main() {
   handwriting.enabled = settings.recognize;
   handwriting.mode = settings.recognizeMode;
   handwriting.spelling = settings.spelling;
-  handwriting.loadDictionary().then(() => input.requestFrame());
+  // The 195 KB dictionary is downloaded only while spelling is on.
+  let dictionary = null;
+  const ensureDictionary = () => {
+    if (!settings.spelling || dictionary) return;
+    dictionary = handwriting.loadDictionary().then((ok) => { if (!ok) dictionary = null; input.requestFrame(); });
+  };
+  ensureDictionary();
   const wordChanged = () => { savedRevision = -1; scheduleSave(); input.requestFrame(); recognizerView?.update(); };
   // "Send every word I write in notes": each word's ink, moved to 0,0, with
   // what the recogniser read as an unchecked label, and again when the
@@ -378,6 +399,8 @@ async function main() {
     };
     try {
       worker = new Worker(asset('src/save-worker.js', () => new URL('./save-worker.js', import.meta.url)), { type: 'module' });
+      // The WebAssembly the page compiled: the worker need not compile it.
+      worker.postMessage({ wasm: wasmModule });
       worker.onmessage = (e) => {
         const resolve = waiting.get(e.data.seq);
         waiting.delete(e.data.seq);
@@ -441,6 +464,7 @@ async function main() {
     return canvas.export_bedrock();
   }
 
+  let keepAsked = false; // keepStorage(), once per page load
   /** Timed as the `save` job (perf.js). */
   function saveNow() { return perf.job('save', () => saveNowUntimed()); }
   async function saveNowUntimed() {
@@ -463,6 +487,7 @@ async function main() {
     }).then(() => {
       savedRevision = rev;
       setSaveState(canvas.revision() === rev ? 'Saved' : 'Saving…');
+      if (!keepAsked) { keepAsked = true; keepStorage(); }
       settings.lastNote = note.id;
       saveSettings();
       // Not while a folder is being named: that would throw the name away.
@@ -1264,6 +1289,19 @@ async function main() {
   /** Each page of a PDF with handwriting (a GoodNotes export) becomes a
    *  note. With saving set up on /train, every word is also sent for
    *  training with the reading the PDF holds, for review. */
+  /** PDF import is its own WebAssembly (crates/bedrock-pdf), downloaded the
+   *  first time a PDF is opened instead of with the app. */
+  let pdfLoading = null;
+  function pdfModule() {
+    if (!pdfLoading) {
+      pdfLoading = import('../pkg/bedrock_pdf.js').then(async (m) => {
+        await m.default({ module_or_path: asset('pkg/bedrock_pdf_bg.wasm', () => new URL('../pkg/bedrock_pdf_bg.wasm', import.meta.url)) });
+        return m;
+      });
+      pdfLoading.catch(() => { pdfLoading = null; });
+    }
+    return pdfLoading;
+  }
   /** Timed as the `import-pdf` job (perf.js). */
   function importPdf(f) { return perf.job('import-pdf', () => importPdfUntimed(f)); }
   async function importPdfUntimed(f) {
@@ -1271,6 +1309,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 30)); // let the message show first
     let pages;
     try {
+      const { import_pdf } = await pdfModule();
       pages = import_pdf(f.bytes, ...randomSeed(), Date.now());
     } catch (e) {
       toast(`${f.name} could not be read (${e}).`, 6000);
@@ -1324,7 +1363,7 @@ async function main() {
       }
     },
     save: async () => {
-      const how = await saveFile(canvas.export_bedrock(), safeFileName(canvas.title(), 'bedrock'), 'application/zip',
+      const how = await saveFile(canvas.export_bedrock_for_sharing(), safeFileName(canvas.title(), 'bedrock'), 'application/zip',
         { handleKey: note.id, handleStore: store });
       if (how === 'download') toast('Saved to Downloads. On iPad you can move it to iCloud Drive in the Files app.');
       if (how === 'picker') toast('Saved.');
@@ -1340,7 +1379,8 @@ async function main() {
       const notes = [];
       for (const meta of await store.list()) {
         const rec = await store.get(meta.id);
-        if (rec) notes.push(rec);
+        // Compressed harder for the trip; every entry keeps its bytes.
+        if (rec) notes.push({ ...rec, data: pack_for_sharing(rec.data) });
       }
       const zip = new ZipBuilder();
       const files = await libraryFiles(await listFolders(), notes, { titleOf: (n) => n.title || peek_title(n.data) });
@@ -1570,6 +1610,7 @@ async function main() {
   $('spelling').addEventListener('change', (e) => {
     settings.spelling = e.target.checked;
     handwriting.spelling = settings.spelling;
+    ensureDictionary();
     saveSettings();
     input.requestFrame();
   });
@@ -1754,9 +1795,25 @@ async function main() {
   if (startNote && store && (await store.get(startNote))) await openNote(startNote);
   else await newNote();
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  // Offline (see the web-app-delivery spec): the service worker keeps the
+  // app's files (not inside a host, which has its own copy), and what waited
+  // for a connection goes as soon as there is one again.
+  if ('serviceWorker' in navigator && window.isSecureContext && !host) {
+    // The dictionary is downloaded only while spelling is on, so the
+    // service worker does not fetch it at install. On the first visit it
+    // was fetched before the service worker took over: fetch it once more
+    // through it (from the browser's cache when it can), so spelling works
+    // offline too.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!settings.spelling) return;
+      for (const f of ['dict/en.aff', 'dict/en.dic.gz']) fetch(asset(f)).catch(() => {});
+    });
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+  window.addEventListener('online', () => {
+    handwriting.retryWaiting();
+    autoSender.flush().catch(() => {});
+  });
 
   // Handy for debugging and for the automated browser tests.
   window.bedrock = { renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
@@ -1772,8 +1829,14 @@ async function main() {
     // A search hit or a link to a place in this note: go there and point
     // it out. True if that ink is still on the page.
     host.on('show', ({ strokes } = {}) => showInk(strokes));
-    // The bottom of the frame is hidden (the iPad's keyboard in Obsidian).
-    host.on('inset', ({ bottom } = {}) => wordMenu.setInset(bottom));
+    // The bottom of the frame is hidden (the iPad's keyboard in Obsidian):
+    // the word menu moves above it, and any other text box being typed in
+    // is slid into sight.
+    const keepInView = new KeepInView();
+    host.on('inset', ({ bottom } = {}) => {
+      wordMenu.setInset(bottom);
+      keepInView.setInset(bottom);
+    });
     host.ready();
   }
 }

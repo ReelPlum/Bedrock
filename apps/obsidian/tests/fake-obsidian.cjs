@@ -42,12 +42,9 @@ class Modal {
 }
 Modal.opened = [];
 
-class FuzzySuggestModal extends Modal {
-  setPlaceholder(p) { this.placeholder = p; }
-  setInstructions(i) { this.instructions = i; }
-  /** Test helper: what Obsidian does when an item is chosen (close first). */
-  choose(item) { this.close(); this.onChooseItem(item); }
-}
+/** Obsidian's PDF.js; tests set `loadPdfJs.lib`. */
+async function loadPdfJs() { return loadPdfJs.lib; }
+loadPdfJs.lib = null;
 
 class FileView { constructor(leaf) { this.leaf = leaf; } }
 
@@ -71,4 +68,4 @@ requestUrl.answer = () => ({ status: 200, json: {} });
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FuzzySuggestModal, FileView, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+module.exports = { Events, TFile, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
