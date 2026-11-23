@@ -80,8 +80,9 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | From | Message | Answer |
 |---|---|---|
 | app | `ready` | the app has started |
+| app | `wasm` | answered with the WebAssembly the plugin compiled once (a `WebAssembly.Module`), which the app also hands to its save worker |
 | app | `read` | `{ name, created, modified, data }`: the file's bytes (empty for a new note) |
-| app | `write { data, title }` | saves the bytes into the file, then updates its index note |
+| app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes |
 | app | `get-kv { key }` / `set-kv { key, value }` | per-file app state (the camera), kept in the plugin's data |
 | app | `list-files` | every vault file the link picker offers (not this note or index notes): `[{ path, link }]`, `link` being Obsidian's link text |
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |

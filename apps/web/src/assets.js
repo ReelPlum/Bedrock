@@ -16,3 +16,16 @@ export function asset(path, near = () => path) {
 
 /** True when the host handed the app its files. */
 export const handedOver = () => !!globalThis.BEDROCK_ASSETS;
+
+/** The app's WebAssembly, compiled once for the page and its save worker
+ *  (which is sent the module rather than compiling it again). `handed` is a
+ *  module the host already compiled (the Obsidian plugin compiles it once
+ *  per Obsidian session); otherwise it is compiled from `url`, streamed
+ *  where the browser can, which lets it use its compiled-code cache. */
+export async function compileWasm(url, handed = null) {
+  if (handed instanceof WebAssembly.Module) return handed;
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    try { return await WebAssembly.compileStreaming(fetch(url)); } catch (_) { /* not served as application/wasm: compile the bytes */ }
+  }
+  return WebAssembly.compile(await (await fetch(url)).arrayBuffer());
+}
