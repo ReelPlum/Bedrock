@@ -9,6 +9,7 @@ import { libraryFiles } from '../../web/src/library.js';
 import { createSession, linkToStroke, strokesOfState } from '../src/session.js';
 import { HostBridge } from '../src/bridge.js';
 import { InlineApp, GLOBALS_MARK, MODULE_MARK } from '../src/inline-app.js';
+import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
 import { packWebApp } from '../build.mjs';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
@@ -19,7 +20,7 @@ function zip(entries) {
   const central = [];
   let offset = 0;
   for (const [name, content] of Object.entries(entries)) {
-    const data = enc.encode(content);
+    const data = typeof content === 'string' ? enc.encode(content) : content;
     const deflated = deflateRawSync(data);
     const [method, body] = deflated.length < data.length ? [8, deflated] : [0, data];
     const n = enc.encode(name);
@@ -593,4 +594,53 @@ test("the plugin's slow moments go with the canvas's automatic reports, once, an
   assert.deepEqual(withPluginSlow(canvas, log, { since: last }).report.errors.length, 1, 'not sent twice');
   const person = { ...canvas, sent: 'person' };
   assert.equal(withPluginSlow(person, log).report, person, 'a report the person saw goes as they saw it');
+});
+
+// Bug: the link picker found no words in notes saved since points.bin
+// (note format version 2): it looked for the samples in note.json only.
+test('the link picker finds the words of notes with their samples in points.bin, and of older notes', async () => {
+  const channels = ['x', 'y', 'pressure'];
+  const strokes = [
+    { id: 'a1', points: [10.5, -20.25, 0.5, 300.125, 40, 0.75] },
+    { id: 'b2', points: [-5, 7.001, 1, 8, 9, 0.25] },
+    { id: 'c3', points: [100, 100, 0.5] },
+  ];
+  // points.bin as docs/note-format.md describes it (3 decimals each).
+  const leb = (v, signed) => {
+    const out = [];
+    for (;;) {
+      const b = v & 0x7f;
+      v = Math.floor(v / 128);
+      const done = signed ? (v === 0 && !(b & 0x40)) || (v === -1 && (b & 0x40)) : v === 0;
+      out.push(done ? b : b | 0x80);
+      if (done) return out;
+    }
+  };
+  const bin = [...new TextEncoder().encode('BDPT'), ...leb(1), ...leb(channels.length)];
+  for (const c of channels) bin.push(...leb(c.length), ...new TextEncoder().encode(c), ...leb(3));
+  // The last stroke keeps its points in note.json: no record.
+  bin.push(...leb(2));
+  for (const s of strokes.slice(0, 2)) {
+    bin.push(...leb(s.points.length / 3));
+    const prev = [0, 0, 0];
+    s.points.forEach((v, i) => { const k = Math.round(v * 1000); bin.push(...leb(k - prev[i % 3], true)); prev[i % 3] = k; });
+  }
+  assert.deepEqual(readPointsBin(Uint8Array.from(bin)), strokes.slice(0, 2).map((s) => s.points));
+  const svg = '<svg viewBox="0 0 400 400"></svg>';
+  const rec = JSON.stringify({ format: 'bedrock-recognition', version: 1, items: [{ id: 'r1', text: 'Newton', strokes: ['a1', 'b2'] }, { id: 'r2', text: 'x', strokes: ['c3'] }] });
+  const v1 = zip({ 'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, channels, strokes }), 'recognized.json': rec, 'preview.svg': svg });
+  const v2 = zip({
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 2, channels, pointsFile: 'points.bin', strokes: [{ id: 'a1' }, { id: 'b2' }, strokes[2]] }),
+    'points.bin': Uint8Array.from(bin),
+    'recognized.json': rec,
+    'preview.svg': svg,
+  });
+  const before = await notePicture(new Uint8Array(v1));
+  const after = await notePicture(new Uint8Array(v2));
+  assert.deepEqual(before.words, [
+    { text: 'Newton', stroke: 'a1', bounds: [-5, -20.25, 300.125, 40] },
+    { text: 'x', stroke: 'c3', bounds: [100, 100, 100, 100] },
+  ]);
+  assert.deepEqual(after.words, before.words);
+  assert.throws(() => readPointsBin(Uint8Array.from(bin.slice(0, -1))), /ends early/);
 });
