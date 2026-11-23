@@ -143,6 +143,7 @@ class BedrockView extends FileView {
     const plugin = this.plugin;
     this.appReady = false;
     this.session = createSession({
+      viewOnly: plugin.viewOnly,
       vault: this.app.vault,
       file: () => this.file,
       indexer: plugin.settings.index ? plugin.indexer : null,
@@ -167,7 +168,7 @@ class BedrockView extends FileView {
     this.keyboard = watchKeyboard(frame.ownerDocument.defaultView, frame, (bottom) => this.tellInset(bottom));
     // The page is written into the frame, not loaded from the plugin
     // folder: Obsidian refuses file requests from inside a view.
-    frame.srcdoc = plugin.webApp.page('app');
+    frame.srcdoc = plugin.webApp.page('app', { viewOnly: plugin.viewOnly });
   }
 
   async onUnloadFile() {
@@ -196,6 +197,12 @@ class BedrockView extends FileView {
   }
 }
 
+/** Notes are view only in Obsidian's desktop app (Mac, Windows, Linux),
+ *  and editable on the iPad and phones. */
+export function isViewOnly(platform) {
+  return !!platform?.isDesktopApp && !platform?.isMobileApp;
+}
+
 const DEFAULT_SETTINGS = { index: true, indexFolder: DEFAULT_INDEX_FOLDER, newNoteFolder: '' };
 
 export default class BedrockPlugin extends Plugin {
@@ -204,6 +211,10 @@ export default class BedrockPlugin extends Plugin {
     // The plugin's own slow jobs; they go with the canvas's automatic
     // performance reports when the person switched those on (perf.js).
     this.mobile = !!Platform?.isMobile;
+    // On a desktop computer (Mac, Windows, Linux) notes are view only: they
+    // open, move, zoom and follow links, but nothing draws in them or
+    // changes them, and no new notes are made. The iPad and phones edit.
+    this.viewOnly = isViewOnly(Platform);
     this.perf = pluginWatcher(this.errors, { mobile: this.mobile });
     this.slowSentUpTo = 0;
     const data = (await this.loadData()) || {};
@@ -240,26 +251,29 @@ export default class BedrockPlugin extends Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new BedrockView(leaf, this));
     this.registerExtensions([EXTENSION], VIEW_TYPE);
 
-    this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
-    // Holding a folder (iPad) or right-clicking it (desktop): a new note in it.
-    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
-      if (!(file instanceof TFolder)) return;
-      menu.addItem((item) => item
-        .setTitle('New Bedrock note')
-        .setIcon('pen-tool')
-        .onClick(() => this.newNote(file.path)));
-    }));
-    this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
-    this.addCommand({
-      id: 'new-linked-note',
-      name: 'New handwritten note linking here',
-      checkCallback: (checking) => {
-        const about = this.aboutActive();
-        if (!about) return false;
-        if (!checking) this.newNote(undefined, about);
-        return true;
-      },
-    });
+    // Making notes is for devices that write in them, not a view-only desktop.
+    if (!this.viewOnly) {
+      this.addRibbonIcon('pen-tool', 'New Bedrock note', () => this.newNote());
+      // Holding a folder (iPad) or right-clicking it: a new note in it.
+      this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+        if (!(file instanceof TFolder)) return;
+        menu.addItem((item) => item
+          .setTitle('New Bedrock note')
+          .setIcon('pen-tool')
+          .onClick(() => this.newNote(file.path)));
+      }));
+      this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
+      this.addCommand({
+        id: 'new-linked-note',
+        name: 'New handwritten note linking here',
+        checkCallback: (checking) => {
+          const about = this.aboutActive();
+          if (!about) return false;
+          if (!checking) this.newNote(undefined, about);
+          return true;
+        },
+      });
+    }
     this.addCommand({ id: 'report-problem', name: 'Report a problem with Bedrock', callback: () => new ReportModal(this.app, this).open() });
     this.addCommand({ id: 'reindex', name: 'Rebuild search index of handwritten notes', callback: () => this.reindex(true) });
     this.addSettingTab(new BedrockSettings(this.app, this));
@@ -284,7 +298,7 @@ export default class BedrockPlugin extends Plugin {
       if (f instanceof TFile && f.extension === EXTENSION && this.settings.index) this.indexer.remove(f.path).catch((e) => this.errors.record('Bedrock: search index not removed', e, 'error'));
     }));
     // "New handwritten note linking here" in the menus of a note or PDF.
-    this.registerLinkedNoteMenus();
+    if (!this.viewOnly) this.registerLinkedNoteMenus();
     // A search result or link that lands on an index note opens the
     // handwriting, at the words that were found.
     this.redirectIndexNotes();
@@ -396,6 +410,7 @@ export default class BedrockPlugin extends Plugin {
    *  refused with a notice, as Obsidian refuses it. Resolves to the note's
    *  name after. */
   async renameNote(file, name) {
+    if (this.viewOnly) return file?.basename ?? '';
     if (!(file instanceof TFile) || !name || name === file.basename) return file?.basename ?? '';
     const folder = file.parent?.path && file.parent.path !== '/' ? `${file.parent.path}/` : (file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/') + 1) : '');
     const path = normalizePath(`${folder}${name}.${EXTENSION}`);
@@ -522,6 +537,7 @@ export default class BedrockPlugin extends Plugin {
    *  open file (or the page it is about). With `about` (`{ file, page }`),
    *  it is named after that page and starts with a link to it. */
   async newNote(inFolder, about = null) {
+    if (this.viewOnly) return null;
     const active = about?.file || this.app.workspace.getActiveFile();
     const folder = inFolder ?? (this.settings.newNoteFolder || active?.parent?.path || '');
     const dir = folder && folder !== '/' ? `${folder}/` : '';
@@ -565,6 +581,8 @@ class BedrockSettings extends PluginSettingTab {
         p.settings.indexFolder = normalizePath(v.trim() || '/').replace(/^\/$/, '');
         await p.persist();
       }));
+    // No notes are made where they are view only.
+    if (p.viewOnly) return;
     new Setting(containerEl)
       .setName('Folder for new notes')
       .setDesc('Leave empty to create new notes next to the open file.')

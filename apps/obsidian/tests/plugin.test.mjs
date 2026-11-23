@@ -89,6 +89,44 @@ test('registers the .bedrock view, commands and settings, and writes nothing int
   for (const name of ['app', 'welcome']) assert.match(plugin.webApp.bundle.pages[name], /<!--bedrock:module-->/, `the ${name} page is carried in main.js`);
 });
 
+test('on a desktop computer notes are view only, and no new notes are offered; the iPad edits', async () => {
+  fake.Platform.isDesktopApp = true;
+  let env;
+  try { env = await loaded(); } finally { fake.Platform.isDesktopApp = false; }
+  const { plugin, app, vault } = env;
+  assert.equal(plugin.viewOnly, true);
+  assert.deepEqual(plugin.commands.map((c) => c.id), ['report-problem', 'reindex'], 'no new-note commands');
+  assert.deepEqual(plugin.ribbons, [], 'no "New Bedrock note" button');
+  // No "New Bedrock note" on a folder, no "New handwritten note linking here" on a note.
+  await vault.create('Lecture 3.md', '# Lecture 3');
+  const menu = new fake.Menu();
+  await app.workspace.trigger('file-menu', menu, new fake.TFolder('Physics'), 'file-explorer-context-menu');
+  await app.workspace.trigger('file-menu', menu, vault.files.get('Lecture 3.md'), 'file-explorer-context-menu');
+  await app.workspace.trigger('editor-menu', menu, {}, { file: vault.files.get('Lecture 3.md') });
+  assert.deepEqual(menu.items, []);
+  assert.equal(await plugin.newNote(), null);
+  // The note's name is not changed from the canvas header either.
+  const note = await vault.createBinary('Forces.bedrock', new ArrayBuffer(0));
+  Object.setPrototypeOf(note, fake.TFile.prototype);
+  assert.equal(await plugin.renameNote(note, 'Gravity'), 'Forces');
+  assert.ok(vault.files.has('Forces.bedrock'));
+  // The view opens the canvas view only.
+  const pages = [];
+  const page = plugin.webApp.page.bind(plugin.webApp);
+  plugin.webApp.page = (name, opts) => { pages.push([name, opts]); return page(name, opts); };
+  const view = plugin.views['bedrock-note'](new fake.WorkspaceLeaf());
+  const frame = { remove() {}, ownerDocument: { defaultView: { addEventListener() {}, removeEventListener() {} } }, contentWindow: null };
+  view.app = app;
+  view.contentEl = { createEl: () => frame };
+  await view.onLoadFile(note);
+  assert.deepEqual(pages, [['app', { viewOnly: true }]]);
+  await assert.rejects(view.session.handlers.write({ data: new Uint8Array([1]) }), /view only/);
+
+  const ipad = await loaded();
+  assert.equal(ipad.plugin.viewOnly, false);
+  assert.deepEqual(ipad.plugin.commands.map((c) => c.id), ['new-note', 'new-linked-note', 'report-problem', 'reindex']);
+});
+
 test('soon after Obsidian starts, the WebAssembly is compiled once, ready for the first note', async () => {
   const { plugin } = await loaded();
   const module = await plugin.wasmWarm;

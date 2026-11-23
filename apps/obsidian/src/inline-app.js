@@ -63,12 +63,13 @@ export class InlineApp {
   }
 
   /** The HTML of page `name` ('app' or 'welcome') for an iframe's srcdoc.
-   *  `probe` asks the welcome page only whether consent is needed. */
-  page(name, { probe = false } = {}) {
+   *  `probe` asks the welcome page only whether consent is needed;
+   *  `viewOnly` opens the note to look at, never to change. */
+  page(name, { probe = false, viewOnly = false } = {}) {
     const html = this.bundle.pages?.[name];
     if (!html) throw new Error(`no ${name} page in the plugin`);
     const { assets, modules } = this.urlsOnce();
-    const globals = `<script>globalThis.BEDROCK_HOST = ${scriptJson(this.host)}; globalThis.BEDROCK_PROBE = ${probe ? 'true' : 'false'}; globalThis.BEDROCK_ASSETS = ${scriptJson(assets)};</script>`;
+    const globals = `<script>globalThis.BEDROCK_HOST = ${scriptJson(this.host)}; globalThis.BEDROCK_PROBE = ${probe ? 'true' : 'false'}; globalThis.BEDROCK_VIEW_ONLY = ${viewOnly ? 'true' : 'false'}; globalThis.BEDROCK_ASSETS = ${scriptJson(assets)};</script>`;
     const module = `<script type="module" src="${modules[name]}"></script>`;
     return html.replace(GLOBALS_MARK, () => globals).replace(MODULE_MARK, () => module);
   }

@@ -10,7 +10,10 @@
 //   * the host can ask to be shown a place in the note (a search hit, a
 //     link to a word), and can be asked for a link to one;
 //   * the note's name in the header is the host file's name: naming the
-//     note renames the file, and renaming the file renames the note.
+//     note renames the file, and renaming the file renames the note;
+//   * the host can open the note view only (the plugin on a desktop
+//     computer): it can be looked at, moved around and its links followed,
+//     but nothing in it changes and it is never saved.
 //
 // Nothing here runs in the normal web app (`host` is null there). Keeping the
 // differences in this one file lets the web app and every host ship from the
@@ -23,6 +26,8 @@ const params = new URLSearchParams(location.search);
 // The plugin's own page has no address to carry `?host=`: it sets
 // BEDROCK_HOST instead (apps/obsidian/src/inline-app.js).
 const name = params.get('host') || globalThis.BEDROCK_HOST || null;
+// View only: set by the plugin's page (BEDROCK_VIEW_ONLY) or `?view=only`.
+const viewOnly = globalThis.BEDROCK_VIEW_ONLY === true || params.get('view') === 'only';
 
 /** A request/response channel to the parent window. */
 function channel(target) {
@@ -92,6 +97,16 @@ export class HostStore {
 
 export const HOST_NOTE = 'host';
 
+/** What a view-only note does not show: everything that draws, inserts or
+ *  changes the note (the menu's settings rows by the control they hold). */
+export const VIEW_ONLY_HIDDEN = [
+  '#toolbar', '#stroke-pop', '#btn-undo', '#btn-redo',
+  '[data-action="import-pdf"]', '[data-action="insert-image"]', '[data-action="paste"]',
+  '.row:has(#paper)', '.row:has(#dock)', '.row:has(#pressure)', '.row:has(#smoothing)', '.row:has(#smoother)',
+  '.row:has(#finger-draw)', '.row:has(#scribble-erase)', '.row:has(#show-recognizer)', '.row:has(#hover-preview)',
+  '#record-trace',
+];
+
 /** The buffer of a saved file, to hand to the host without a copy: a
  *  save is built fresh and not used again once written. Only a buffer the
  *  bytes fill alone, so nothing else is taken with it. */
@@ -109,6 +124,14 @@ function connect() {
   const style = document.createElement('style');
   style.textContent = '#btn-library, [data-action="new"], [data-action="open"], [data-action="export-all"] { display: none !important; }';
   document.head.append(style);
+  if (viewOnly) {
+    document.documentElement.dataset.viewOnly = 'true';
+    // Nothing that draws, inserts or changes the note: the tools, undo and
+    // redo, the pen's settings, inserting, pasting and importing.
+    const ro = document.createElement('style');
+    ro.textContent = `${VIEW_ONLY_HIDDEN.join(', ')} { display: none !important; } #stage { cursor: grab; }`;
+    document.head.append(ro);
+  }
 
   Object.assign(linkType('note'), {
     available: true,
@@ -125,6 +148,8 @@ function connect() {
 
   return {
     name,
+    /** The note can be looked at but not changed, and is never saved. */
+    viewOnly,
     noteId: HOST_NOTE,
     rpc,
     store: () => new HostStore(rpc),

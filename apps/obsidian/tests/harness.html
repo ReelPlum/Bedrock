@@ -82,8 +82,9 @@ window.host = {
   },
   get session() { return session; },
   get bridge() { return bridge; },
-  /** Open a vault file in the iframe, as the plugin's view does. */
-  async open(path) {
+  /** Open a vault file in the iframe, as the plugin's view does;
+   *  `viewOnly` as on a desktop computer. */
+  async open(path, { viewOnly = false } = {}) {
     // As the view does when it closes: write a waiting index note.
     await session?.flushIndex();
     bridge?.close();
@@ -91,6 +92,7 @@ window.host = {
     let ready;
     const isReady = new Promise((r) => { ready = r; });
     session = createSession({
+      viewOnly,
       vault,
       file: () => file,
       indexer,
@@ -124,7 +126,7 @@ window.host = {
     const tellInset = (bottom) => bridge.send('inset', { bottom }, 1000).catch(() => null);
     keyboard?.stop();
     keyboard = watchKeyboard(window, frame, tellInset);
-    frame.srcdoc = webApp.page('app');
+    frame.srcdoc = webApp.page('app', { viewOnly });
     await isReady;
   },
   /** Obsidian renames or moves the open file (its file explorer, or the

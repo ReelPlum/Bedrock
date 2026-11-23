@@ -5,10 +5,14 @@
 // recoloured (Color shows the writer's swatches and the + for a new one),
 // or deleted; linking or correcting a selection makes it one word first.
 // The menu keeps clear of whatever covers the bottom of the page (the iPad's
-// keyboard inside Obsidian, see `setInset`).
+// keyboard inside Obsidian, see `setInset`). Read only (a view-only note),
+// it only says what the word was read as, and opens or copies links.
 
 import { LINK_TYPES, linkType } from './links.js';
 import { SwatchPicker } from './swatch-picker.js';
+
+/** The buttons that change the note, not shown when it is read only. */
+export const READ_ONLY_HIDDEN = ['wm-link', 'wm-unlink', 'wm-right', 'wm-correct', 'wm-kind', 'wm-drawing', 'wm-group', 'wm-ungroup', 'wm-color', 'wm-duplicate', 'wm-delete'];
 
 /** How much a held stroke grows as it lifts, and how long that takes. */
 const LIFT_SCALE = 1.06;
@@ -17,8 +21,9 @@ const LIFT_MS = 160;
 export class WordMenu {
   /** `describe(word)` says what the recogniser made of a word, e.g.
    *  { text, by: 'careful model' } or { waiting: 'Reading…' }. */
-  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback, onDuplicate, palette, onPaletteChange } = {}) {
+  constructor(el, canvas, stage, { onChange, describe, requestFrame, onFeedback, onDuplicate, palette, onPaletteChange, readOnly = false } = {}) {
     this.el = el;
+    this.readOnly = readOnly;
     this.canvas = canvas;
     this.stage = stage;
     this.onChange = onChange || (() => {});
@@ -268,6 +273,7 @@ export class WordMenu {
     $('wm-link').textContent = l ? 'Change link…' : 'Make a link…';
     // Inside a host (Obsidian), other notes can link to this very word.
     $('wm-copy-here').hidden = !linkType('note').copyHere || !this._firstStroke();
+    if (this.readOnly) for (const b of READ_ONLY_HIDDEN) $(b).hidden = true;
     this._show('main');
     this.el.hidden = false;
     this._place();
