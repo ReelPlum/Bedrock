@@ -30,6 +30,8 @@ export const SETTLE_MS = 20_000;
 const LINES_KEY = 'bedrock.sharedLines.v1';
 /** Words sent one at a time by earlier versions: `[["note:word", { id, sig, source }]]`. */
 const WORDS_KEY = 'bedrock.sharedWords.v1';
+/** Set once the lines sent before the stroke time fix were marked to go again. */
+const RESENT_KEY = 'bedrock.sharedLines.resent';
 const MAX_LINES = 3000;
 /** The backend's limits for one sample; a longer line is sent in pieces. */
 const MAX_STROKES = 800;
@@ -61,6 +63,21 @@ export class WordSharer {
     };
     read(LINES_KEY, this.lines);
     read(WORDS_KEY, this.sent);
+    this._resendOnce();
+  }
+
+  /** Lines sent before stroke times were kept from going backwards were
+   *  mostly refused by the backend and dropped, though remembered as sent.
+   *  Once, every remembered line is marked changed, so it is sent again
+   *  (replacing the earlier sample, if that got in) when its note is next
+   *  open. */
+  _resendOnce() {
+    try {
+      if (this.storage.getItem(RESENT_KEY)) return;
+      for (const rec of this.lines.values()) rec.sig = '';
+      this._save();
+      this.storage.setItem(RESENT_KEY, '1');
+    } catch (_) { /* private mode */ }
   }
 
   _save() {

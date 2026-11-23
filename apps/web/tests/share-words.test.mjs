@@ -195,3 +195,24 @@ test('bug: times that go backwards within a stroke are sent never going backward
   const noTime = fromTraining({ prompt: { kind: 'text', text: 'a' }, note: { strokes: [{ start: T0, points: [1, 2, 3, 4] }], channels: ['x', 'y'] }, written: T0 });
   assert.deepEqual(noTime.strokes[0].points, [1, 2, 3, 4], 'ink without times is left alone');
 });
+
+test('bug: lines sent before the stroke time fix are sent once more, replacing what got in', async () => {
+  // Most lines sent before the fix were refused by the backend (their
+  // times went backwards) and dropped, but were remembered as sent, so
+  // they would never go again. Each one is sent once more, replacing the
+  // earlier sample if it did get in.
+  const c = canvas();
+  for (const [id, x] of [[1, 0], [2, 20]]) c.add(id, x, 0);
+  c.words = [word('a', [1, 2], 0, 'it')];
+  const storage = memoryStorage();
+  const first = sharer(c, { storage });
+  assert.equal(await first.s.scan(), 1);
+  const old = first.sent[0].id;
+  storage.removeItem('bedrock.sharedLines.resent');
+  const again = sharer(c, { storage });
+  assert.equal(await again.s.scan(), 1, 'sent once more');
+  assert.deepEqual(again.sent[0].supersedes, [old], 'replacing the earlier one');
+  assert.equal(await again.s.scan(), 0);
+  const later = sharer(c, { storage });
+  assert.equal(await later.s.scan(), 0, 'only once');
+});
