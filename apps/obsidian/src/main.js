@@ -153,6 +153,7 @@ class BedrockView extends FileView {
       listFiles: async (sourcePath) => plugin.linkableFiles(sourcePath),
       listTags: async () => vaultTags(this.app, getAllTags),
       pdfPage: (path, page, width) => plugin.pdfPages.page(path, page, width),
+      pdfFind: (path, query) => plugin.pdfPages.find(path, query),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
       copyLink: (stroke) => plugin.copyLink(this.file, stroke),
       start: () => plugin.takeStart(this.file),
@@ -235,7 +236,8 @@ export default class BedrockPlugin extends Plugin {
     this.register(() => this.webApp.revoke());
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder,
       (link, source) => this.app.metadataCache.getFirstLinkpathDest?.(link, source)?.path ?? null);
-    // A PDF's pages for the canvas's link picker, drawn with Obsidian's own PDF.js.
+    // A PDF's pages for the canvas's link picker, drawn with Obsidian's own
+    // PDF.js, and searched with the find controller of Obsidian's PDF viewer.
     this.pdfPages = new PdfPages({
       pdfjs: () => loadPdfJs(),
       read: async (path) => {

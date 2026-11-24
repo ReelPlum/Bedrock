@@ -866,6 +866,32 @@ test('the link picker finds the words of notes with their samples in points.bin,
   assert.throws(() => readPointsBin(Uint8Array.from(bin.slice(0, -1))), /ends early/);
 });
 
+test("a PDF search's matches name the passage in the page's text items, as Obsidian's selection links count them", async () => {
+  const { pageText, selectionOf, findInText, fromItemsOnly } = await import('../src/pdf-pages.js');
+  const page = pageText([{ str: 'The second law', hasEOL: true }, { str: '', hasEOL: true }, { str: 'of motion.', hasEOL: false }]);
+  assert.equal(page.text, 'The second law\n\nof motion.');
+  const [hit] = findInText(page.text, 'law of');
+  assert.deepEqual(hit, [11, 7]);
+  // From "law" in the first item to "of" in the third (the empty one between is skipped).
+  assert.deepEqual(selectionOf(page.starts, page.items, hit[0], hit[0] + hit[1]), [0, 11, 2, 2]);
+  // PDF.js's find controller counts without the line breaks.
+  assert.deepEqual(fromItemsOnly(page, [11, 5]), hit);
+  // Hyphens at a line's end, accents, case and runs of spaces.
+  assert.deepEqual(findInText('An inter-\naction', 'INTERACTION'), [[3, 13]]);
+  assert.deepEqual(findInText('Ein Café', 'cafe'), [[4, 4]]);
+  assert.deepEqual(findInText('a  b', ' '), []);
+});
+
+test('the canvas may search PDFs only, for a short text', async () => {
+  const vault = new FakeVault();
+  const asked = [];
+  const s = createSession({ vault, file: () => ({ path: 'A.bedrock' }), kv: { get() {}, async set() {} }, pdfFind: async (p, q) => { asked.push([p, q]); return { count: 1, total: 0, hits: [] }; } });
+  assert.deepEqual(await s.handlers['pdf-find']({ path: 'P/Paper.pdf', query: 'law' }), { count: 1, total: 0, hits: [] });
+  await assert.rejects(s.handlers['pdf-find']({ path: 'Notes.md', query: 'law' }), /Not a PDF/);
+  await assert.rejects(s.handlers['pdf-find']({ path: 'P/Paper.pdf', query: 'x'.repeat(201) }), /200 letters/);
+  assert.deepEqual(asked, [['P/Paper.pdf', 'law']]);
+});
+
 test('every tag in the vault is offered for the tag box: Markdown notes and index notes, counted per note, without bedrock', async () => {
   const { vaultTags } = await import('../src/tags.js');
   const { getAllTags } = (await import('./fake-obsidian.cjs')).default;
