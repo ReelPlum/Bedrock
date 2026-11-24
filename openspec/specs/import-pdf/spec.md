@@ -65,6 +65,37 @@ Importing SHALL NOT change the note format. Strokes, recognised text and picture
 - **THEN** it has the same pictures and picture files
 <!-- test: pdf_pictures_come_across_where_they_sit_on_the_page -->
 
+### Requirement: An imported note SHALL be on the paper for new notes
+
+A note made from a PDF SHALL start on the same paper as a new note: grid on
+the website, and the "Paper for new notes" setting in the Obsidian plugin
+(importing into the open note and the bulk import in the settings). The
+paper is saved in the note's `paper` field, so changing the setting later
+leaves imported notes as they are. Before this, imported notes were on plain
+paper. No data format changes: `paper` keeps its values and meaning, and the
+reader only writes a different one of them.
+
+#### Scenario: The reader's paper
+- **GIVEN** a PDF with ink
+- **WHEN** it is read as a note per page or as one note
+- **THEN** each note is on grid paper, or on the paper the app names (grid, dots, lines or plain), and keeps it when saved and opened again; a name that is not a paper gives grid
+<!-- test: pdf_notes_start_on_the_paper_for_new_notes -->
+
+#### Scenario: On the website
+- **GIVEN** a two page handwritten PDF
+- **WHEN** it is imported on the website
+- **THEN** each page's note is on grid paper
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->
+
+#### Scenario: In Obsidian
+- **GIVEN** "Paper for new notes" left alone, or set to dots or lines
+- **WHEN** a PDF is imported into the open note, or PDFs are dropped on the settings' drop zone
+- **THEN** the note is saved on grid, or on the paper the setting chose when the PDF was read
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: a PDF imported into a vault note is saved into that file, and is there when the note is opened again -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a PDF's pages are imported one below another into a note made about a page, which keeps its link; a note with writing is never replaced -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: PDFs dropped on the settings' drop zone become notes at the vault root that open with their handwriting -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: bulk PDF import: a PDF the reader hangs or crashes on is given up, and the reader is started afresh -->
+
 ### Requirement: The app SHALL import a PDF as one note per page
 
 #### Scenario: Importing from the menu or Open

@@ -1439,7 +1439,7 @@ async function main() {
     let pages;
     try {
       const { import_pdf } = await pdfModule();
-      pages = import_pdf(f.bytes, ...randomSeed(), Date.now());
+      pages = import_pdf(f.bytes, ...randomSeed(), Date.now(), await newNotePaper());
     } catch (e) {
       toast(`${f.name} could not be read (${e}).`, 6000);
       return;
@@ -1479,7 +1479,7 @@ async function main() {
     let page;
     try {
       const { import_pdf_as_one_note } = await pdfModule();
-      page = import_pdf_as_one_note(f.bytes, ...randomSeed(), Date.now());
+      page = import_pdf_as_one_note(f.bytes, ...randomSeed(), Date.now(), await newNotePaper());
     } catch (e) {
       toast(`${f.name} could not be read (${e}).`, 6000);
       return;

@@ -1183,6 +1183,7 @@ test('bulk PDF import: a PDF the reader hangs or crashes on is given up, and the
   assert.equal(new TextDecoder().decode(page.bedrock), 'note');
   assert.deepEqual(page.warnings, ['one picture left out']);
   assert.equal(made[0].sent[0].bytes.byteLength, 7, 'the bytes are handed over');
+  assert.equal(made[0].sent[0].paper, 'grid', 'the note is on grid unless the settings choose another paper');
   assert.equal(await reader.convert(bytes('%PDF empty')), null);
   await assert.rejects(reader.convert(bytes('%PDF hang')), /did not finish reading this PDF/);
   assert.ok(made[0].terminated, 'the stuck reader is stopped');
@@ -1195,6 +1196,13 @@ test('bulk PDF import: a PDF the reader hangs or crashes on is given up, and the
   assert.ok(made[2].terminated);
   reader.close();
   assert.ok(made[3].terminated, 'closed with the plugin');
+  let paper = 'dots';
+  const onDots = new PdfReader({ start, paper: () => paper });
+  await onDots.convert(bytes('%PDF ok'));
+  paper = 'plain';
+  await onDots.convert(bytes('%PDF ok'));
+  assert.deepEqual(made.at(-1).sent.map((m) => m.paper), ['dots', 'plain'], 'each PDF is read onto the paper for new notes at that time');
+  onDots.close();
 
   // In the queue: the hung PDF is listed and the rest go on.
   const vault = new FakeVault();

@@ -190,9 +190,12 @@ export class BulkImport {
  *  afresh every `freshEvery` PDFs: WebAssembly memory only grows, so this
  *  gives back what a big PDF took. */
 export class PdfReader {
-  /** `start()` resolves to a started Worker (or a stand-in). */
-  constructor({ start, timeoutMs = 120_000, freshEvery = 25 }) {
+  /** `start()` resolves to a started Worker (or a stand-in); `paper()`
+   *  is the paper new notes start with (the "Paper for new notes"
+   *  setting), which each imported note is on. */
+  constructor({ start, paper = () => 'grid', timeoutMs = 120_000, freshEvery = 25 }) {
     this.start = start;
+    this.paper = paper;
     this.timeoutMs = timeoutMs;
     this.freshEvery = freshEvery;
     this.worker = null;
@@ -245,7 +248,7 @@ export class PdfReader {
         this.drop();
         done(reject, new Error(`the PDF reader stopped (${e?.message || 'it crashed'})`));
       };
-      w.postMessage({ id, bytes, start: Date.now() }, [bytes]);
+      w.postMessage({ id, bytes, start: Date.now(), paper: this.paper() }, [bytes]);
     });
   }
 

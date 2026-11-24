@@ -227,6 +227,7 @@ test('importing a PDF: each page becomes a note, and is mirrored, not sent as sa
   const notes = await page.evaluate(async () => (await bedrock.store.list()).map((n) => n.title).sort());
   assert.deepEqual(notes.filter((t) => t.startsWith('Lecture')), ['Lecture 7 (page 1)', 'Lecture 7 (page 2)']);
   assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 1, 'the last page is open');
+  assert.equal(await page.evaluate(() => bedrock.canvas.paper()), 'grid', 'on the paper for new notes (was plain)');
   await syncNow(page);
   const sizes = [...server.mirrors.values()].map((m) => m.strokes.size).sort();
   assert.deepEqual(sizes, [1, 4], 'each page is mirrored with all its handwriting');
