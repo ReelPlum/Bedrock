@@ -1,6 +1,7 @@
 // The "Saving your samples" card on /train: consent, invite code, and
 // "Delete my contributions".
 import * as collect from '../src/collect.js';
+import { forgetOnDevice } from '../src/mirror-notes.js';
 import { agreeHtml, accept } from '../src/consent.js';
 
 const $ = (id) => document.getElementById(id);
@@ -52,7 +53,7 @@ $('setup-form').addEventListener('submit', async (e) => {
 
 $('stop').addEventListener('click', async () => {
   // Withdraws consent on this device. What was sent stays until deleted.
-  collect.saveState({ consent: 0 });
+  collect.saveState({ consent: 0, mirror: 0 });
   await show();
 });
 
@@ -60,7 +61,10 @@ $('delete').addEventListener('click', async () => {
   if (!confirm('Delete everything you have sent, and everything waiting to be sent? This cannot be undone.')) return;
   try {
     const n = await collect.deleteMine();
-    collect.saveState({ consent: 0 });
+    // Note mirrors too: nothing waits to be sent, and nothing on this
+    // device remembers what was mirrored.
+    await forgetOnDevice();
+    collect.saveState({ consent: 0, mirror: 0 });
     fail('');
     await show();
     $('state').textContent = `Deleted ${n} samples. Saving is off.`;

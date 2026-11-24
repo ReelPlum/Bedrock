@@ -177,3 +177,42 @@ fn every_old_note_resaves_with_points_bin_bit_for_bit() {
         }
     }
 }
+
+/// Every old note, in every format it was saved in, gives a note mirror all
+/// of its handwriting (`note-mirrors` spec): every stroke but the
+/// highlighter, with its id, start time and every sample as the file holds
+/// it. So turning mirrors on sends the notes people already have in full.
+#[test]
+fn every_old_note_mirrors_all_its_handwriting() {
+    use bedrock_core::ink_mirror::ink_json;
+    let mut cases: Vec<(&str, &str)> = Vec::new();
+    for name in ["v1-first-release", "v1-before-pictures", "v1-pictures-and-text-boxes", "v1-before-note-links"] {
+        for ext in FORMATS {
+            if (name == "v1-pictures-and-text-boxes" || name == "v1-before-note-links") && ext == "json" {
+                continue;
+            }
+            cases.push((name, ext));
+        }
+    }
+    cases.push(("v1-handwriting-before-points-bin", "bedrock"));
+    for (name, ext) in cases {
+        let d = open(name, ext);
+        let ink: serde_json::Value = serde_json::from_str(&ink_json(&d)).unwrap();
+        let channels = ink["channels"].as_array().unwrap().len();
+        let written: Vec<_> = d.strokes().iter().filter(|s| s.brush.kind != BrushKind::Highlighter).collect();
+        let sent = ink["strokes"].as_array().unwrap();
+        assert_eq!(sent.len(), written.len(), "{name}.{ext}: every handwritten stroke");
+        assert!(!sent.is_empty(), "{name}.{ext}");
+        for (s, w) in sent.iter().zip(&written) {
+            assert_eq!(s["id"], w.id.to_string(), "{name}.{ext}: the stroke's own id");
+            assert_eq!(s["start"].as_f64(), Some(w.start_time), "{name}.{ext}: its start time");
+            assert_eq!(s["points"].as_array().unwrap().len(), w.points.len() * channels, "{name}.{ext}: every sample");
+        }
+        // The same values the note file saves.
+        let saved: serde_json::Value = serde_json::from_str(&format::to_json(&d)).unwrap();
+        let in_file = saved["strokes"].as_array().unwrap().iter().find(|s| s["id"] == sent[0]["id"]).unwrap();
+        assert_eq!(in_file["points"], sent[0]["points"], "{name}.{ext}");
+        let text = ink.to_string();
+        assert!(!text.contains("\"title\"") && !text.contains("\"brush\"") && !text.contains("\"texts\""), "{name}.{ext}: ink only");
+    }
+}

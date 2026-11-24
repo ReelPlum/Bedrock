@@ -13,6 +13,7 @@ A **data format** is anything written to disk or sent between programs:
 | An exported library (ZIP of folders) | `obsidian-sidecars`, `library-folders` |
 | The on-device library (IndexedDB `bedrock`) | `saving-and-opening`, `library-folders` |
 | Training samples, the upload queue and their local storage | `training-data-sharing` |
+| Note mirrors (`bedrock-note-mirror`), IndexedDB `bedrock-mirror`, the contributor secret | `note-mirrors` |
 | Training prompts (`GET /v1/prompts`, `bedrock.train.prompts`) | `training-pages` |
 | Error reports (`bedrock-error-report`), `send-report`, the on-device log `bedrock.errors.v1` | `error-reporting` |
 | Slow entries and automatic performance reports, `bedrock.perf.v1` | `performance` |
