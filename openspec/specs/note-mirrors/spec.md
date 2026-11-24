@@ -4,8 +4,11 @@
 "Mirror my notes": a copy of the handwriting of every note, kept up to date
 in the training data backend as the writer adds and erases strokes, so
 recognition can later be trained on notes exactly as they were written.
-Off unless the writer turns it on, on top of the consent on the training
-pages. The app side is `apps/web/src/mirror-notes.js`, `collect.js`
+While the launch gate is on, agreeing to the Terms (consent version 4) at
+launch or on `/train` turns it on, and it cannot be turned off in the
+settings; without the gate it is off unless the writer ticks it, which
+asks first. Since consent version 4 it is the only way notes reach the
+backend (the `training-data-sharing` spec). The app side is `apps/web/src/mirror-notes.js`, `collect.js`
 (`sendNotes`) and `bedrock-core`'s `ink_mirror`; the backend's checks and
 storage are the `note-mirrors` spec in the Bedrock-Backend repository.
 `docs/training-data.md` explains it for people. Research and the choice of
@@ -68,6 +71,13 @@ a set with remembered erasures needs no CRDT library and no new file format.
 
 ### Requirement: Nothing SHALL be mirrored without its own consent
 
+#### Scenario: Agreeing at launch turns it on
+- **GIVEN** the launch gate, and consent given to an earlier version (3, word by word) with a contributor secret
+- **WHEN** the app starts and the writer agrees to version 4
+- **THEN** nothing is mirrored until then; afterwards mirroring is on, locked on in the settings, with the same contributor and secret
+<!-- test-js: apps/web/tests/launch-gate.test.mjs :: consent given to the version 3 text (word by word) is asked for again, and agreeing turns on mirroring with the same secret -->
+<!-- test-js: apps/web/tests/launch-gate.test.mjs :: the app asks for the invite code and consent at once, and cannot be used until both are given -->
+
 #### Scenario: Off until turned on
 - **GIVEN** saving set up on the training pages, and "Mirror my notes" off
 - **WHEN** the writer writes
@@ -109,6 +119,12 @@ a set with remembered erasures needs no CRDT library and no new file format.
 <!-- test-js: apps/web/tests/mirror-notes.test.mjs :: bug: undoing an erase writes the stroke back in the cloud copy -->
 <!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: writing, erasing and undoing in a note keeps its cloud copy exactly as the note -->
 
+#### Scenario: Times that go backwards
+- **GIVEN** ink saved before stroke times were kept from going backwards
+- **WHEN** it is mirrored
+- **THEN** each time is raised to the one before it, so the backend takes the upload
+<!-- test-js: apps/web/tests/mirror-notes.test.mjs :: bug: times that go backwards within a stroke are sent never going backwards -->
+
 #### Scenario: Large notes, offline and the backend's limits
 - **GIVEN** a note with thousands of strokes, or no connection
 - **WHEN** it is mirrored
@@ -125,6 +141,7 @@ a set with remembered erasures needs no CRDT library and no new file format.
 <!-- test: every_old_note_mirrors_all_its_handwriting -->
 <!-- test-js: apps/web/tests/mirror-notes.test.mjs :: notes already in the library are sent in full, once, and changed ones again -->
 <!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: every note already in the library is mirrored in full, whatever format version it was saved in -->
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->
 
 ### Requirement: Deleting SHALL reach the cloud copy
 

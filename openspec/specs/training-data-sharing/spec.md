@@ -80,15 +80,10 @@ storage holds `mirror`, `secret` and `secretKnown` for note mirrors (the
 
 #### Scenario: Times are sent never going backwards
 - **GIVEN** ink, saved before the fix, whose times go backwards within a stroke
-- **WHEN** it is sent as a sample (training page, word or line)
+- **WHEN** it is sent as a training sample or in a note mirror
 - **THEN** each time is raised to the one before it, so the backend takes it; ink without times is left alone
-<!-- test-js: apps/web/tests/share-words.test.mjs :: bug: times that go backwards within a stroke are sent never going backwards -->
-
-#### Scenario: Lines refused before the time fix are sent again
-- **GIVEN** lines remembered as sent before stroke times were kept from going backwards (most were refused and dropped)
-- **WHEN** the app starts once after the fix and a note is open
-- **THEN** each of its remembered lines is sent once more, replacing the earlier sample if that got in, and never again after that
-<!-- test-js: apps/web/tests/share-words.test.mjs :: bug: lines sent before the stroke time fix are sent once more, replacing what got in -->
+<!-- test-js: apps/web/tests/mirror-notes.test.mjs :: a training sample is sent with times never going backwards too -->
+<!-- test-js: apps/web/tests/mirror-notes.test.mjs :: bug: times that go backwards within a stroke are sent never going backwards -->
 
 #### Scenario: The console says why samples were not sent
 - **GIVEN** queued samples
@@ -104,29 +99,22 @@ storage holds `mirror`, `secret` and `secretKnown` for note mirrors (the
 - **THEN** the server is asked to delete them, the queue is emptied and saving is turned off
 <!-- test-js: apps/web/tests/collect.test.mjs :: "Delete my contributions" asks the server to delete, empties the queue and turns saving off -->
 
-### Requirement: Words from notes SHALL be sent only with the setting on, and checked words SHALL replace unchecked ones
+### Requirement: Nothing from a note SHALL be sent as a sample
 
-#### Scenario: The setting
-- **GIVEN** no consent, or the setting off
-- **WHEN** the writer ticks a reading as right
-- **THEN** the setting cannot be turned on before consent, and nothing is sent while it is off
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: the setting cannot be turned on before consent -->
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: "This is right" marks a reading as checked, and sends nothing while the setting is off -->
+Since consent version 4 (24 November 2026) notes are mirrored whole (the
+`note-mirrors` spec) and "Send every word I write in notes" is gone. Words
+from notes, words the writer checks, and imported PDFs are no longer sent
+as samples (versions 2 and 3 with `source: "note"`); the backend still
+takes them from older apps. The local storage that remembered which lines
+were sent (`bedrock.sharedLines.v1`, `bedrock.sharedWords.v1`) is no
+longer read, and "Delete my contributions" removes it.
 
-#### Scenario: Checked words
-- **GIVEN** the setting on
-- **WHEN** the writer confirms or corrects a word
-- **THEN** that one word is sent moved to 0,0, labelled with the confirmed or corrected text, with the reading alongside
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: with the setting on, a confirmed word is sent as its line, moved to 0,0 -->
-
-#### Scenario: Unchecked words
-- **GIVEN** "Send every word" on
-- **WHEN** a new word is read
-- **THEN** it is sent once its reading settles (or at once when the app is hidden) as `unchecked`, then replaced through `supersedes` when the writer checks it; words from before the setting are not sent by themselves; with the recogniser off they are sent without text
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: with "Send every word" on, a new word is sent unchecked, then replaced when the writer checks it -->
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: an unchecked reading waits until it settles, and is sent at once when the app is hidden -->
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: words written before the setting was on are not sent by themselves -->
-<!-- test-js: apps/web/tests/collect.test.mjs :: notes: with the recogniser off, words are sent without text -->
+#### Scenario: Writing, checking and importing
+- **GIVEN** saving set up on `/train`
+- **WHEN** a word is written in a note, checked with "This is right", or a PDF is imported
+- **THEN** the word is still marked checked in the note, and no sample is queued or sent
+<!-- test-js: apps/web/tests/collect.test.mjs :: notes: nothing from a note is sent as a sample, even a word the writer checks -->
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->
 
 ### Requirement: Uploads SHALL be gzipped, and SHALL still reach a backend that cannot read gzip
 

@@ -16,7 +16,6 @@ import { saveFile, pickFile, safeFileName } from './files.js';
 import { cleanName, folderContents, folderNameProblem, folderTrail, libraryFiles } from './library.js';
 import { host } from './host.js';
 import * as collect from './collect.js';
-import { WordSharer } from './share-words.js';
 import { NoteMirrors, deviceStore, deviceQueue } from './mirror-notes.js';
 import { showGate, gateStyles } from './consent.js';
 import { perf, AutoSender } from './perf.js';
@@ -113,11 +112,6 @@ function loadSettings() {
     recognize: s.recognize !== false,
     recognizeMode: ['live', 'careful', 'both'].includes(s.recognizeMode) ? s.recognizeMode : 'both',
     spelling: s.spelling !== false,
-    // Off unless the writer turns it on: sends every word written in notes
-    // (from `shareWordsSince` on) to the training data backend, and again
-    // when the writer confirms, corrects or says it is not a word.
-    shareWords: s.shareWords === true,
-    shareWordsSince: Number.isFinite(s.shareWordsSince) ? s.shareWordsSince : 0,
     scribbleErase: s.scribbleErase !== false,
     // Pressure feel, -100 (firm) .. 100 (soft); 0 is linear.
     pressure: Number.isFinite(s.pressure) ? Math.max(-100, Math.min(100, s.pressure)) : 0,
@@ -178,15 +172,12 @@ function problem(msg, ms, err) {
 /** While Bedrock is invite-only, the invite code and consent are asked
  *  for at once, over everything (consent.js). The app loads behind it. */
 function askAtLaunch() {
-  const onAccepted = (r) => {
-    // Agreeing turns on "Send every word"; keep this page's copy of the
-    // settings in step, or its next save would turn it off again.
-    // Agreed on another page: that page stored the setting.
-    const stored = loadSettings();
-    const on = r ? r.sharing : { shareWords: stored.shareWords, shareWordsSince: stored.shareWordsSince };
-    if (on) Object.assign(settings, on);
-    const box = document.getElementById('share-words');
-    if (box) box.checked = settings.shareWords && collect.isReady();
+  // Agreeing turns on "Mirror my notes" (consent.js): the settings box
+  // follows, and the notes already in the library are sent.
+  const onAccepted = () => {
+    const box = document.getElementById('mirror-notes');
+    if (box) box.checked = collect.isMirroring();
+    window.bedrock?.mirrorAll?.();
   };
   gateStyles();
   showGate({ onAccepted });
@@ -352,20 +343,6 @@ async function main() {
   };
   ensureDictionary();
   const wordChanged = () => { savedRevision = -1; saveChange(); input.requestFrame(); recognizerView?.update(); };
-  // "Send every word I write in notes": each word's ink, moved to 0,0, with
-  // what the recogniser read as an unchecked label, and again when the
-  // writer checks it (see share-words.js).
-  const wordSharer = new WordSharer({
-    canvas,
-    noteId: () => note.id,
-    enabled: () => settings.shareWords && collect.isReady(),
-    since: () => settings.shareWordsSince,
-    reading: () => settings.recognize,
-  });
-  const shareWordsNow = (force = false) => wordSharer.scan({ force }).catch(() => {});
-  // Leaving a note or the app: what it held is sent now, not in a minute.
-  const shareWordsAndSend = () => shareWordsNow(true).then(() => { collect.flush().catch(() => {}); });
-  setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
   // "Mirror my notes": the handwriting of every note, kept up to date in
   // the training data backend as it is written and erased, and the notes
   // already in the library sent in full (mirror-notes.js).
@@ -432,7 +409,6 @@ async function main() {
     // Color in the selection menu shows the toolbar's swatches.
     palette: (highlighter) => settings.palettes[highlighter ? 'highlighter' : 'ink'],
     onPaletteChange: () => { saveSettings(); applyTool(); },
-    onFeedback: (word, info) => wordSharer.checked(word, info).catch(() => {}),
     // What the recogniser made of a word, for the word's menu.
     describe: (w) => {
       if (w.text != null) {
@@ -649,7 +625,6 @@ async function main() {
   function openNote(id) { return loading.during(() => perf.job('open', () => openNoteUntimed(id))); }
   async function openNoteUntimed(id) {
     if (saveTimer) await saveNow();
-    await shareWordsAndSend();
     await mirrorOpen(true);
     const rec = store && (await store.get(id));
     if (!rec) return newNote();
@@ -673,7 +648,6 @@ async function main() {
 
   async function newNote() {
     if (saveTimer) await saveNow();
-    await shareWordsAndSend();
     await mirrorOpen(true);
     const folder = await libraryFolder();
     canvas.new_document(...randomSeed());
@@ -1476,7 +1450,6 @@ async function main() {
     }
     const base = f.name.replace(/\.pdf$/i, '');
     const warnings = new Set();
-    let sent = 0;
     for (const [i, page] of pages.entries()) {
       if (saveTimer) await saveNow();
       canvas.load(page.bedrock, ...randomSeed());
@@ -1486,10 +1459,9 @@ async function main() {
       savedRevision = -1;
       await saveNow();
       page.warnings.forEach((w) => warnings.add(w));
-      sent += await wordSharer.scan({ imported: true }).catch(() => 0);
     }
     const what = pages.length > 1 ? `${pages.length} pages` : f.name;
-    const extra = [sent ? `${sent} words sent for training` : '', ...warnings].filter(Boolean).join('; ');
+    const extra = [...warnings].join('; ');
     toast(`Imported ${what}${extra ? ` (${extra})` : ''}.`, 6000);
     return pages.length;
   }
@@ -1524,8 +1496,7 @@ async function main() {
     applyDocToUi();
     savedRevision = -1;
     await saveNow();
-    const sent = await wordSharer.scan({ imported: true }).catch(() => 0);
-    const extra = [sent ? `${sent} words sent for training` : '', ...page.warnings].filter(Boolean).join('; ');
+    const extra = page.warnings.join('; ');
     toast(`Imported ${f.name}${extra ? ` (${extra})` : ''}.`, 6000);
     return 1;
   }
@@ -1754,30 +1725,15 @@ async function main() {
     canvas.set_scribble_erase(settings.scribbleErase);
     saveSettings();
   });
-  // Words go to the training data backend only when this is on, and only
-  // after consent and an invite code (set up on /train).
-  $('share-words').checked = settings.shareWords && collect.isReady();
-  // While the launch gate is on, sending is part of using the app: it is
-  // stopped with "Stop saving" on the Train page, which brings the gate back.
-  if (collect.gateRequired()) {
-    $('share-words').disabled = true;
-    $('share-words').closest('label').title = 'Part of using Bedrock while it is invite-only. "Stop saving" on the Train page stops it.';
-  }
-  $('share-words').addEventListener('change', (e) => {
-    if (e.target.checked && !collect.isReady()) {
-      e.target.checked = false;
-      toast('Set up saving on the Train page first (bedrock/train): it explains what is sent and needs your invite code.', 7000);
-      return;
-    }
-    settings.shareWords = e.target.checked;
-    // Only what is written from now on is sent by itself.
-    if (settings.shareWords) settings.shareWordsSince = Date.now();
-    saveSettings();
-    if (settings.shareWords) collect.flush().catch(() => {});
-  });
   // "Mirror my notes": its own consent, asked here, on top of the consent
   // on /train (mirror-notes.js, the note-mirrors spec).
   $('mirror-notes').checked = collect.isMirroring();
+  // While the launch gate is on, mirroring is part of using the app: it is
+  // stopped with "Stop saving" on the Train page, which brings the gate back.
+  if (collect.gateRequired()) {
+    $('mirror-notes').disabled = true;
+    $('mirror-notes').closest('label').title = 'Part of using Bedrock while it is invite-only. "Stop saving" on the Train page stops it.';
+  }
   $('mirror-notes').addEventListener('change', async (e) => {
     if (!e.target.checked) {
       collect.setMirroring(false);
@@ -2009,9 +1965,9 @@ async function main() {
   // Flush pending saves when the app is backgrounded or closed (iPad
   // suspends hidden tabs without warning).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsAndSend(); mirrorAndSend(); }
+    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); collect.flush().catch(() => {}); mirrorAndSend(); }
   });
-  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsAndSend(); mirrorAndSend(); });
+  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); collect.flush().catch(() => {}); mirrorAndSend(); });
 
   // ----- start ---------------------------------------------------------------------
   // Notes changed while the app was closed (or on another device, through
@@ -2045,7 +2001,7 @@ async function main() {
   });
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { loading, noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, mirrors, mirrorOpen, mirrorLibrary, ready: true };
+  window.bedrock = { loading, noteInfo, renderLibrary, collect, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, mirrors, mirrorOpen, mirrorLibrary, mirrorAll: () => mirrorOpen(true).then(() => mirrorLibrary()).then(() => mirrors.flush()).catch(() => {}), ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });

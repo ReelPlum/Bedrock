@@ -13,11 +13,14 @@
 /** 1: the training pages, and note words with the setting on.
  *  2: words from imported PDFs are sent too.
  *  3: every word written in notes is sent, and agreeing is needed to use
- *     the app while the launch gate is on (see `LAUNCH_GATE`). */
-export const CONSENT_VERSION = 3;
-/** Version 3 plus mirroring whole notes (mirror-notes.js): asked for on
- *  its own when the writer turns "Mirror my notes" on, and sent as the
- *  consent version of mirror uploads. */
+ *     the app while the launch gate is on (see `LAUNCH_GATE`).
+ *  4: notes are mirrored whole (mirror-notes.js) instead of sent word by
+ *     word; the training pages are as before. Everyone who agreed to an
+ *     earlier version is asked again. */
+export const CONSENT_VERSION = 4;
+/** The consent version of "Mirror my notes", sent with mirror uploads.
+ *  While the launch gate is on, agreeing turns it on (consent.js);
+ *  otherwise it is asked for when the writer ticks the box. */
 export const MIRROR_CONSENT_VERSION = 4;
 /** While Bedrock is invite-only, the app and the Obsidian plugin ask for
  *  the invite code and this consent as soon as they start, and cannot be
@@ -279,64 +282,6 @@ export function fromTraining({ prompt, note, box, written }) {
     written,
     box,
   });
-}
-
-/**
- * A sample from a real note: one word, checked by the writer or not
- * (`labelSource`: unchecked | confirmed | corrected).
- * The ink is moved so its top left corner is at 0,0: where on the page it
- * was written says something about the note, and nobody needs to know.
- */
-export function fromNote({ strokes, channels, label, labelSource, kind = 'text', language = 'en', reading, engine, supersedes }) {
-  return sample({ source: 'note', kind, label, labelSource, language, strokes: toOrigin(strokes, channels), channels, reading, engine, supersedes, written: Math.max(...strokes.map((s) => s.start)) });
-}
-
-/** One word's text as the backend wants it in a line: NFC, one line. */
-const wordLabel = (text) => String(text ?? '').normalize('NFC').replace(/\s+/g, ' ').trim();
-
-/**
- * A sample from a real note: one line of handwriting (`bedrock-training`
- * version 3), with where it was cut into words. `words` is
- * `[{ strokes: [ink], kind: 'text'|'math'|'drawing', label, labelSource, reading?, engine? }]`
- * with each word's ink as stroke JSON. The line keeps the words' strokes in
- * writing order; each word names its strokes by their place in the line.
- * Its label is the words' text joined by spaces, and its label source
- * `unchecked` if any word is, else `corrected` if any is, else `confirmed`.
- * The ink is moved to 0,0, like a single word.
- */
-export function fromLine({ words, channels, supersedes }) {
-  const all = words.flatMap((w, k) => w.strokes.map((s) => ({ s, k })));
-  all.sort((a, b) => a.s.start - b.s.start);
-  const cuts = words.map((w) => {
-    const label = w.kind === 'drawing' ? '' : wordLabel(w.label);
-    return {
-      strokes: [],
-      kind: w.kind,
-      label,
-      label_source: w.labelSource,
-      ...(w.reading ? { model_reading: wordLabel(w.reading) } : {}),
-    };
-  });
-  all.forEach(({ k }, i) => cuts[k].strokes.push(i));
-  const sources = words.map((w) => w.labelSource);
-  const labelSource = sources.includes('unchecked') ? 'unchecked' : sources.includes('corrected') ? 'corrected' : 'confirmed';
-  const engine = words.find((w) => w.engine)?.engine || null;
-  const strokes = all.map((a) => a.s);
-  return {
-    ...sample({
-      source: 'note',
-      kind: 'text',
-      label: cuts.map((c) => c.label).filter(Boolean).join(' '),
-      labelSource,
-      language: 'en',
-      strokes: toOrigin(strokes, channels),
-      channels,
-      supersedes,
-      written: Math.max(...strokes.map((s) => s.start)),
-      words: cuts,
-    }),
-    ...(engine ? { model_engine: shortTag(engine, 80) } : {}),
-  };
 }
 
 /** `points` with each time no earlier than the one before it. An iPad can
@@ -631,8 +576,9 @@ export async function deleteMine() {
   // The server no longer holds the secret; it is sent again with the next
   // mirror upload.
   saveState({ sent: 0, problem: '', secretKnown: false });
-  // Which note words were sent (share-words.js): nothing is left to replace.
+  // Which note words earlier versions sent: nothing is left to replace.
   try { globalThis.localStorage?.removeItem('bedrock.sharedWords.v1'); } catch (_) { /* private mode */ }
+  try { globalThis.localStorage?.removeItem('bedrock.sharedLines.v1'); } catch (_) { /* private mode */ }
   await announce();
   return deleted;
 }

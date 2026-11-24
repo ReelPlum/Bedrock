@@ -91,19 +91,18 @@ test('the app asks for the invite code and consent at once, and cannot be used u
   await fillGate(page, { hand: 'left' });
   await page.waitForFunction(() => !document.getElementById('launch-gate'));
   const s = await stored(page);
-  assert.equal(s.collect.consent, 3);
+  assert.equal(s.collect.consent, 4);
   assert.equal(s.collect.code, CODE);
   assert.equal(s.collect.handedness, 'left');
-  assert.equal(s.settings.shareWords, true, '"Send every word" is turned on by agreeing');
-  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), true, 'and in the running app');
-  assert.equal(await page.isChecked('#share-words'), true);
-  assert.equal(await page.isDisabled('#share-words'), true, 'it cannot be turned off while the gate is on');
+  assert.equal(s.collect.mirror, 4, '"Mirror my notes" is turned on by agreeing');
+  assert.equal(await page.isChecked('#mirror-notes'), true, 'and in the running app');
+  assert.equal(await page.isDisabled('#mirror-notes'), true, 'it cannot be turned off while the gate is on');
 
   // Next launch: no gate.
   await page.reload();
   await page.waitForFunction(() => window.bedrock?.ready, null, { timeout: 20000 });
   assert.equal(await gateOpen(page), false);
-  assert.equal(await page.evaluate(() => bedrock.settings.shareWords), true);
+  assert.equal(await page.evaluate(async () => (await import('/src/collect.js')).isMirroring()), true);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -112,7 +111,7 @@ test('with no server address built in, the app opens without the gate', async ()
   const { ctx } = await context({ address: null });
   const { page, errors } = await openApp(ctx);
   assert.equal(await gateOpen(page), false);
-  assert.equal(await page.isDisabled('#share-words'), false);
+  assert.equal(await page.isDisabled('#mirror-notes'), false);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -123,14 +122,14 @@ test('offline, the code is kept and checked later; a code the server turns down 
   server.down = true;
   await fillGate(page);
   await page.waitForFunction(() => !document.getElementById('launch-gate'));
-  assert.equal((await stored(page)).collect.consent, 3, 'agreed, the code to be checked when online');
+  assert.equal((await stored(page)).collect.consent, 4, 'agreed, the code to be checked when online');
 
   // Back online, and the code has been withdrawn on the server.
   server.down = false;
   server.refuseAll = true;
   await page.evaluate(async () => {
     const c = await import('/src/collect.js');
-    await c.enqueue(c.fromNote({ strokes: [{ start: 1, points: [0, 0, 0.5, 0, 1, 1, 0.5, 8] }], channels: ['x', 'y', 'pressure', 't'], label: 'hi', labelSource: 'unchecked' }));
+    await c.enqueue(c.fromTraining({ prompt: { kind: 'text', text: 'hi' }, note: { strokes: [{ start: 1, points: [0, 0, 0.5, 0, 1, 1, 0.5, 8] }], channels: ['x', 'y', 'pressure', 't'] }, written: 9 }));
     await c.flush();
   });
   await page.waitForFunction(() => document.getElementById('launch-gate')?.open);
@@ -152,21 +151,40 @@ test('consent given to the version 2 text is asked for again, keeping the code a
   await page.click('#gate-go');
   await page.waitForFunction(() => !document.getElementById('launch-gate'));
   const s = (await stored(page)).collect;
-  assert.equal(s.consent, 3);
+  assert.equal(s.consent, 4);
   assert.equal(s.contributor, before.contributor, 'the same contributor');
   assert.equal(s.sent, before.sent, 'the count of sent samples is kept');
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
-test('the Terms of Service page says what is sent, and /train agrees to it too, turning on "Send every word"', async () => {
+test('consent given to the version 3 text (word by word) is asked for again, and agreeing turns on mirroring with the same secret', async () => {
+  // Written by the app as it was on 24 November 2026, with "Mirror my notes" on.
+  const v3 = readFileSync(new URL('../../../crates/bedrock-core/tests/fixtures/old-formats/collect-state-consent-v3.json', import.meta.url), 'utf8').trim();
+  const before = JSON.parse(v3);
+  const { ctx } = await context({ state: v3 });
+  const { page, errors } = await openApp(ctx);
+  assert.equal(await gateOpen(page), true, 'asked again');
+  assert.equal(await page.evaluate(async () => (await import('/src/collect.js')).isMirroring()), false, 'nothing is mirrored until then');
+  assert.equal(await page.inputValue('#gate-code'), before.code, 'the code is filled in');
+  await page.check('#gate-agree');
+  await page.click('#gate-go');
+  await page.waitForFunction(() => !document.getElementById('launch-gate'));
+  const s = (await stored(page)).collect;
+  assert.deepEqual([s.consent, s.mirror, s.contributor, s.secret, s.sent], [4, 4, before.contributor, before.secret, before.sent]);
+  assert.equal(await page.isChecked('#mirror-notes'), true);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the Terms of Service page says what is sent, and /train agrees to it too, turning on "Mirror my notes"', async () => {
   const { ctx } = await context();
   const terms = await ctx.newPage();
   await terms.goto(`${env.url}terms/`);
   assert.equal(await terms.title(), 'Bedrock terms of service');
   const version = await terms.evaluate(async () => (await import('/src/collect.js')).CONSENT_VERSION);
   assert.equal(await terms.getAttribute('#terms', 'data-consent-version'), String(version), 'the terms are the version people agree to');
-  assert.match(await terms.textContent('#terms'), /Every handwritten word you write in a note/);
+  assert.match(await terms.textContent('#terms'), /keeps a copy of the handwriting in every note/);
   assert.match(await terms.textContent('#terms'), /Delete my contributions/);
 
   const page = await ctx.newPage();
@@ -178,8 +196,8 @@ test('the Terms of Service page says what is sent, and /train agrees to it too, 
   await page.click('#save');
   await page.waitForFunction(() => /^On\./.test(document.getElementById('state').textContent));
   const s = await stored(page);
-  assert.equal(s.collect.consent, 3);
-  assert.equal(s.settings.shareWords, true);
+  assert.equal(s.collect.consent, 4);
+  assert.equal(s.collect.mirror, 4);
   // "Stop saving" withdraws it, and the app asks again.
   await page.click('#stop');
   const app = await openApp(ctx);
@@ -195,7 +213,7 @@ test('agreeing in another window of the app closes the gate in this one', async 
   await fillGate(b.page);
   await b.page.waitForFunction(() => !document.getElementById('launch-gate'));
   await a.page.waitForFunction(() => !document.getElementById('launch-gate'));
-  assert.equal(await a.page.evaluate(() => bedrock.settings.shareWords), true, 'and this window knows sending is on');
+  assert.equal(await a.page.isChecked('#mirror-notes'), true, 'and this window knows mirroring is on');
   assert.deepEqual([...a.errors, ...b.errors], []);
   await ctx.close();
 });

@@ -5,14 +5,12 @@
 // until both are given. What is sent, and why, is on the website's /terms
 // page (terms/index.html); the gate and /train link to it.
 //
-// Agreeing stores the code and consent version (collect.js) and turns on
-// "Send every word I write in notes" (settings `shareWords`), because the
-// text says every word is sent.
+// Agreeing stores the code and consent version (collect.js). While the
+// launch gate is on it also turns on "Mirror my notes", because the terms
+// say the handwriting of every note is kept.
 
 import * as collect from './collect.js';
 import { darkCss } from './theme.js';
-
-const SETTINGS_KEY = 'bedrock.settings.v1';
 
 /** Where the terms (what is sent, and why) are read: the website's
  *  /terms page. Inside a host (the Obsidian plugin) the link opens the
@@ -29,24 +27,13 @@ export function agreeHtml() {
   return `I agree to the <a href="${termsUrl()}" target="_blank" rel="noopener">Terms of Service</a>`;
 }
 
-/** Turns on "Send every word I write in notes" in the stored settings,
- *  from now on. Returns `{ shareWords, shareWordsSince }`. */
-export function turnOnSharing(storage = globalThis.localStorage, now = Date.now()) {
-  let s = {};
-  try { s = JSON.parse(storage.getItem(SETTINGS_KEY) || '{}') || {}; } catch (_) { /* private mode or damaged */ }
-  const on = { shareWords: true, shareWordsSince: s.shareWords === true && Number.isFinite(s.shareWordsSince) ? s.shareWordsSince : now };
-  try { storage.setItem(SETTINGS_KEY, JSON.stringify({ ...s, ...on })); } catch (_) { /* private mode */ }
-  return on;
-}
-
 /** Agree to the consent text with this code: stores both, and turns on
- *  sending every word when the launch gate is on. */
+ *  "Mirror my notes" when the launch gate is on. */
 export function accept({ code, handedness }, storage = globalThis.localStorage) {
-  // The setting first: other windows act on the consent being stored, and
-  // read the setting then.
-  const sharing = collect.gateRequired(collect.loadState(storage)) ? turnOnSharing(storage) : null;
-  const state = collect.agree({ code, handedness }, storage);
-  return { state, sharing };
+  const gated = collect.gateRequired(collect.loadState(storage));
+  // Mirroring first: other windows act on the consent being stored.
+  if (gated) collect.setMirroring(true, storage);
+  return { state: collect.agree({ code, handedness }, storage), mirroring: gated };
 }
 
 const gateHtml = () => `

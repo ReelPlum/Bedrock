@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { NoteMirrors, plan, fitRequest, MAX_ERASE, MAX_ADD_STROKES } from '../src/mirror-notes.js';
+import { fromTraining } from '../src/collect.js';
 
 const CHANNELS = ['x', 'y', 'pressure', 'altitude', 'azimuth', 't'];
 const T0 = 1_800_000_000_000;
@@ -155,6 +156,27 @@ test('bug: undoing an erase writes the stroke back in the cloud copy', async () 
     await m.flush();
     assert.deepEqual(cloudInk(), [stroke(1).points, stroke(2).points].sort());
   }
+});
+
+// Bug: ink saved before stroke times were kept from going backwards was
+// mirrored as it was, and the backend refuses such a stroke, so the whole
+// upload it was in was dropped.
+test('bug: times that go backwards within a stroke are sent never going backwards', async () => {
+  const { m, server, cloud } = setup();
+  const bad = { id: sid(7), start: T0, points: [1, 1, 0.5, 0, 0, 10, 2, 2, 0.5, 0, 0, 5, 3, 3, 0.5, 0, 0, 12] };
+  await m.sync('a', { channels: CHANNELS, strokes: [stroke(1), bad] });
+  await m.flush();
+  const sent = server.requests[0][0].add.find((s) => s.id === sid(7));
+  assert.deepEqual(sent.points.filter((_, k) => k % 6 === 5), [10, 10, 12]);
+  assert.deepEqual(cloud('a'), ids(1, 7));
+});
+
+test('a training sample is sent with times never going backwards too', () => {
+  const channels = ['x', 'y', 't'];
+  const s = fromTraining({ prompt: { kind: 'text', text: 'hi' }, note: { channels, strokes: [{ start: 1, points: [0, 0, 10, 1, 1, 5, 2, 2, 12] }] }, written: 9 });
+  assert.deepEqual(s.strokes[0].points, [0, 0, 10, 1, 1, 10, 2, 2, 12]);
+  const none = fromTraining({ prompt: { kind: 'text', text: 'hi' }, note: { channels: ['x', 'y'], strokes: [{ start: 1, points: [0, 0, 1, 1] }] }, written: 9 });
+  assert.deepEqual(none.strokes[0].points, [0, 0, 1, 1], 'ink without times is left alone');
 });
 
 test('partly erasing a stroke sends its pieces and erases the original', async () => {

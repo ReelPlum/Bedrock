@@ -57,7 +57,7 @@ export function plan({ mirror, channels, strokes, sent, now = Date.now(), uuid =
       points = 0;
       bytes = 0;
     }
-    add.push({ id: s.id, start: s.start, points: s.points });
+    add.push({ id: s.id, start: s.start, points: collect.forwardTimes(s.points, channels) });
     points += p;
     bytes += b;
   }
