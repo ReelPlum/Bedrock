@@ -19,6 +19,8 @@ export const GLOBALS_MARK = '<!--bedrock:globals-->';
 export const MODULE_MARK = '<!--bedrock:module-->';
 /** The canvas's WebAssembly, by its path in apps/web. */
 export const WASM = 'pkg/bedrock_web_bg.wasm';
+/** PDF import's WebAssembly (crates/bedrock-pdf). */
+export const PDF_WASM = 'pkg/bedrock_pdf_bg.wasm';
 
 const TYPES = { '.wasm': 'application/wasm', '.js': 'text/javascript', '.aff': 'text/plain', '.gz': 'application/gzip' };
 const typeOf = (path) => TYPES[path.slice(path.lastIndexOf('.'))] || 'application/octet-stream';
@@ -48,6 +50,8 @@ export class InlineApp {
     this.urls = urls;
     this.made = null;
     this.compiled = null;
+    this.compiledPdf = null;
+    this.pluginWorkers = new Map();
   }
 
   /** The blob: URLs, made once: files, then workers (which need the files),
@@ -93,9 +97,34 @@ export class InlineApp {
     return this.compiled;
   }
 
+  /** PDF import's WebAssembly, compiled once, for the bulk import's
+   *  reader (bulk-import.js), which may be started more than once. */
+  pdfWasmModule() {
+    if (!this.compiledPdf) {
+      const b64 = this.bundle.files?.[PDF_WASM];
+      this.compiledPdf = b64 ? WebAssembly.compile(bytesOf(b64)) : Promise.reject(new Error('PDF import is missing from the plugin'));
+      this.compiledPdf.catch(() => { this.compiledPdf = null; });
+    }
+    return this.compiledPdf;
+  }
+
+  /** A blob: URL of one of the plugin's own workers (build.mjs
+   *  PLUGIN_WORKERS), made once. */
+  pluginWorkerUrl(path) {
+    if (!this.pluginWorkers.has(path)) {
+      const js = this.bundle.pluginWorkers?.[path];
+      if (!js) throw new Error(`no ${path} in the plugin`);
+      this.pluginWorkers.set(path, this.urls.createObjectURL(new Blob([js], { type: 'text/javascript' })));
+    }
+    return this.pluginWorkers.get(path);
+  }
+
   /** Lets go of the blob: URLs (the plugin is unloaded). */
   revoke() {
     this.compiled = null;
+    this.compiledPdf = null;
+    for (const u of this.pluginWorkers.values()) this.urls.revokeObjectURL(u);
+    this.pluginWorkers.clear();
     if (!this.made) return;
     for (const u of [...Object.values(this.made.assets), ...Object.values(this.made.modules)]) this.urls.revokeObjectURL(u);
     this.made = null;

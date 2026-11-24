@@ -14,6 +14,8 @@ import { askAtLaunch } from './consent.js';
 import { createSession, linkToStroke, strokesOfState } from './session.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from './report.js';
 import { GRAPH_FILTER, GRAPH_HOW, copyGraphFilter } from './graph.js';
+import { BulkImport, PdfReader } from './bulk-import.js';
+import { mountPdfDrop, summary as importSummary } from './pdf-drop.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
@@ -250,6 +252,19 @@ export default class BedrockPlugin extends Plugin {
       },
     });
     this.register(() => this.pdfPages.close());
+    // Many PDFs at once, dropped on the settings (bulk-import.js): each a
+    // note at the vault's root. It lives here, not in the settings page, so
+    // it goes on when the settings are closed.
+    this.pdfImport = new BulkImport({
+      vault: this.app.vault,
+      convert: (bytes) => this.readPdf(bytes),
+      index: (path, bytes) => (this.settings.index ? this.indexer.update(path, bytes) : null),
+      onDone: (s) => {
+        const msg = `Bedrock: ${importSummary(s)}${s.failed.length ? ' The settings list which and why.' : ''}`;
+        new Notice(msg, s.failed.length ? 15000 : 8000);
+      },
+    });
+    this.register(() => { this.pdfImport.stop(); this.pdfReader?.close(); });
     this.kv = {
       get: (key) => this.cameras[key],
       set: async (key, value) => {
@@ -380,6 +395,26 @@ export default class BedrockPlugin extends Plugin {
       // Leave it in place (switched off) if someone patched over it since.
       if (proto.openFile === patched) proto.openFile = original;
     });
+  }
+
+  /** Import dropped or chosen PDFs at the vault's root (bulk-import.js).
+   *  Resolves to how it went. */
+  importPdfs(files) {
+    return this.pdfImport.add(files);
+  }
+
+  /** One PDF to a note's bytes, in a worker (src/pdf-import-worker.js)
+   *  with PDF import's WebAssembly, so Obsidian never freezes. */
+  readPdf(bytes) {
+    this.pdfReader ||= new PdfReader({
+      start: async () => {
+        const wasm = await this.webApp.pdfWasmModule();
+        const w = new Worker(this.webApp.pluginWorkerUrl('src/pdf-import-worker.js'), { type: 'module' });
+        w.postMessage({ wasm });
+        return w;
+      },
+    });
+    return this.pdfReader.convert(bytes);
   }
 
   /** Tells the person about a problem, with a Report button, and logs it. */
@@ -620,11 +655,23 @@ class BedrockSettings extends PluginSettingTab {
         await p.persist();
       }));
     new Setting(containerEl)
+      .setName('Import PDFs')
+      .setDesc('Drop PDFs, or folders of them, on the box below: a whole GoodNotes library exported as PDFs works. Each PDF becomes a handwritten note at the top of the vault, named after it, with every page that has writing or pictures one below another and the words GoodNotes read. Move the notes where you want them afterwards. Hundreds of PDFs are fine: it goes on in the background when these settings are closed.')
+      .addButton((b) => b.setButtonText('Choose PDFs…').onClick(() => this.drop?.choose()));
+    this.drop?.close();
+    this.drop = containerEl.createDiv ? mountPdfDrop(containerEl.createDiv({ cls: 'bedrock-pdf-import' }), p.pdfImport) : null;
+    new Setting(containerEl)
       .setName('Paper for new notes')
       .setDesc('The paper a new note starts with. Notes you already have keep their own paper, and each note can be changed in its menu.')
       .addDropdown((d) => d.addOptions(PAPERS).setValue(PAPERS[p.settings.newNotePaper] ? p.settings.newNotePaper : 'grid').onChange(async (v) => {
         p.settings.newNotePaper = PAPERS[v] ? v : 'grid';
         await p.persist();
       }));
+  }
+
+  /** The settings were closed: the import goes on, without this page. */
+  hide() {
+    this.drop?.close();
+    this.drop = null;
   }
 }

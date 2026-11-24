@@ -1358,3 +1358,39 @@ test('renaming the file in Obsidian puts the new name in the header', async () =
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+test("PDFs dropped on the settings' drop zone become notes at the vault root that open with their handwriting", async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(async () => {
+    await host.vault.createBinary('Lecture.bedrock', new ArrayBuffer(0));
+    host.showPdfImport();
+  });
+  // Dropped as Finder or the Files app drops them: a DataTransfer of files.
+  await page.evaluate((bytes) => {
+    const dt = new DataTransfer();
+    const pdf = new Uint8Array(bytes);
+    dt.items.add(new File([pdf], 'Lecture.pdf', { type: 'application/pdf' }));
+    dt.items.add(new File([pdf], 'Forces.pdf', { type: 'application/pdf' }));
+    dt.items.add(new File(['just text'], 'notes.txt', { type: 'text/plain' }));
+    dt.items.add(new File(['%PDF-1.4 cut off'], 'Broken.pdf', { type: 'application/pdf' }));
+    const zone = document.querySelector('.bedrock-pdf-drop');
+    zone.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    zone.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  }, goodnotesLikePdf());
+  await until(page, () => host.pdfImport?.state.total === 4 && !host.pdfImport.state.running, undefined, 30000);
+  const s = await page.evaluate(() => host.pdfImport.state);
+  assert.deepEqual(s.imported.map((i) => i.path), ['Lecture 1.bedrock', 'Forces.bedrock'], 'at the root, never over a note of that name');
+  assert.deepEqual(s.failed.map((f) => f.name), ['notes.txt', 'Broken.pdf']);
+  assert.equal(s.failed[0].reason, 'not a PDF');
+  assert.match(await page.evaluate(() => document.querySelector('.bedrock-pdf-status-line').textContent), /2 notes made at the top of the vault; 2 files not imported/);
+  assert.match(await page.evaluate(() => document.querySelector('.bedrock-pdf-failures').textContent), /Broken\.pdf: /);
+  const f = await page.evaluate(() => host.files('Forces.bedrock'));
+  assert.equal(f.strokes, 5, 'both pages, one below the other');
+  assert.match(f.index, /hi/, "the index note has GoodNotes' reading of the words");
+  assert.equal((await page.evaluate(() => host.files('Lecture.bedrock'))).size, 0, 'the note that was there is untouched');
+  const frame = await openFile(page, 'Forces.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 5, 'it opens with its handwriting');
+  assert.equal(await frame.evaluate(() => document.getElementById('title').value), 'Forces');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

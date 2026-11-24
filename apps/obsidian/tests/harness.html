@@ -21,6 +21,8 @@ import { askAtLaunch } from '/obsidian/src/consent.js';
 import { InlineApp } from '/obsidian/src/inline-app.js';
 import { watchKeyboard } from '/obsidian/src/keyboard.js';
 import { PdfPages } from '/obsidian/src/pdf-pages.js';
+import { BulkImport, PdfReader } from '/obsidian/src/bulk-import.js';
+import { mountPdfDrop } from '/obsidian/src/pdf-drop.js';
 
 const webApp = new InlineApp(await (await fetch('/bundle.json')).json());
 
@@ -205,6 +207,27 @@ window.host = {
     vault.outsideChange(path, vault.files.get(fromPath).data.slice(0));
     if (session.isOutsideChange(file)) await bridge.send('reload');
   },
+};
+
+/** "Import PDFs" in the plugin's settings, as main.js builds it: the drop
+ *  zone in a div, the import with the real PDF reader in a worker. */
+host.showPdfImport = () => {
+  if (!host.pdfImport) {
+    const reader = new PdfReader({
+      start: async () => {
+        const wasm = await webApp.pdfWasmModule();
+        const w = new Worker(webApp.pluginWorkerUrl('src/pdf-import-worker.js'), { type: 'module' });
+        w.postMessage({ wasm });
+        return w;
+      },
+    });
+    host.pdfImport = new BulkImport({ vault, convert: (b) => reader.convert(b), index: (path, bytes) => indexer.update(path, bytes) });
+  }
+  const el = document.createElement('div');
+  el.id = 'pdf-import';
+  el.style.cssText = 'position:fixed;left:0;bottom:0;width:400px;height:200px;background:#fff';
+  document.body.append(el);
+  return mountPdfDrop(el, host.pdfImport);
 };
 </script>
 </body>

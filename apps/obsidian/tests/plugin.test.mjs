@@ -536,3 +536,27 @@ test('the camera follows a renamed note, even with search switched off', async (
   assert.ok(!vault.getFiles().some((x) => x.path.endsWith('.md')), 'no index note with search off');
   plugin.unload();
 });
+
+test('the settings have a place to drop PDFs, which imports them at the vault root', async () => {
+  const { plugin, vault } = await loaded();
+  const tab = plugin.settingTabs[0];
+  tab.display();
+  const setting = tab.containerEl.settings.find((x) => x.name === 'Import PDFs');
+  assert.ok(setting, 'the settings have it');
+  assert.match(setting.desc, /GoodNotes/);
+  assert.match(setting.desc, /top of the vault/);
+  assert.equal(setting.control.kind, 'button');
+  assert.equal(setting.control.text, 'Choose PDFs…');
+  // The real reader is a worker with the WebAssembly (host.test.mjs); here it is stood in for.
+  plugin.readPdf = async () => ({ bedrock: new Uint8Array([1, 2, 3]), warnings: [] });
+  await vault.createFolder('Lectures');
+  fake.Notice.shown.length = 0;
+  const pdf = (name) => ({ name, read: async () => new TextEncoder().encode('%PDF-1.4\n').buffer });
+  const s = await plugin.importPdfs([pdf('Lecture.pdf'), pdf('Lecture.pdf'), { name: 'notes.txt', read: async () => new ArrayBuffer(1) }]);
+  assert.deepEqual(s.imported.map((i) => i.path), ['Lecture.bedrock', 'Lecture 1.bedrock'], 'at the root, whatever the folder for new notes');
+  assert.deepEqual([...new Uint8Array(vault.files.get('Lecture.bedrock').data)], [1, 2, 3]);
+  assert.ok(vault.files.get('Bedrock index/Lecture.md'), 'each note gets its index note');
+  assert.deepEqual(s.failed, [{ name: 'notes.txt', reason: 'not a PDF' }]);
+  assert.match(fake.Notice.shown.at(-1), /2 notes made at the top of the vault; 1 file not imported/, 'a notice says when it is done, with the settings closed too');
+  tab.hide();
+});
