@@ -35,8 +35,7 @@ mod tests {
     use crate::stroke::{InputDevice, Stroke, StrokeId};
 
     fn stroke(id: u64, kind: BrushKind) -> Stroke {
-        let mut brush = Brush::default();
-        brush.kind = kind;
+        let brush = Brush { kind, ..Default::default() };
         let p = |x: f64, t: f64| InputPoint::new(x, 5.0, 0.5).at(t);
         Stroke::new(StrokeId(id), brush, 1_800_000_000_000.0, InputDevice::Pen, vec![p(1.0, 0.0), p(2.0, 8.0)])
     }
