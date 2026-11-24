@@ -7,6 +7,7 @@
 //   * links to the host's files are turned on, picked from the host's
 //     folders and files in the canvas's own picker (link-picker.js) and
 //     opened by the host;
+//   * the tag box suggests the host's tags in use (`list-tags`);
 //   * the host can ask to be shown a place in the note (a search hit, a
 //     link to a word), and can be asked for a link to one;
 //   * the note's name in the header is the host file's name: naming the
@@ -167,6 +168,10 @@ function connect() {
     /** The WebAssembly the host compiled once for all its notes, or null
      *  (the app then compiles it itself). */
     wasm: () => rpc.call('wasm').catch(() => null),
+    /** The tags in use in the host (every tag in the vault), to suggest
+     *  in the tag box: `[{ tag, count }]`. A host without `list-tags`
+     *  (an older plugin) suggests none. */
+    tags: () => rpc.call('list-tags').then((r) => (Array.isArray(r) ? r : []), () => []),
     /** Tell the host the app is ready for events. */
     ready: () => rpc.call('ready'),
   };

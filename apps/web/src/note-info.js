@@ -5,8 +5,14 @@
 // address. Each can be opened (links) or removed. With `lockLinks` (a
 // view-only note) tags are still added and removed, and links only shown
 // and opened.
+//
+// Typing a tag suggests tags already in use (tag-suggest.js): in the
+// library, or in Obsidian the whole vault. They sit above the tag box, so
+// the iPad's keyboard (which covers the bottom of the screen) never hides
+// them, and picking one keeps the box focused and the keyboard up.
 
 import { LINK_TYPES, linkType } from './links.js';
+import { suggestTags } from './tag-suggest.js';
 
 const el = (tag, props = {}, ...children) => {
   const e = Object.assign(document.createElement(tag), props);
@@ -16,12 +22,16 @@ const el = (tag, props = {}, ...children) => {
 
 export class NoteInfo {
   /** `canvas` is the WebAssembly canvas; `onChange()` is called after the
-   *  note's tags or links changed (to save it). */
-  constructor(root, canvas, { onChange, lockLinks = false } = {}) {
+   *  note's tags or links changed (to save it). `knownTags()` resolves to
+   *  the tags in use elsewhere, `[{ tag, count }]`, to suggest. */
+  constructor(root, canvas, { onChange, lockLinks = false, knownTags = null } = {}) {
     this.root = root;
     this.lockLinks = lockLinks;
     this.canvas = canvas;
     this.onChange = onChange || (() => {});
+    this.knownTags = knownTags;
+    this.known = [];
+    this.active = -1;
     root.classList.add('word-menu', 'note-info');
     root.setAttribute('role', 'dialog');
     root.setAttribute('aria-label', 'Tags and links');
@@ -31,8 +41,27 @@ export class NoteInfo {
     this.tags = el('ul', { className: 'ni-tags' });
     this.tagInput = el('input', { type: 'text', placeholder: 'Add a tag', enterKeyHint: 'done', autocapitalize: 'off', spellcheck: false });
     this.tagInput.setAttribute('aria-label', 'New tag');
+    // A combobox: the suggestions are its list, picked with the arrow keys
+    // and Enter, or a tap.
+    this.suggest = el('ul', { className: 'ni-suggest', id: 'ni-suggest', hidden: true });
+    this.suggest.setAttribute('role', 'listbox');
+    this.suggest.setAttribute('aria-label', 'Tags in use');
+    this.tagInput.setAttribute('role', 'combobox');
+    this.tagInput.setAttribute('aria-autocomplete', 'list');
+    this.tagInput.setAttribute('aria-controls', 'ni-suggest');
+    this.tagInput.setAttribute('aria-expanded', 'false');
+    this.tagInput.addEventListener('input', () => { this.active = -1; this.renderSuggestions(); });
+    this.tagInput.addEventListener('keydown', (e) => this.suggestKey(e));
+    // A tap on a suggestion must not take focus from the box: on the iPad
+    // that would put the keyboard away.
+    this.suggest.addEventListener('pointerdown', (e) => e.preventDefault());
+    this.suggest.addEventListener('mousedown', (e) => e.preventDefault());
+    this.suggest.addEventListener('click', (e) => {
+      const o = e.target.closest?.('.ni-option');
+      if (o) this.addTag(o.dataset.tag);
+    });
     const addTag = el('button', { type: 'button', className: 'wm-save', textContent: 'Add' });
-    const tagForm = el('form', { className: 'ni-row' }, this.tagInput, addTag);
+    const tagForm = el('form', { className: 'ni-row ni-tag-row' }, this.suggest, this.tagInput, addTag);
     tagForm.addEventListener('submit', (e) => { e.preventDefault(); this.addTag(this.tagInput.value); });
     addTag.addEventListener('click', (e) => { e.preventDefault(); this.addTag(this.tagInput.value); });
     this.links = el('ul', { className: 'ni-links' });
@@ -69,6 +98,57 @@ export class NoteInfo {
   show() {
     this.root.hidden = false;
     this.render();
+    this.loadKnownTags();
+  }
+
+  /** Ask again for the tags in use each time the panel opens: other notes
+   *  may have changed since. */
+  async loadKnownTags() {
+    if (!this.knownTags) return;
+    let known = [];
+    try { known = (await this.knownTags()) || []; } catch (e) { console.warn('tags in use not read', e); }
+    this.known = Array.isArray(known) ? known : [];
+    if (this.open) this.renderSuggestions();
+  }
+
+  /** The suggestions for what is typed, above the tag box. */
+  renderSuggestions() {
+    const { tags = [] } = this.info();
+    const list = suggestTags(this.tagInput.value, this.known, tags);
+    if (this.active >= list.length) this.active = list.length - 1;
+    this.suggest.replaceChildren(...list.map(({ tag, count }, i) => {
+      const o = el('li', { className: 'ni-option', id: `ni-option-${i}`, textContent: `#${tag}` });
+      o.dataset.tag = tag;
+      o.title = count === 1 ? 'Used in 1 note' : `Used in ${count} notes`;
+      o.setAttribute('role', 'option');
+      o.setAttribute('aria-selected', String(i === this.active));
+      return o;
+    }));
+    this.suggest.hidden = !list.length;
+    this.tagInput.setAttribute('aria-expanded', String(!!list.length));
+    if (this.active >= 0) this.tagInput.setAttribute('aria-activedescendant', `ni-option-${this.active}`);
+    else this.tagInput.removeAttribute('aria-activedescendant');
+  }
+
+  /** Arrow keys move through the suggestions, Enter takes the one chosen,
+   *  Escape lets go of it. */
+  suggestKey(e) {
+    const n = this.suggest.children.length;
+    if (this.suggest.hidden || !n) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      this.active = this.active < 0 ? (step > 0 ? 0 : n - 1) : (this.active + step + n) % n;
+      this.renderSuggestions();
+    } else if (e.key === 'Enter' && this.active >= 0) {
+      e.preventDefault();
+      this.addTag(this.suggest.children[this.active].dataset.tag);
+    } else if (e.key === 'Escape' && this.active >= 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.active = -1;
+      this.renderSuggestions();
+    }
   }
 
   close() {
@@ -89,6 +169,7 @@ export class NoteInfo {
       return el('li', { className: 'ni-tag' }, el('span', { textContent: `#${t}` }), x);
     }));
     if (!tags.length) this.tags.append(el('li', { className: 'ni-none', textContent: 'No tags yet.' }));
+    this.renderSuggestions();
     this.links.replaceChildren(...noteLinks.map((l) => {
       const type = linkType(l.type);
       const label = l.text || (type ? type.describe(l.target) : l.target);
@@ -113,6 +194,7 @@ export class NoteInfo {
     const tag = this.canvas.add_tag(raw);
     if (!tag) return this.say('That is already a tag of this note, or not a tag (letters, digits, - _ and /).');
     this.tagInput.value = '';
+    this.active = -1;
     this.changed();
   }
 

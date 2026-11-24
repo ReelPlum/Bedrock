@@ -2,7 +2,8 @@
 // Bedrock web app (apps/web) in an iframe; see README.md for how the pieces
 // fit together.
 
-import { FileView, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
+import { FileView, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, getAllTags, loadPdfJs, normalizePath, requestUrl } from 'obsidian';
+import { vaultTags } from './tags.js';
 import { PdfPages, pdfPageInView } from './pdf-pages.js';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
@@ -150,6 +151,7 @@ class BedrockView extends FileView {
       indexer: plugin.settings.index ? plugin.indexer : null,
       kv: plugin.kv,
       listFiles: async (sourcePath) => plugin.linkableFiles(sourcePath),
+      listTags: async () => vaultTags(this.app, getAllTags),
       pdfPage: (path, page, width) => plugin.pdfPages.page(path, page, width),
       pdfFind: (path, query) => plugin.pdfPages.find(path, query),
       openLink: (target, sourcePath) => this.app.workspace.openLinkText(target, sourcePath, false),
@@ -232,7 +234,8 @@ export default class BedrockPlugin extends Plugin {
     // The canvas's pages and files, handed to it from memory (inline-app.js).
     this.webApp = new InlineApp(bundle);
     this.register(() => this.webApp.revoke());
-    this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder);
+    this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder,
+      (link, source) => this.app.metadataCache.getFirstLinkpathDest?.(link, source)?.path ?? null);
     // A PDF's pages for the canvas's link picker, drawn with Obsidian's own
     // PDF.js, and searched with the find controller of Obsidian's PDF viewer.
     this.pdfPages = new PdfPages({

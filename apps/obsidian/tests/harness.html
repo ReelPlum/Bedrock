@@ -80,6 +80,8 @@ window.host = {
   starts: new Map(),
   /** The plugin's "Paper for new notes" setting. */
   paper: 'grid',
+  /** What the plugin's vaultTags answers (src/tags.js): every tag in the vault. */
+  vaultTags: [],
   /** What the plugin does when Obsidian starts: ask for the invite code
    *  and consent. The "window" is a div here. Resolves to how it went. */
   launch() {
@@ -131,6 +133,7 @@ window.host = {
           .filter((f) => f.path !== source && !f.path.startsWith('Bedrock index/') && !f.path.endsWith('.bedrock.md'))
           .map((f) => ({ path: f.path, link: f.path.replace(/\.md$/, '') }));
       },
+      listTags: async () => { calls.push(['tags']); return host.vaultTags; },
       pdfPage,
       pdfFind,
       openLink: (target, source) => calls.push(['open', target, source]),

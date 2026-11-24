@@ -2890,6 +2890,74 @@ test('tags and links of the whole note: added and removed from the menu, with no
   await ctx.close();
 });
 
+test('the tag box suggests tags used in other notes of the library, above the box, picked by tap or keys', async () => {
+  const { page, ctx, errors } = await openApp(env);
+  const box = '#note-info .ni-tags + form input';
+  // Two notes with tags in the library, then a new note.
+  await page.evaluate(async () => {
+    for (const tags of [['Biology', 'physics/forces'], ['Biology', 'Exam-prep']]) {
+      for (const t of tags) bedrock.canvas.add_tag(t);
+      await bedrock.saveNow();
+      await bedrock.newNote();
+    }
+  });
+  await page.click('#btn-menu');
+  await page.click('#menu [data-action="note-info"]');
+  const offered = () => page.evaluate(() => [...document.querySelectorAll('#note-info .ni-option')].map((o) => o.textContent));
+  await page.waitForFunction(() => document.querySelectorAll('#note-info .ni-option').length === 3);
+  assert.deepEqual(await offered(), ['#Biology', '#Exam-prep', '#physics/forces'], 'with nothing typed, the tags in use, the most used first');
+  // Typing narrows them: a part of a nested tag matches too.
+  await page.fill(box, 'forc');
+  assert.deepEqual(await offered(), ['#physics/forces']);
+  await page.fill(box, '#bio');
+  assert.deepEqual(await offered(), ['#Biology']);
+  // Arrow down and Enter take the suggestion, in its spelling.
+  await page.press(box, 'ArrowDown');
+  assert.equal(await page.getAttribute(box, 'aria-activedescendant'), 'ni-option-0');
+  await page.press(box, 'Enter');
+  assert.equal(await page.inputValue(box), '');
+  assert.deepEqual(await offered(), ['#Exam-prep', '#physics/forces'], 'a tag the note has is not offered');
+  // A tap adds one and leaves the box focused (on the iPad: the keyboard stays up).
+  await page.focus(box);
+  await page.click('#note-info .ni-option[data-tag="Exam-prep"]');
+  const after = await page.evaluate(() => ({
+    tags: JSON.parse(bedrock.canvas.note_info_json()).tags,
+    focused: document.activeElement === document.querySelector('#note-info .ni-tags + form input'),
+  }));
+  assert.deepEqual(after, { tags: ['Biology', 'Exam-prep'], focused: true });
+  // Nothing matches: no list, and a new tag is typed as before.
+  await page.fill(box, 'zoology');
+  assert.equal(await page.isVisible('#note-info .ni-suggest'), false);
+  assert.equal(await page.getAttribute(box, 'aria-expanded'), 'false');
+  await page.press(box, 'Enter');
+  assert.deepEqual(await page.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()).tags), ['Biology', 'Exam-prep', 'zoology']);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('on an iPad the tag suggestions sit above the tag box, where the keyboard never covers them', async () => {
+  const { page, ctx, errors } = await openApp(env, { viewport: { width: 820, height: 1180 } });
+  await page.evaluate(async () => {
+    for (const t of ['lecture', 'lab', 'labour-history', 'literature', 'linear-algebra', 'logic', 'latin', 'law', 'linguistics']) bedrock.canvas.add_tag(t);
+    await bedrock.saveNow();
+    await bedrock.newNote();
+  });
+  await page.click('#btn-menu');
+  await page.click('#menu [data-action="note-info"]');
+  await page.waitForFunction(() => document.querySelectorAll('#note-info .ni-option').length > 0);
+  await page.fill('#note-info .ni-tags + form input', 'l');
+  const r = await page.evaluate(() => {
+    const box = document.querySelector('#note-info .ni-tags + form input').getBoundingClientRect();
+    const list = document.querySelector('#note-info .ni-suggest').getBoundingClientRect();
+    return { count: document.querySelectorAll('#note-info .ni-option').length, listBottom: list.bottom, boxTop: box.top, right: list.right, width: innerWidth };
+  });
+  assert.equal(r.count, 8, 'at most eight at once');
+  assert.ok(r.listBottom <= r.boxTop, `the list ends above the box (${r.listBottom} <= ${r.boxTop})`);
+  assert.ok(r.right <= r.width, 'and fits on the screen');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // The save worker compiled the 2.2 MB WebAssembly a second time on every
 // start. The page compiles it once and sends the module to the worker.
 test('the WebAssembly is fetched and compiled once; the save worker gets the module the page compiled', async () => {

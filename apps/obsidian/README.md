@@ -125,6 +125,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `write { data, title }` | saves the bytes into the file; its index note follows once writing pauses (2.5 s) or the view closes. View only, refused (an error) unless the ink, pictures and text boxes are exactly as in the file |
 | app | `get-kv { key }` / `set-kv { key, value }` | per-file app state (the camera), kept in the plugin's data |
 | app | `list-files` | every vault file the link picker offers (not this note or index notes): `[{ path, link }]`, `link` being Obsidian's link text |
+| app | `list-tags` | every tag in the vault, to suggest in the tag box: `[{ tag, count }]` without `#`, from Markdown notes and index notes alike (`src/tags.js`), leaving out `bedrock`; `count` is how many notes have it. An app asking a plugin without it gets an error and suggests nothing |
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
 | app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
 | app | `pdf-find { path, query }` | `{ count, total, hits }`: where `query` is in a PDF, found by the find controller of Obsidian's PDF viewer (or the same rules before it is loaded); each hit has `page`, `before`, `match`, `after` and `selection` (`src/pdf-pages.js`) |

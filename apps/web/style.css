@@ -391,6 +391,12 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .ni-none { font-size: 13px; color: var(--muted); padding: 2px; }
 .ni-row { display: flex; gap: 6px; }
 .ni-row input { flex: 1; min-width: 0; }
+/* Tags in use, suggested above the tag box (never under the iPad keyboard). */
+.ni-tag-row { flex-wrap: wrap; }
+.ni-suggest { flex-basis: 100%; list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.ni-suggest[hidden] { display: none; }
+.ni-option { padding: 6px 10px; border-radius: 999px; border: 1px dashed var(--muted); color: var(--accent); font-size: 14px; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+.ni-option:hover, .ni-option[aria-selected="true"] { background: rgba(0, 0, 0, 0.06); border-style: solid; }
 .ni-row button, .ni-browse { padding: 8px 12px; border-radius: 9px; font-size: 14px; }
 .ni-browse { text-align: left; color: var(--accent); }
 .ni-browse[hidden] { display: none; }

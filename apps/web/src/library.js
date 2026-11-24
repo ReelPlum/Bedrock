@@ -100,6 +100,7 @@ export async function libraryFiles(folders, notes, { titleOf = (n) => n.title } 
   const out = [];
   for (const p of [...new Set(paths.values())].sort()) out.push([`${p}/`, new Uint8Array(0)]);
   const used = new Set();
+  const placed = [];
   for (const n of notes) {
     const dir = (n.folder && paths.get(n.folder)) || '';
     const base = cleanName(titleOf(n), 'Untitled note');
@@ -109,8 +110,14 @@ export async function libraryFiles(folders, notes, { titleOf = (n) => n.title } 
       path = `${dir ? `${dir}/` : ''}${base} ${tag}.bedrock`;
     }
     used.add(path.toLowerCase());
-    out.push([path, n.data]);
-    out.push([sidecarPath(path), enc.encode(await sidecarMarkdown(path, n.data))]);
+    placed.push([path, n.data]);
+  }
+  // A link to another exported note also links its sidecar (sidecar.js).
+  const exported = new Set(placed.map(([path]) => path));
+  const indexOf = (target) => (exported.has(target) ? sidecarPath(target) : null);
+  for (const [path, data] of placed) {
+    out.push([path, data]);
+    out.push([sidecarPath(path), enc.encode(await sidecarMarkdown(path, data, { indexOf }))]);
   }
   return out;
 }

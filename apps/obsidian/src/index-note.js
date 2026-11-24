@@ -8,11 +8,11 @@
 // ZIP), so an index note can be rebuilt from any .bedrock file, including
 // ones written by the web app or edited on another device.
 
-import { indexLayout, indexMarkdown, noteOfIndex, readNoteText, sidecarPath } from '../../web/src/sidecar.js';
+import { LINKED_NOTES_HEADING, indexLayout, indexMarkdown, noteLinkTargets, noteOfIndex, readNoteText, sidecarPath } from '../../web/src/sidecar.js';
 
 // The Markdown itself is made by a module shared with the web app, which
 // writes the same sidecars when it exports a library.
-export { indexLayout, indexMarkdown, noteOfIndex, readNoteText, sidecarPath };
+export { LINKED_NOTES_HEADING, indexLayout, indexMarkdown, noteLinkTargets, noteOfIndex, readNoteText, sidecarPath };
 
 export const DEFAULT_INDEX_FOLDER = 'Bedrock index';
 
@@ -96,7 +96,9 @@ export async function strokesForIndexPlace(notePath, noteBytes, markdown, eState
   }
   if (!range) return [];
   const layout = indexLayout(notePath, await readNoteText(noteBytes));
-  if (layout.markdown === markdown) return strokesAt(layout.spans, range[0], range[1]);
+  // The linked notes' section comes after the text, so it moves no word.
+  const upToLinked = (md) => md.split(`\n${LINKED_NOTES_HEADING}\n`)[0];
+  if (upToLinked(layout.markdown) === upToLinked(markdown)) return strokesAt(layout.spans, range[0], range[1]);
   // The index is older than the note (edited on another device): find the
   // words that were hit by their text instead of their place.
   const hit = markdown.slice(range[0], range[1]).trim().split(/\s+/).filter(Boolean);
@@ -116,10 +118,20 @@ export async function strokesForIndexPlace(notePath, noteBytes, markdown, eState
  *  is, with no second copy in the index folder. */
 export class Indexer {
   /** `vault` is Obsidian's Vault (or a stand-in with the same methods);
-   *  `folder()` returns the index folder setting. */
-  constructor(vault, folder = () => DEFAULT_INDEX_FOLDER) {
+   *  `folder()` returns the index folder setting; `resolve(linkpath,
+   *  sourcePath)` is the vault path a link leads to (Obsidian's
+   *  metadataCache.getFirstLinkpathDest), by default the path itself. */
+  constructor(vault, folder = () => DEFAULT_INDEX_FOLDER, resolve = (link) => link) {
     this.vault = vault;
     this.folder = folder;
+    this.resolve = resolve;
+  }
+
+  /** The index note of the handwritten note a link from `notePath` leads
+   *  to, or null when it leads to none. */
+  indexOfLink(link, notePath) {
+    const p = this.resolve(link, notePath);
+    return p && /\.bedrock$/i.test(p) && this.vault.getAbstractFileByPath(p) ? this.pathFor(p) : null;
   }
 
   /** The index note's path: the sidecar if there is one, else the folder
@@ -138,7 +150,7 @@ export class Indexer {
 
   /** Write the index for a note's bytes. Returns true if it changed. */
   async update(notePath, bytes, path = this.pathFor(notePath)) {
-    const md = indexMarkdown(notePath, await readNoteText(bytes));
+    const md = indexMarkdown(notePath, await readNoteText(bytes), { indexOf: (link) => (link === notePath ? path : this.indexOfLink(link, notePath)) });
     const existing = this.vault.getAbstractFileByPath(path);
     if (existing) {
       if ((await this.vault.read(existing)) === md) return false;
@@ -186,7 +198,12 @@ export class Indexer {
     for (const f of this.vault.getFiles()) {
       if (f.extension !== 'bedrock') continue;
       const idx = this.vault.getAbstractFileByPath(this.pathFor(f.path));
-      if (idx && idx.stat.mtime >= f.stat.mtime && noteOfIndex(await this.vault.cachedRead(idx)) === f.path) continue;
+      if (idx && idx.stat.mtime >= f.stat.mtime) {
+        const md = await this.vault.cachedRead(idx);
+        // Written before linked notes got their own section: write again.
+        const older = !md.includes(`\n${LINKED_NOTES_HEADING}\n`) && noteLinkTargets(md.split('\n## Links\n')[1]?.split('\n')).length > 0;
+        if (noteOfIndex(md) === f.path && !older) continue;
+      }
       const bytes = await this.vault.readBinary(f);
       if (bytes.byteLength && (await this.update(f.path, bytes))) n++;
     }
