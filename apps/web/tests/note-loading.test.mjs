@@ -117,9 +117,15 @@ test('with reduced motion the pen rests at the end of a finished line, still', a
   const { page } = await openApp(env, { context });
   const still = await page.evaluate(async () => {
     bedrock.loading.show();
-    await new Promise((r) => setTimeout(r, 100));
     const el = document.getElementById('note-loading');
+    // The same short wait as with motion, so a quick open shows nothing:
+    // read from the fade itself, not from a timer, which a busy machine
+    // can fire late or early against the animation clock.
+    const fade = el.getAnimations().find((a) => a.animationName === 'nl-in');
+    const timing = fade.effect.getComputedTiming();
+    await fade.finished;
     const out = {
+      waiting: { delay: timing.delay, fill: timing.fill, duration: timing.duration },
       opacity: Number(getComputedStyle(el).opacity),
       moving: document.getAnimations().map((a) => a.animationName).filter((n) => n.startsWith('nl-') && n !== 'nl-in'),
       offset: parseFloat(getComputedStyle(document.querySelector('.nl-line')).strokeDashoffset),
@@ -131,6 +137,7 @@ test('with reduced motion the pen rests at the end of a finished line, still', a
   assert.deepEqual(still.moving, [], 'nothing moves');
   assert.equal(still.offset, 0, 'the line is drawn in full');
   assert.equal(still.distance, '100%', 'the pen is at its end');
-  assert.equal(still.opacity, 1, 'shown at once');
+  assert.deepEqual(still.waiting, { delay: 150, fill: 'both', duration: 1 }, 'hidden during the short wait, so a quick open does not flicker, then no fade');
+  assert.equal(still.opacity, 1, 'then shown in full');
   await context.close();
 });

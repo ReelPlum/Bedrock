@@ -6,6 +6,7 @@
 import { apiAddress, isSafeApi, uuidv7 } from './collect.js';
 import { host } from './host.js';
 import { MAX_COMMENT, buildReport, context, postReport } from './error-report.js';
+import { darkCss } from './theme.js';
 
 export { browserTag, buildReport, context } from './error-report.js';
 
@@ -48,7 +49,13 @@ const CSS = `
 .bx-panel .bx-row .bx-status { margin-right: auto; color: #48484a; }
 .bx-panel button { font: inherit; border: 0; border-radius: 10px; padding: 8px 14px; background: #e9e9ee; color: #1c1c1e; cursor: pointer; }
 .bx-panel button.bx-send { background: #2f6bff; color: #fff; }
-.bx-panel button:disabled { opacity: .5; cursor: default; }`;
+.bx-panel button:disabled { opacity: .5; cursor: default; }` + darkCss(`
+.bx-panel { background: #242428; color: #ececf0; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.bx-panel p, .bx-panel .bx-row .bx-status { color: #b4b4ba; }
+.bx-panel textarea { background: #2c2c30; color: #ececf0; border-color: #48484e; }
+.bx-panel pre { background: #1c1c1e; color: #ececf0; }
+.bx-panel button { background: #3a3a40; color: #ececf0; }
+.bx-panel button.bx-send { background: #2f6bff; color: #fff; }`);
 
 function el(tag, props = {}, ...children) {
   const e = Object.assign(document.createElement(tag), props);

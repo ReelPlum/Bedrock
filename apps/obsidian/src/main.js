@@ -7,6 +7,7 @@ import { vaultTags } from './tags.js';
 import { PdfPages, pdfPageInView } from './pdf-pages.js';
 import bundle from 'virtual:web-app';
 import { InlineApp } from './inline-app.js';
+import { obsidianTheme, tellTheme } from './theme.js';
 import { HostBridge } from './bridge.js';
 import { watchKeyboard } from './keyboard.js';
 import { askAtLaunch } from './consent.js';
@@ -232,8 +233,10 @@ export default class BedrockPlugin extends Plugin {
     // its canvas once, when it opens (see newNote).
     this.starts = new Map();
     // The canvas's pages and files, handed to it from memory (inline-app.js).
-    this.webApp = new InlineApp(bundle);
+    // Its chrome is light or dark with Obsidian's theme (theme.js).
+    this.webApp = new InlineApp(bundle, { theme: () => obsidianTheme(globalThis.document?.body) });
     this.register(() => this.webApp.revoke());
+    this.registerEvent(this.app.workspace.on('css-change', () => this.followTheme()));
     this.indexer = new Indexer(this.app.vault, () => this.settings.indexFolder,
       (link, source) => this.app.metadataCache.getFirstLinkpathDest?.(link, source)?.path ?? null);
     // A PDF's pages for the canvas's link picker, drawn with Obsidian's own
@@ -542,6 +545,15 @@ export default class BedrockPlugin extends Plugin {
   }
 
   /** The starting links of a note made by newNote, once. */
+  /** Obsidian's theme changed: every open canvas and the launch gate
+   *  follow it at once. */
+  followTheme() {
+    const theme = obsidianTheme(globalThis.document?.body);
+    const frames = this.app.workspace.getLeavesOfType(VIEW_TYPE).map((l) => l.view?.frame);
+    frames.push(...(globalThis.document?.querySelectorAll?.('iframe.bedrock-welcome-frame') || []));
+    tellTheme(frames, theme);
+  }
+
   takeStart(file) {
     const start = file && this.starts.get(file.path);
     if (start) this.starts.delete(file.path);
