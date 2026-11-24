@@ -41,6 +41,9 @@ const PAGES = {
 const WORKERS = ['src/save-worker.js', 'src/recognizer-worker.js'];
 /** Binary and data files the app fetches, by their path. */
 const FILES = ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz'];
+/** The plugin's own workers (in apps/obsidian), started in Obsidian's
+ *  window, not in a canvas: the PDF reader of the bulk import. */
+const PLUGIN_WORKERS = ['src/pdf-import-worker.js'];
 
 
 const inlineScript = (js) => js.replace(/<\/(script)/gi, '<\\/$1');
@@ -94,16 +97,17 @@ async function bundleModule(root, entry) {
 }
 
 /** The web app as the plugin carries it in main.js: { hash, pages,
- *  modules, workers, files (base64) }. */
+ *  modules, workers, pluginWorkers, files (base64) }. */
 export async function packWebApp(root = WEB) {
   const hash = createHash('sha256');
-  const bundle = { pages: {}, modules: {}, workers: {}, files: {} };
+  const bundle = { pages: {}, modules: {}, workers: {}, pluginWorkers: {}, files: {} };
   const add = (kind, key, value) => { bundle[kind][key] = value; hash.update(`${kind}:${key}\0`).update(value); };
   for (const [name, page] of Object.entries(PAGES)) {
     add('pages', name, await pageHtml(root, page));
     add('modules', name, await bundleModule(root, page.module));
   }
   for (const w of WORKERS) add('workers', w, await bundleModule(root, w));
+  for (const w of PLUGIN_WORKERS) add('pluginWorkers', w, await bundleModule(HERE, w));
   for (const f of FILES) {
     let data;
     try { data = await readFile(join(root, f)); } catch {

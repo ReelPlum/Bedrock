@@ -13,6 +13,8 @@ import { obsidianTheme, tellTheme } from '../src/theme.js';
 import { notePicture, readPointsBin } from '../../web/src/link-picker.js';
 import { packWebApp } from '../build.mjs';
 import { GRAPH_FILTER, copyGraphFilter } from '../src/graph.js';
+import { BulkImport, PdfReader } from '../src/bulk-import.js';
+import { droppedFiles } from '../src/pdf-drop.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
 /** A ZIP like zip.rs writes: each entry deflated if that is smaller. */
@@ -729,6 +731,7 @@ test('the plugin packs the current web app, host adapter and WebAssembly include
   assert.doesNotMatch(b.modules.app, /^import .* from ['"]\./m, 'one module, no imports of neighbours');
   assert.deepEqual(Object.keys(b.workers), ['src/save-worker.js', 'src/recognizer-worker.js']);
   for (const f of ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz']) assert.ok(b.files[f], `${f} is packed`);
+  assert.match(b.pluginWorkers['src/pdf-import-worker.js'], /import_pdf_as_one_note/, "the plugin's own PDF import worker is packed, apart from the web app's");
   assert.match(b.modules.app, /bedrock_pdf_bg\.wasm/, 'PDF import finds its WebAssembly among the handed over files');
   assert.equal(b.hash, (await packWebApp()).hash, 'the version hash is stable');
 });
@@ -961,4 +964,238 @@ test("a PDF's text is read once for search; later searches only match", async ()
   assert.equal((await pages.find('P.pdf', 'motion')).total, 2);
   assert.deepEqual(read, [1, 2, 3], 'each page read once');
   assert.equal(bytesRead, 1);
+});
+
+// Bulk PDF import from the settings (openspec bulk-import-pdfs-in-obsidian).
+
+/** A dropped file: `read` counts how many are being read at once. */
+function dropped(name, { bytes = '%PDF-1.4 x', fail = null, reads = null } = {}) {
+  return {
+    name,
+    read: async () => {
+      if (reads) { reads.now++; reads.most = Math.max(reads.most, reads.now); }
+      await new Promise((r) => setTimeout(r, 1));
+      if (reads) reads.now--;
+      if (fail) throw new Error(fail);
+      return new TextEncoder().encode(bytes).buffer;
+    },
+  };
+}
+
+/** What the PDF reader gives back: a note's bytes, or null (nothing to import). */
+const pdfNote = (text = 'note') => ({ bedrock: new TextEncoder().encode(text), warnings: [], strokes: 3 });
+
+test('bulk PDF import: each PDF becomes a note at the vault root named after it, and never overwrites a file', async () => {
+  const vault = new FakeVault();
+  await vault.createBinary('Physics.bedrock', new TextEncoder().encode('mine').buffer);
+  await vault.createFolder('Term 1');
+  await vault.createBinary('Term 1/Chemistry.bedrock', new ArrayBuffer(1));
+  const indexed = [];
+  const job = new BulkImport({ vault, convert: async () => pdfNote(), index: async (path) => indexed.push(path) });
+  job.add([dropped('Physics.pdf'), dropped('physics.PDF'), { ...dropped('Physics.pdf'), path: 'Term 1/Physics.pdf' }, dropped('Chemistry.pdf'), dropped('Week 3: forces?.pdf')]);
+  const s = await job.finished();
+  assert.deepEqual(s.imported.map((i) => i.path), ['Physics 1.bedrock', 'physics 2.bedrock', 'Physics 3.bedrock', 'Chemistry.bedrock', 'Week 3  forces.bedrock']);
+  assert.deepEqual(s.failed, []);
+  assert.equal(new TextDecoder().decode(vault.files.get('Physics.bedrock').data), 'mine', 'nothing is overwritten');
+  assert.equal(vault.files.get('Term 1/Chemistry.bedrock').data.byteLength, 1, 'a note of that name in a folder is left alone');
+  assert.equal(new TextDecoder().decode(vault.files.get('Chemistry.bedrock').data), 'note');
+  assert.deepEqual(indexed, s.imported.map((i) => i.path), 'each new note is indexed');
+
+  // A name taken after the import started (made meanwhile) is skipped too.
+  const racing = new FakeVault();
+  const create = racing.createBinary.bind(racing);
+  racing.createBinary = async (path, data) => {
+    if (path === 'Maths.bedrock' && !racing.files.has(path)) await create(path, new ArrayBuffer(2));
+    return create(path, data);
+  };
+  const again = new BulkImport({ vault: racing, convert: async () => pdfNote() });
+  again.add([dropped('Maths.pdf')]);
+  assert.deepEqual((await again.finished()).imported.map((i) => i.path), ['Maths 1.bedrock']);
+  assert.equal(racing.files.get('Maths.bedrock').data.byteLength, 2);
+});
+
+test('bulk PDF import: a PDF that fails is listed with its reason, and the others are still imported', async () => {
+  const vault = new FakeVault();
+  const create = vault.createBinary.bind(vault);
+  vault.createBinary = async (path, data) => { if (path.startsWith('Full')) throw new Error('No space left on device'); return create(path, data); };
+  const convert = async (bytes) => {
+    const t = new TextDecoder().decode(bytes);
+    if (t.includes('locked')) throw new Error('this PDF is locked with a password');
+    if (t.includes('blank')) return null;
+    return pdfNote(t);
+  };
+  const job = new BulkImport({ vault, convert, index: async () => { throw new Error('index broke'); } });
+  job.add([
+    dropped('A.pdf'),
+    dropped('Locked.pdf', { bytes: '%PDF locked' }),
+    dropped('Blank.pdf', { bytes: '%PDF blank' }),
+    dropped('notes.txt', { bytes: 'hello' }),
+    dropped('Renamed.pdf', { bytes: 'PK zip really' }),
+    dropped('Gone.pdf', { fail: 'NotFoundError' }),
+    dropped('Full.pdf'),
+    dropped('B.pdf'),
+  ]);
+  const s = await job.finished();
+  assert.deepEqual(s.imported.map((i) => i.path), ['A.bedrock', 'B.bedrock']);
+  assert.deepEqual(s.failed.map((f) => [f.name, f.reason]), [
+    ['Locked.pdf', 'this PDF is locked with a password'],
+    ['Blank.pdf', 'no handwriting or pictures found'],
+    ['notes.txt', 'not a PDF'],
+    ['Renamed.pdf', 'not a PDF'],
+    ['Gone.pdf', 'could not be read (NotFoundError)'],
+    ['Full.pdf', 'could not be saved (No space left on device)'],
+  ]);
+  assert.match(s.imported[0].warnings.join(), /not added to search/, 'a note whose index failed is still imported, with a warning');
+  assert.equal(s.done, 8);
+  assert.equal(s.total, 8);
+  assert.equal(s.running, false);
+});
+
+test('bulk PDF import: hundreds of PDFs are read one at a time, with progress, letting Obsidian run between files', async () => {
+  const vault = new FakeVault();
+  const reads = { now: 0, most: 0 };
+  let converting = 0;
+  let mostConverting = 0;
+  const convert = async () => {
+    converting++;
+    mostConverting = Math.max(mostConverting, converting);
+    await new Promise((r) => setTimeout(r, 0));
+    converting--;
+    return pdfNote();
+  };
+  const seen = [];
+  const done = [];
+  const job = new BulkImport({ vault, convert, onDone: (s) => done.push(s) });
+  job.subscribe((s) => seen.push(s.done));
+  const files = Array.from({ length: 300 }, (_, i) => dropped(`Notebook ${i}.pdf`, { reads }));
+  job.add(files.slice(0, 150));
+  // Obsidian's own work: a timer that should fire between files.
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 0);
+  job.add(files.slice(150)); // a second drop while the first is under way joins it
+  const s = await job.finished();
+  clearInterval(timer);
+  assert.equal(s.imported.length, 300);
+  assert.equal(s.total, 300);
+  assert.equal(reads.most, 1, 'one file read at a time');
+  assert.equal(mostConverting, 1, 'one PDF converted at a time');
+  assert.ok(ticks >= 100, `Obsidian ran between files (${ticks} ticks)`);
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i] >= seen[i - 1], 'progress only goes up');
+  assert.ok(new Set(seen).size >= 300, 'progress after every file');
+  assert.equal(done.length, 1, 'told once when it is done');
+  assert.equal(done[0].imported.length, 300);
+  // A new drop after that starts a new count.
+  job.add([dropped('Late.pdf')]);
+  const late = await job.finished();
+  assert.equal(late.total, 1);
+  assert.deepEqual(late.imported.map((i) => i.path), ['Late.bedrock']);
+});
+
+test('bulk PDF import: Stop keeps the notes already made and lists the rest as not imported', async () => {
+  const vault = new FakeVault();
+  let job;
+  let n = 0;
+  const convert = async () => { if (++n === 3) job.stop(); return pdfNote(); };
+  job = new BulkImport({ vault, convert });
+  job.add(Array.from({ length: 10 }, (_, i) => dropped(`P${i}.pdf`)));
+  const s = await job.finished();
+  assert.deepEqual(s.imported.map((i) => i.path), ['P0.bedrock', 'P1.bedrock', 'P2.bedrock'], 'the PDF being read is finished');
+  assert.equal(s.failed.length, 7);
+  assert.deepEqual(new Set(s.failed.map((f) => f.reason)), new Set(['stopped']));
+  assert.equal(s.stopped, true);
+  assert.equal(n, 3, 'nothing more is read');
+});
+
+/** A stand-in for the PDF reader's Worker. `answer(msg)` returns the reply,
+ *  'hang' to never answer, or 'crash' to fail as a crashed worker does. */
+function fakeWorkers(answer) {
+  const made = [];
+  const start = async () => {
+    const w = {
+      terminated: false,
+      sent: [],
+      postMessage(msg) {
+        w.sent.push(msg);
+        const a = answer(msg, made.length);
+        if (a === 'hang') return;
+        setTimeout(() => (a === 'crash' ? w.onerror?.({ message: 'out of memory' }) : w.onmessage?.({ data: { id: msg.id, ...a } })), 1);
+      },
+      terminate() { w.terminated = true; },
+    };
+    made.push(w);
+    return w;
+  };
+  return { made, start };
+}
+
+test('bulk PDF import: a PDF the reader hangs or crashes on is given up, and the reader is started afresh', async () => {
+  const kind = (msg) => new TextDecoder().decode(msg.bytes);
+  const { made, start } = fakeWorkers((msg) => {
+    const t = kind(msg);
+    if (t.includes('hang')) return 'hang';
+    if (t.includes('crash')) return 'crash';
+    if (t.includes('empty')) return { page: null };
+    return { page: { bedrock: new TextEncoder().encode('note').buffer, warnings: ['one picture left out'], strokes: 2 } };
+  });
+  const reader = new PdfReader({ start, timeoutMs: 30, freshEvery: 3 });
+  const bytes = (t) => new TextEncoder().encode(t).buffer;
+  const page = await reader.convert(bytes('%PDF ok'));
+  assert.equal(new TextDecoder().decode(page.bedrock), 'note');
+  assert.deepEqual(page.warnings, ['one picture left out']);
+  assert.equal(made[0].sent[0].bytes.byteLength, 7, 'the bytes are handed over');
+  assert.equal(await reader.convert(bytes('%PDF empty')), null);
+  await assert.rejects(reader.convert(bytes('%PDF hang')), /did not finish reading this PDF/);
+  assert.ok(made[0].terminated, 'the stuck reader is stopped');
+  assert.ok(await reader.convert(bytes('%PDF ok')), 'a new reader reads the next PDF');
+  assert.equal(made.length, 2);
+  await assert.rejects(reader.convert(bytes('%PDF crash')), /reader stopped \(out of memory\)/);
+  assert.ok(made[1].terminated);
+  for (let i = 0; i < 4; i++) await reader.convert(bytes('%PDF ok'));
+  assert.equal(made.length, 4, 'and started afresh every 3 PDFs, so its memory is given back');
+  assert.ok(made[2].terminated);
+  reader.close();
+  assert.ok(made[3].terminated, 'closed with the plugin');
+
+  // In the queue: the hung PDF is listed and the rest go on.
+  const vault = new FakeVault();
+  const job = new BulkImport({ vault, convert: (b) => reader.convert(b) });
+  job.add([dropped('Hang.pdf', { bytes: '%PDF hang' }), dropped('Ok.pdf')]);
+  const s = await job.finished();
+  assert.deepEqual(s.imported.map((i) => i.path), ['Ok.bedrock']);
+  assert.match(s.failed[0].reason, /did not finish reading this PDF/);
+  reader.close();
+});
+
+test('bulk PDF import: a dropped folder is searched for its files, in its folders too', async () => {
+  const file = (name) => ({ name, arrayBuffer: async () => new TextEncoder().encode(name).buffer });
+  const fileEntry = (path) => ({ isFile: true, fullPath: `/${path}`, file: (ok) => ok(file(path.split('/').pop())) });
+  // readEntries answers in batches until an empty one, as browsers do.
+  const dirEntry = (children) => {
+    const batches = [children.slice(0, 2), children.slice(2), []];
+    return { isDirectory: true, createReader: () => ({ readEntries: (ok) => ok(batches.shift() || []) }) };
+  };
+  const library = dirEntry([
+    fileEntry('GoodNotes/Physics.pdf'),
+    dirEntry([fileEntry('GoodNotes/Term 1/Maths.pdf'), fileEntry('GoodNotes/Term 1/Cover.png')]),
+    fileEntry('GoodNotes/Chemistry.pdf'),
+  ]);
+  const dt = {
+    items: [
+      { kind: 'file', webkitGetAsEntry: () => library, getAsFile: () => null },
+      { kind: 'file', webkitGetAsEntry: () => null, getAsFile: () => file('Loose.pdf') },
+      { kind: 'string', getAsFile: () => null },
+    ],
+  };
+  const files = await droppedFiles(dt);
+  assert.deepEqual(files.map((f) => f.path), ['GoodNotes/Physics.pdf', 'GoodNotes/Term 1/Maths.pdf', 'GoodNotes/Term 1/Cover.png', 'GoodNotes/Chemistry.pdf', 'Loose.pdf']);
+  assert.equal(new TextDecoder().decode(await files[1].read()), 'Maths.pdf', 'read only when asked');
+  // Where the browser gives only a list of files.
+  assert.deepEqual((await droppedFiles({ files: [file('A.pdf')] })).map((f) => f.name), ['A.pdf']);
+  // All of them land at the root; the picture is listed as not a PDF.
+  const vault = new FakeVault();
+  const job = new BulkImport({ vault, convert: async () => pdfNote() });
+  job.add(files.map((f) => ({ ...f, read: async () => new TextEncoder().encode('%PDF-1.7').buffer })));
+  const s = await job.finished();
+  assert.deepEqual(s.imported.map((i) => i.path), ['Physics.bedrock', 'Maths.bedrock', 'Chemistry.bedrock', 'Loose.bedrock']);
+  assert.deepEqual(s.failed, [{ name: 'Cover.png', reason: 'not a PDF' }]);
 });

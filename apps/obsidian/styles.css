@@ -24,3 +24,17 @@
 .bedrock-consent-modal { width: min(600px, calc(100vw - 32px)); height: min(760px, calc(100vh - 64px)); }
 .bedrock-consent-modal .modal-content { height: 100%; }
 .bedrock-welcome-frame { display: block; width: 100%; height: 100%; border: 0; }
+
+/* "Import PDFs" in the settings (pdf-drop.js): the drop zone and the
+   import's progress. */
+.bedrock-pdf-import { margin: 0 0 18px; }
+.bedrock-pdf-drop { border: 2px dashed var(--background-modifier-border); border-radius: 8px; padding: 24px 16px; text-align: center; cursor: pointer; color: var(--text-muted); }
+.bedrock-pdf-drop:hover, .bedrock-pdf-drop:focus-visible, .bedrock-pdf-drop.is-dragging { border-color: var(--interactive-accent); color: var(--text-normal); background: var(--background-secondary); }
+.bedrock-pdf-drop-title { font-weight: var(--font-semibold); color: var(--text-normal); }
+.bedrock-pdf-drop-hint { font-size: var(--font-smaller); margin-top: 4px; }
+.bedrock-pdf-status { margin-top: 10px; }
+.bedrock-pdf-status-row { display: flex; gap: 8px; align-items: center; }
+.bedrock-pdf-status-line { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bedrock-pdf-progress { width: 100%; margin-top: 6px; }
+.bedrock-pdf-failures { margin-top: 6px; font-size: var(--font-smaller); }
+.bedrock-pdf-failures ul { max-height: 30vh; overflow: auto; margin: 4px 0 0; }

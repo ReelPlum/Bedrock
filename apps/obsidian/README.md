@@ -41,6 +41,16 @@ makes the note in that folder.
 - **Paper for new notes.** New notes start on grid paper. The setting
   "Paper for new notes" picks grid, dots, lines or plain instead. Notes you
   already have keep their own paper, and each note's menu can change it.
+- **Import a whole GoodNotes library.** Export it as PDFs, open Bedrock's
+  settings and drop the PDFs (or the folders they are in) on "Import PDFs",
+  or tap it to choose them. Each PDF becomes a handwritten note at the top of
+  the vault, named after the PDF (" 1", " 2"… when the name is taken), with
+  every page that has writing or pictures one below another and the words
+  GoodNotes read, ready to be dragged into your folders. PDFs are read one at
+  a time in a worker, so hundreds are fine and Obsidian keeps working; the
+  settings show how far it is, Stop ends it after the PDF being read, and a
+  notice says when it is done. PDFs that could not be imported are listed
+  with the reason.
 - **A handwritten note about a page.** Right-click in a note (a long press
   on the iPad), or open a note's or PDF's ⋯ menu (also the tab header and
   the file explorer), and choose "New handwritten note linking here"; a
