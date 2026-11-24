@@ -28,7 +28,15 @@
 //
 // Messages in:  { id, kind: 'text' | 'math', image: Blob, quality?: 'fast' | 'careful' }
 // Messages out: { id, text, engine } | { id, error }
-//               { status: 'loading' | 'ready', kind, progress? }
+//               { status: 'loading' | 'ready', kind, progress?, download? }
+//
+// `download: true` comes once per load, and only when a file of the model
+// really comes from the network. Transformers.js reports the same
+// `progress` events when it reads a model from its cache, so the app could
+// not tell a first download from opening another note (in Obsidian each
+// note is a fresh copy of the app, and each one said "Downloading the
+// handwriting model"). Transformers.js asks `env.fetch` only for files it
+// does not have in its cache, so that is where a download is seen.
 
 const TRANSFORMERS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
 import { MODELS } from './models.js';
@@ -45,6 +53,41 @@ export const MFR = {
 
 let lib = null;
 const loaders = {};
+/** The model being loaded: { kind, model, told }, while it loads. */
+let loading = null;
+
+/** Wraps `env.fetch` (Transformers.js's documented hook for its requests)
+ *  so `onDownload(url)` is called for each file it really downloads: a
+ *  successful answer, since files it has cached are never asked for, and a
+ *  missing optional file (404) is not a download. */
+export function watchDownloads(env, onDownload) {
+  const real = env.fetch;
+  if (!real || real.bedrockWatched) return;
+  const watched = async (url, init) => {
+    const res = await real(url, init);
+    if (res && res.ok) onDownload(String(url));
+    return res;
+  };
+  watched.bedrockWatched = true;
+  env.fetch = watched;
+}
+
+/** Tells the app, once per load, that the model is being downloaded. */
+function downloaded() {
+  if (!loading || loading.told) return;
+  loading.told = true;
+  self.postMessage({ status: 'loading', kind: loading.kind, model: loading.model, download: true });
+}
+
+/** Runs `load` for `kind`/`model`, noting whether it downloads anything. */
+async function loadingModel(kind, model, load) {
+  loading = { kind, model, told: false };
+  try {
+    return await load();
+  } finally {
+    loading = null;
+  }
+}
 
 /** Transformers.js, with its own ONNX Runtime (the only one in the page). */
 export async function libraries() {
@@ -54,7 +97,10 @@ export async function libraries() {
     // cache after the first download, so they load offline. There are no
     // models on Bedrock's own host: not asking there saves a request per
     // file, and offline it would only ever get an error.
-    if (lib.env) lib.env.allowLocalModels = false;
+    if (lib.env) {
+      lib.env.allowLocalModels = false;
+      watchDownloads(lib.env, downloaded);
+    }
     const wasm = lib.env?.backends?.onnx?.wasm;
     if (wasm) wasm.numThreads = 1; // no cross-origin isolation, and less memory
   }
@@ -76,13 +122,13 @@ function textPipeline(quality) {
     await libraries();
     const model = MODELS.text[quality];
     self.postMessage({ status: 'loading', kind: 'text', model });
-    const p = await lib.pipeline('image-to-text', model, {
+    const p = await loadingModel('text', model, () => lib.pipeline('image-to-text', model, {
       dtype: 'q8',
       session_options: { enableCpuMemArena: false, enableMemPattern: false },
       progress_callback: (e) => {
         if (e.status === 'progress') self.postMessage({ status: 'loading', kind: 'text', model, progress: e.progress });
       },
-    });
+    }));
     self.postMessage({ status: 'ready', kind: 'text', model });
     return p;
   });
@@ -123,7 +169,7 @@ function mathModel() {
         self.postMessage({ status: 'loading', kind: 'math', model, progress: Math.round(p * 100) });
       },
     });
-    const [enc, dec, tokenizer] = await Promise.all([part('encoder_model'), part('decoder_model'), lib.AutoTokenizer.from_pretrained(model)]);
+    const [enc, dec, tokenizer] = await loadingModel('math', model, () => Promise.all([part('encoder_model'), part('decoder_model'), lib.AutoTokenizer.from_pretrained(model)]));
     self.postMessage({ status: 'ready', kind: 'math', model });
     return { enc, dec, encoder: enc.sessions.model, decoder: dec.sessions.model, tokenizer };
   });
