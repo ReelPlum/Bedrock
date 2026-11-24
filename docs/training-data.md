@@ -12,8 +12,8 @@ plugin, a window asks for the invite code and consent before anything
 else, and cannot be closed without agreeing. The code is checked with the
 server first; with no connection it is kept and checked when samples are
 next sent, and a code the server turns down brings the window back.
-Agreeing turns on "Send every word I write in notes", which then cannot be
-turned off in the settings: "Stop saving" on `/train` stops sending at
+Agreeing turns on "Mirror the handwriting of my notes", which then cannot
+be turned off in the settings: "Stop saving" on `/train` stops sending at
 once, and the app asks again before it can be used.
 
 This is one switch, `LAUNCH_GATE` in `apps/web/src/collect.js`. It only
@@ -29,48 +29,35 @@ the launch window and `/train` ask people to agree to it with a link.
 | Where | What | When |
 |---|---|---|
 | The training pages (`/train`) | The ink written in the box and the prompt it answers: a common word, a whole sentence, a short paragraph (its label keeps the line breaks it was shown with), or a formula. | After agreeing on the consent card on `/train` and entering an invite code. |
-| A note | Every handwritten word written after the setting was turned on, one sample per line of handwriting: the line's ink, moved to 0,0, where the app cut it into words, and what the recogniser read for each word, marked `unchecked`. | Only with "Send every word I write in notes, to improve recognition" turned on (it is off by default, and needs the consent on `/train`). A line is sent once its readings have not changed for 20 seconds, or at once when the app is hidden or another note is opened. With recognition off, words are sent without text. |
-| An imported PDF | Every handwritten word of every page, one sample per line, marked `unchecked`, with the reading the PDF itself holds (GoodNotes hides its own handwriting recognition in the page) as each word's `model_reading` and `model_engine: "pdf-text"`, or no text where it has none. | When a PDF is imported (Open or "Import PDF" in the menu) with saving set up on `/train`, even with "Send every word" off: importing is the writer's own act, as checking a word is. |
-| A note | The word's line again, with the word's checked text. | When the writer taps "This is right" (`confirmed`), corrects a reading (`corrected`), or chooses "Not a word" (kind `drawing`, no text). This also covers words written before the setting was on. |
+| Notes, and PDFs imported as notes | A copy of the handwriting of every note, kept up to date (below). | With "Mirror the handwriting of my notes" on. |
 
-Whenever a line changes (a new reading, a word checked, words added or
-regrouped), it is sent again, naming in `supersedes` every earlier sample
-that holds any of the same strokes, and the backend keeps only the newest.
-Sending whole lines keeps the line in one piece, so a wrong word split can
-be fixed in review, and the reader can learn where words end. A checked
-word is never replaced by an unchecked reading. An unchecked reading is never trained on until the
-writer or a reviewer checks it (`bedrock-data review` in the backend). The
-rest of a note (typed text, pictures, the title, where words are on the
-page) is never sent.
-
-The logic is in `apps/web/src/share-words.js`. It remembers which sample it
-sent for each line, with its strokes and words (local storage
-`bedrock.sharedLines.v1`, the newest 3000), so a line is sent once per
-change. Earlier versions sent one sample per word and remembered them in
-`bedrock.sharedWords.v1`; those words are replaced by their lines the next
-time their note is open. A line longer than the backend takes in one sample
-(800 strokes or 50,000 points) is sent in pieces of whole words.
-
-The backend must accept version 3 before an app that sends it goes live: an
-older backend refuses it, and the app drops samples the server refuses.
+Since consent version 4 (24 November 2026) nothing from a note is sent as
+a sample: "Send every word I write in notes" is gone, and so is sending a
+word's line when the writer checks or corrects it, and sending the words
+of an imported PDF. Notes are kept whole instead, and where paragraphs and
+words are and what each word says is marked in review (`bedrock-data
+review`, Notes tab). Earlier apps sent `bedrock-training` version 3 lines
+from notes; the backend still takes them, and they stay in the data.
 
 ## Mirror my notes
 
-A second setting, "Mirror the handwriting of my notes, to improve
-recognition" (off by default, and only with the consent on `/train`),
-keeps a copy of the handwriting of every note in the backend, up to date
-as the writer adds and erases strokes. Turning it on asks first (consent
-version 4) and then sends every note already in the library in full,
-whatever version of the note format it was saved in. After that only
-changes are sent: strokes written since, and the ids of strokes erased
-since (the backend then deletes their ink). An erase that is undone sends
-the stroke again. Deleting a note deletes its copy.
+"Mirror the handwriting of my notes, to improve recognition" keeps a copy
+of the handwriting of every note in the backend, up to date as the writer
+adds and erases strokes. While the launch gate is on, agreeing at launch
+(or on `/train`) turns it on, and it cannot be turned off in the settings.
+Without the gate it is off by default and asks first when ticked. Turning
+it on sends every note already in the library in full, whatever version of
+the note format it was saved in. After that only changes are sent: strokes
+written since, and the ids of strokes erased since (the backend then
+deletes their ink). An erase that is undone sends the stroke again.
+Deleting a note deletes its copy.
 
 Only ink leaves the device: each stroke's id, start time and raw pen
-samples, under a random id for the note made on this device. No title,
-typed text, pictures, file name, folder, brush, colour or highlighter
-strokes. Uploads wait in IndexedDB `bedrock-mirror` while offline and go
-up once a minute, or at once when the app is hidden.
+samples (times raised where an old note has them going backwards), under a
+random id for the note made on this device. No title, typed text,
+pictures, file name, folder, brush, colour or highlighter strokes. Uploads
+wait in IndexedDB `bedrock-mirror` while offline and go up once a minute,
+or at once when the app is hidden.
 
 Mirrors need a contributor secret: 64 random hex digits made on the
 device (`secret` in `bedrock.collect.v1`) and sent only in the
@@ -96,7 +83,7 @@ lines of 32 characters, as before.
 ## What a sample holds
 
 `bedrock-training` version 2 from the training pages, version 3 from
-notes (version 2 plus `words`: which strokes make each word, each word's
+notes in apps before consent version 4 (version 2 plus `words`: which strokes make each word, each word's
 text and how we know it): the label and how we know it (`prompt`,
 `unchecked`, `confirmed` or `corrected`), what the recogniser read (if anything), the
 language, a coarse device class (for example `ipad`, never the full user

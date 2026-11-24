@@ -51,4 +51,4 @@ opened, and the spelling dictionary only while spelling is on. Measured on
 - **WHEN** it starts
 - **THEN** it downloads neither PDF import nor the dictionary, and turning spelling on downloads the dictionary then
 <!-- test-js: apps/web/tests/app.test.mjs :: the app starts without downloading PDF import or, with spelling off, the dictionary -->
-<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every line is sent with the PDF's reading -->
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->

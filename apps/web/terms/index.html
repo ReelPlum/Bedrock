@@ -22,17 +22,15 @@
   <!-- What people agree to in the app's launch gate and on /train
        (src/consent.js). Changing what is sent or why means raising
        CONSENT_VERSION in src/collect.js, so everyone is asked again. -->
-  <main class="terms" id="terms" data-consent-version="3">
-    <p class="version">Version 3, 13 November 2026.</p>
+  <main class="terms" id="terms" data-consent-version="4">
+    <p class="version">Version 4, 24 November 2026.</p>
 
     <h2>Sharing your handwriting</h2>
     <p>Bedrock is invite-only for now, and sharing your handwriting is part of using it. To use the app you agree that what you write is sent to Bedrock's server to train its handwriting recognition.</p>
 
-    <h2>Words from your notes</h2>
-    <p>Every handwritten word you write in a note from when you agree is sent: its pen strokes, moved so where on the page it was is not sent, and what the app read it as. When you say a reading is right, correct it, or say it is not a word, that is sent too. Nothing else from the note is sent: no typed text, pictures or titles.</p>
-
-    <h2>PDFs you import</h2>
-    <p>When you import a PDF of handwritten notes (for example from GoodNotes), each handwritten word in it is sent the same way, with the text the PDF says it reads as, to be checked before it is used.</p>
+    <h2>Your notes</h2>
+    <p>Bedrock keeps a copy of the handwriting in every note you have and write, including the notes you have now and PDFs you import, and keeps it up to date as you write: the pen strokes, where they are on the page and when they were written. When you erase something it is deleted from the copy too, and deleting a note deletes its copy. Nothing else from your notes is sent: no typed text, pictures, highlighter, titles, file names or folders.</p>
+    <p>The copies are read by people working on Bedrock, who mark where paragraphs and words are and what each word says, so recognition can learn from them.</p>
 
     <h2>The training pages</h2>
     <p>The pen strokes you write there and the word or formula you were asked to write.</p>
@@ -44,13 +42,13 @@
     <p>No name, no email address and no account. You are a random number made on your device.</p>
 
     <h2>What it is for</h2>
-    <p>Training Bedrock's handwriting recognition, and nothing else. The samples are kept private on Cloudflare in the EU and are not shared or sold.</p>
+    <p>Training Bedrock's handwriting recognition, and nothing else. Your handwriting is kept private on Cloudflare in the EU and are not shared or sold.</p>
 
     <h2>Changing your mind</h2>
-    <p>"Stop saving" on the <a href="../train/">Train page</a> stops sending at once; the app then asks again before it can be used. "Delete my contributions" there removes everything you sent.</p>
+    <p>"Stop saving" on the <a href="../train/">Train page</a> stops sending at once; the app then asks again before it can be used. "Delete my contributions" there removes everything you sent, including the copies of your notes.</p>
 
-    <h2>Your notes</h2>
-    <p>Your notes stay yours. They are kept on your device (or in your Obsidian vault) in an open format, and the app works without the server apart from sending samples.</p>
+    <h2>Your notes stay yours</h2>
+    <p>Your notes are kept on your device (or in your Obsidian vault) in an open format, and the app works without the server apart from sending your handwriting.</p>
   </main>
 </body>
 </html>

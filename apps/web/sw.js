@@ -8,14 +8,14 @@
 // own cache, served from there first. Only Bedrock's own caches are cleared
 // on an update: Transformers.js keeps the downloaded handwriting models in
 // `transformers-cache`, and they must survive updates to work offline.
-const CACHE = 'bedrock-v38';
+const CACHE = 'bedrock-v39';
 const LIBS = 'bedrock-libs-v1';
 const KEEP = [CACHE, LIBS];
 // Transformers.js at an exact version (x.y.z), as recognizer-worker.js loads it.
 const PINNED = /^https:\/\/cdn\.jsdelivr\.net\/npm\/@huggingface\/transformers@\d+\.\d+\.\d+(?:[/?#]|$)/;
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg',
-  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/layout.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/note-info.js', 'src/tag-suggest.js', 'src/selection-view.js', 'src/swatch-picker.js', 'src/images.js', 'src/collect.js', 'src/share-words.js', 'src/mirror-notes.js', 'src/consent.js', 'src/host.js', 'src/errors.js', 'src/report-panel.js', 'src/error-report.js', 'src/perf.js', 'src/library.js', 'src/sidecar.js', 'src/zip-read.js', 'src/assets.js', 'src/keep-in-view.js', 'src/link-picker.js', 'src/note-loading.js', 'src/theme.js', 'train/', 'train/setup.js', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'welcome/', 'welcome/welcome.js', 'terms/',
+  'src/main.js', 'src/input.js', 'src/storage.js', 'src/files.js', 'src/cloud.js', 'src/save-worker.js', 'src/minimap.js', 'src/layout.js', 'src/handwriting.js', 'src/recognizer-worker.js', 'src/recognizer-view.js', 'src/models.js', 'src/links.js', 'src/word-menu.js', 'src/note-info.js', 'src/tag-suggest.js', 'src/selection-view.js', 'src/swatch-picker.js', 'src/images.js', 'src/collect.js', 'src/mirror-notes.js', 'src/consent.js', 'src/host.js', 'src/errors.js', 'src/report-panel.js', 'src/error-report.js', 'src/perf.js', 'src/library.js', 'src/sidecar.js', 'src/zip-read.js', 'src/assets.js', 'src/keep-in-view.js', 'src/link-picker.js', 'src/note-loading.js', 'src/theme.js', 'train/', 'train/setup.js', 'train/train.css', 'train/train.js', 'train/prompts.js', 'train/handwriting/', 'train/scribble/', 'welcome/', 'welcome/welcome.js', 'terms/',
   'pkg/bedrock_web.js', 'pkg/bedrock_web_bg.wasm',
   // Not the spelling dictionary or PDF import: they are downloaded only when
   // used (spelling on, a PDF opened), and the first use keeps them for

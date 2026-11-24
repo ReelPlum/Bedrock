@@ -71,7 +71,7 @@ Importing SHALL NOT change the note format. Strokes, recognised text and picture
 - **GIVEN** a two page handwritten PDF
 - **WHEN** it is imported with "Import PDF (GoodNotes)…" or Open
 - **THEN** each page becomes its own note, named `<file> (page N)`
-<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every line is sent with the PDF's reading -->
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->
 
 #### Scenario: Saved, and still there after opening another note
 - **GIVEN** a two page handwritten PDF imported on the website
@@ -110,15 +110,18 @@ bug). The stacked note is an ordinary note: no data format changes.
 - **THEN** the empty page is left out, the second page with ink sits a page height and the gap below the first, ids are distinct, times rise, each page keeps its readings, a warning is said once, and the note saves and opens again unchanged
 <!-- test: pdf_pages_can_be_stacked_in_one_note -->
 
-### Requirement: Imported words SHALL be sent for training only with consent
+### Requirement: Imported pages SHALL be mirrored like any note
 
-Importing is the writer's own act, so with saving set up on `/train` every word of an imported page SHALL be sent at once, marked `unchecked`, with the PDF's reading as `model_reading` and `model_engine: "pdf-text"`. The training wire format (`bedrock-training` version 2) SHALL NOT change.
+Since consent version 4 an imported page is a note like any other: with
+"Mirror my notes" on, its handwriting is mirrored whole (the
+`note-mirrors` spec), and no sample is sent. (Before, every word was sent
+as a sample with the PDF's reading as `model_reading`.)
 
-#### Scenario: Saving set up
-- **GIVEN** saving is set up on `/train`, and "Send every word" is off
+#### Scenario: Mirroring on
+- **GIVEN** "Mirror my notes" is on
 - **WHEN** a PDF is imported
-- **THEN** every word is queued and sent once, with the PDF's reading where it has one
-<!-- test-js: apps/web/tests/collect.test.mjs :: importing a PDF: each page becomes a note, and every line is sent with the PDF's reading -->
+- **THEN** each page's note is mirrored with all its handwriting, and nothing is sent as a sample
+<!-- test-js: apps/web/tests/mirror-notes-app.test.mjs :: importing a PDF: each page becomes a note, and is mirrored, not sent as samples -->
 
 #### Scenario: Saving not set up
 - **GIVEN** saving is not set up

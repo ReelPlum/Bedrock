@@ -9,7 +9,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { launch, openApp } from './helpers.mjs';
+import { launch, openApp, goodnotesLikePdf } from './helpers.mjs';
 
 let env;
 before(async () => { env = await launch(); });
@@ -58,7 +58,7 @@ async function app() {
   await ctx.addInitScript(({ api, code }) => {
     window.bedrockNoLaunchGate = true;
     if (!localStorage.getItem('bedrock.collect.v1')) {
-      localStorage.setItem('bedrock.collect.v1', JSON.stringify({ consent: 3, code, api, contributor: crypto.randomUUID(), handedness: 'right' }));
+      localStorage.setItem('bedrock.collect.v1', JSON.stringify({ consent: 4, code, api, contributor: crypto.randomUUID(), handedness: 'right' }));
     }
   }, { api: API, code: CODE });
   const server = await fakeBackend(ctx);
@@ -215,6 +215,22 @@ test('"Delete my contributions" deletes the mirrors with the secret, and the dev
     return { notes: (await m.deviceStore.all()).length, queued: await m.deviceQueue.count(), mirroring: c.isMirroring(), secretKnown: c.loadState().secretKnown };
   });
   assert.deepEqual(left, { notes: 0, queued: 0, mirroring: false, secretKnown: false });
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('importing a PDF: each page becomes a note, and is mirrored, not sent as samples', async () => {
+  const { ctx, page, errors, server } = await app();
+  await turnOn(page);
+  const pages = await page.evaluate(async (bytes) => bedrock.importPdf({ name: 'Lecture 7.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
+  assert.equal(pages, 2);
+  const notes = await page.evaluate(async () => (await bedrock.store.list()).map((n) => n.title).sort());
+  assert.deepEqual(notes.filter((t) => t.startsWith('Lecture')), ['Lecture 7 (page 1)', 'Lecture 7 (page 2)']);
+  assert.equal(await page.evaluate(() => bedrock.canvas.stroke_count()), 1, 'the last page is open');
+  await syncNow(page);
+  const sizes = [...server.mirrors.values()].map((m) => m.strokes.size).sort();
+  assert.deepEqual(sizes, [1, 4], 'each page is mirrored with all its handwriting');
+  assert.equal(server.requests.filter((r) => r.path === '/v1/samples').length, 0, 'no samples');
   assert.deepEqual(errors, []);
   await ctx.close();
 });

@@ -19,7 +19,7 @@ const worker = join(process.env.BACKEND || '../../../Bedrock-Backend', 'worker')
 const wrangler = join(worker, 'node_modules', '.bin', 'wrangler');
 // The backend keeps codes as keyed BLAKE3 hashes (docs/security.md). Node has
 // no BLAKE3, so the hashes of the two codes under this test key are written
-// out (made with `bedrock-data hash` and BEDROCK_CODE_KEY set to CODE_KEY).
+// out (made with `bedrock-data hash` and the hash key set to CODE_KEY; the Worker reads it as HASH_KEY).
 const CODE_KEY = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';
 const INVITE_HASH = 'b3:8e17709cd503ad150d4a4a9bba16c58b46d32c2013991feadaacfab801cada8d';
 const ADMIN_HASH = 'b3:8feca8359a9ff321bba76167f9fa5132b49c40d1572a39cc956c46bebeda2ee7';
@@ -29,7 +29,7 @@ const localEnv = { ...process.env, CI: '1', NO_PROXY: '127.0.0.1,localhost', no_
 
 const state = mkdtempSync(join(tmpdir(), 'bedrock-e2e-'));
 execFileSync(wrangler, ['d1', 'migrations', 'apply', 'bedrock-training', '--local', '--persist-to', state], { cwd: worker, stdio: 'pipe', env: localEnv });
-const dev = spawn(wrangler, ['dev', '--local', '--port', String(PORT), '--persist-to', state, '--var', `CODE_KEY:${CODE_KEY}`, '--var', `INVITE_HASHES:${INVITE_HASH}`, '--var', `ADMIN_HASHES:${ADMIN_HASH}`, '--var', `ALLOWED_ORIGINS:http://127.0.0.1:${APP_PORT}`], { cwd: worker, stdio: 'ignore', env: localEnv });
+const dev = spawn(wrangler, ['dev', '--local', '--port', String(PORT), '--persist-to', state, '--var', `HASH_KEY:${CODE_KEY}`, '--var', `INVITE_HASHES:${INVITE_HASH}`, '--var', `ADMIN_HASHES:${ADMIN_HASH}`, '--var', `ALLOWED_ORIGINS:http://127.0.0.1:${APP_PORT}`], { cwd: worker, stdio: 'ignore', env: localEnv });
 const server = await startServer(APP_PORT);
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 try {
@@ -105,57 +105,44 @@ try {
   });
   await sent(page, 5);
 
-  // "Send every word": two words on two lines of a note go up unchecked,
-  // then the writer corrects one and says the other is not a word.
+  // "Mirror my notes": two strokes in a note are mirrored whole, then one
+  // is erased (undone) and the backend's copy follows.
   await page.goto(app);
   await page.waitForFunction(() => window.bedrock?.ready);
   await installPointerHelpers(page);
-  await page.evaluate(async () => (await import('/src/collect.js')).setSendInterval(0));
-  const words = () => page.evaluate(() => JSON.parse(bedrock.canvas.words_json()));
+  page.on('dialog', (d) => d.accept());
   await page.evaluate(async () => {
     bedrock.handwriting.enabled = false;
-    bedrock.wordSharer.settleMs = 0;
-    document.getElementById('share-words').click();
-    const box = document.getElementById('stage').getBoundingClientRect();
-    await t.line(box.left + 200, box.top + 200, box.left + 230, box.top + 240);
-    await t.line(box.left + 500, box.top + 500, box.left + 560, box.top + 520);
-    const [a, b] = JSON.parse(bedrock.canvas.words_json());
-    bedrock.canvas.set_word_text(a.id, 'helo', 'text', 'Xenova/trocr-small-handwritten (fake)', 0.8);
-    bedrock.canvas.set_word_text(b.id, 'x', 'text', 'Xenova/trocr-small-handwritten (fake)', 0.4);
-    await bedrock.wordSharer.scan();
+    const box = document.getElementById('mirror-notes');
+    if (!box.checked) { box.checked = true; box.dispatchEvent(new Event('change')); }
+    const r = document.getElementById('stage').getBoundingClientRect();
+    await t.line(r.left + 200, r.top + 200, r.left + 230, r.top + 240);
+    await t.line(r.left + 500, r.top + 500, r.left + 560, r.top + 520);
   });
-  assert.equal((await words()).length, 2);
-  await sent(page, 7);
-  await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[0]));
-  await page.click('#wm-correct');
-  await page.fill('#wm-correct-text', 'hello');
-  await page.press('#wm-correct-text', 'Enter');
-  await sent(page, 8);
-  await page.evaluate(() => bedrock.wordMenu.open(JSON.parse(bedrock.canvas.words_json())[1]));
-  await page.click('#wm-drawing');
-  await sent(page, 9);
+  const mirrored = async () => {
+    await page.evaluate(() => bedrock.mirrorAll());
+    const list = (await (await fetch(`${API}/v1/export/notes`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).notes;
+    return list.map((n) => [n.strokes, n.erased]);
+  };
+  assert.deepEqual(await mirrored(), [[2, 0]], 'the note is mirrored whole');
+  await page.evaluate(() => bedrock.canvas.undo());
+  assert.deepEqual(await mirrored(), [[1, 1]], 'an undone stroke is erased in the copy');
 
   const rows = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
-  console.table(rows.map((r) => ({ source: r.source, kind: r.kind, label: r.label, label_source: r.label_source, model_reading: r.model_reading, status: r.status, strokes: r.strokes, points: r.points, device: r.device, pointer: r.pointer, language: r.language })));
-  assert.equal(rows.length, 9, 'every sample the app sent passed the backend\'s checks');
-  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'train', 'note', 'note', 'note', 'note']);
+  console.table(rows.map((r) => ({ source: r.source, kind: r.kind, label: r.label, label_source: r.label_source, status: r.status, strokes: r.strokes, points: r.points, device: r.device, pointer: r.pointer, language: r.language })));
+  assert.equal(rows.length, 5, 'every sample the app sent passed the backend\'s checks');
+  assert.deepEqual(rows.map((r) => r.source), ['train', 'train', 'train', 'train', 'train'], 'nothing from a note is sent as a sample');
   assert.equal(rows[4].kind, 'scribble');
   assert.ok(rows[3].label.includes('\n') && rows[3].strokes >= 120, 'the paragraph kept its lines and all its strokes');
-  const note = rows.slice(5).map((r) => [r.kind, r.label, r.label_source, r.status]);
-  assert.ok(rows.slice(5).every((r) => r.schema_version === 3), 'a note is sent line by line (version 3)');
-  assert.deepEqual(note.sort(), [
-    ['text', '', 'corrected', 'new'], // a line holding one word the writer said is not a word
-    ['text', 'hello', 'corrected', 'new'],
-    ['text', 'helo', 'unchecked', 'superseded'],
-    ['text', 'x', 'unchecked', 'superseded'],
-  ]);
 
   // And "Delete my contributions" really deletes.
   setup.on('dialog', (d) => d.accept());
   await setup.click('#delete');
-  await setup.waitForFunction(() => /Deleted 9 samples/.test(document.getElementById('state').textContent));
+  await setup.waitForFunction(() => /Deleted 6 samples/.test(document.getElementById('state').textContent));
   const left = (await (await fetch(`${API}/v1/export`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).samples;
   assert.equal(left.length, 0);
+  const notesLeft = (await (await fetch(`${API}/v1/export/notes`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json()).notes;
+  assert.equal(notesLeft.length, 0, 'and the mirrors');
   console.log('ok: the app and the backend agree');
 } finally {
   await browser.close();
