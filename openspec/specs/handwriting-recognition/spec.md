@@ -105,6 +105,20 @@ from when its model is ready.
 - **THEN** the silent one is stopped and a new worker answers; the out of memory error comes first; the download is not a long `recognize` job
 <!-- test-js: apps/web/tests/app.test.mjs :: a recogniser that stops answering is restarted, the real reason for a stop is shown, and a model download is not timed as the word (regression) -->
 
+#### Scenario: The model download is announced only when it happens (regression)
+In Obsidian each note opens a fresh copy of the app, and every one showed
+"Downloading the handwriting model. This happens once; it then runs on this
+device." even though the model came from the browser's cache. Transformers.js
+reports the same progress whether it reads a model from its cache or the
+network, so the worker now watches `env.fetch` (Transformers.js's hook for
+its requests, asked only for files it has not cached) and says
+`download: true` once per load when a file of the model really comes from
+the network. The app shows the message only then.
+- **GIVEN** the formula model, not yet cached, then a second copy of the app (another note) with it cached
+- **WHEN** each reads a formula
+- **THEN** the first downloads the model and says so once; the second loads it from the cache, asks the network for no model file, and shows no download message
+<!-- test-js: apps/web/tests/app.test.mjs :: the handwriting model download is announced only when it is really downloaded, not each time a note opens with it cached (regression) -->
+
 #### Scenario: Careful reading
 - **GIVEN** careful reading is on
 - **WHEN** the writer pauses
