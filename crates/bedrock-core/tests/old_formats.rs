@@ -213,6 +213,9 @@ fn every_old_note_mirrors_all_its_handwriting() {
         let in_file = saved["strokes"].as_array().unwrap().iter().find(|s| s["id"] == sent[0]["id"]).unwrap();
         assert_eq!(in_file["points"], sent[0]["points"], "{name}.{ext}");
         let text = ink.to_string();
-        assert!(!text.contains("\"title\"") && !text.contains("\"brush\"") && !text.contains("\"texts\""), "{name}.{ext}: ink only");
+        assert!(
+            !text.contains("\"title\"") && !text.contains("\"brush\"") && !text.contains("\"texts\""),
+            "{name}.{ext}: ink only"
+        );
     }
 }
