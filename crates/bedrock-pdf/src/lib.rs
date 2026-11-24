@@ -10,12 +10,18 @@ use wasm_bindgen::prelude::*;
 /// handwriting as notes: `[{ bedrock: Uint8Array, strokes, readings,
 /// warnings: string[] }]`, one per page that has ink.
 #[wasm_bindgen]
-pub fn import_pdf(bytes: &[u8], seed_hi: u32, seed_lo: u32, start_ms: f64) -> Result<js_sys::Array, JsValue> {
+pub fn import_pdf(
+    bytes: &[u8],
+    seed_hi: u32,
+    seed_lo: u32,
+    start_ms: f64,
+    paper: Option<String>,
+) -> Result<js_sys::Array, JsValue> {
     let pages =
         bedrock_core::pdf::import(bytes, seed(seed_hi, seed_lo), start_ms).map_err(|e| JsValue::from_str(&e))?;
     let out = js_sys::Array::new();
     for p in pages {
-        out.push(&page_object(p)?);
+        out.push(&page_object(on_paper(p, &paper))?);
     }
     Ok(out)
 }
@@ -24,13 +30,25 @@ pub fn import_pdf(bytes: &[u8], seed_hi: u32, seed_lo: u32, start_ms: f64) -> Re
 /// stay one file, as in Obsidian): `{ bedrock, strokes, readings,
 /// warnings }` as for one page of [`import_pdf`], or null if no page has ink.
 #[wasm_bindgen]
-pub fn import_pdf_as_one_note(bytes: &[u8], seed_hi: u32, seed_lo: u32, start_ms: f64) -> Result<JsValue, JsValue> {
+pub fn import_pdf_as_one_note(
+    bytes: &[u8],
+    seed_hi: u32,
+    seed_lo: u32,
+    start_ms: f64,
+    paper: Option<String>,
+) -> Result<JsValue, JsValue> {
     match bedrock_core::pdf::import_as_one_note(bytes, seed(seed_hi, seed_lo), start_ms)
         .map_err(|e| JsValue::from_str(&e))?
     {
-        Some(p) => page_object(p),
+        Some(p) => page_object(on_paper(p, &paper)),
         None => Ok(JsValue::NULL),
     }
+}
+
+/// The note on the app's paper for new notes (`paper`, the last argument);
+/// left out, grid ([`bedrock_core::pdf::DEFAULT_PAPER`]).
+fn on_paper(p: bedrock_core::pdf::PdfPage, paper: &Option<String>) -> bedrock_core::pdf::PdfPage {
+    p.on_paper(paper.as_deref().unwrap_or(bedrock_core::pdf::DEFAULT_PAPER))
 }
 
 fn seed(hi: u32, lo: u32) -> u64 {

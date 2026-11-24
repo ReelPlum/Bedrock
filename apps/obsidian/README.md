@@ -41,6 +41,7 @@ makes the note in that folder.
 - **Paper for new notes.** New notes start on grid paper. The setting
   "Paper for new notes" picks grid, dots, lines or plain instead. Notes you
   already have keep their own paper, and each note's menu can change it.
+  Notes made by importing PDFs start on this paper too.
 - **Import a whole GoodNotes library.** Export it as PDFs, open Bedrock's
   settings and drop the PDFs (or the folders they are in) on "Import PDFs",
   or tap it to choose them. Each PDF becomes a handwritten note at the top of

@@ -240,7 +240,8 @@ reads the vault's tags.
 of PDFs too) or chosen with "Choose PDFs…", and make each a `.bedrock` note at
 the vault's root, named after the PDF, as importing a PDF into an open note
 makes it (every page with ink or pictures, one below another, with the PDF's
-reading of the handwriting). No data format changes.
+reading of the handwriting), on the "Paper for new notes" setting's paper.
+No data format changes.
 
 #### Scenario: Dropping a GoodNotes library
 - **GIVEN** PDFs exported from GoodNotes, and a file that is not a PDF

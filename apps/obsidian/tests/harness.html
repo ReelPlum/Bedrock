@@ -191,7 +191,7 @@ window.host = {
     const z = await readZip(f.data);
     const note = JSON.parse(text(z.get('note.json')) || '{}');
     const index = vault.files.get(indexer.pathFor(path))?.data ?? null;
-    return { strokes: (note.strokes || []).length, title: note.title ?? null, links: text(z.get('links.md')), index, size: f.data.byteLength, noteLinks: note.noteLinks ?? null, tags: note.tags ?? null };
+    return { strokes: (note.strokes || []).length, title: note.title ?? null, links: text(z.get('links.md')), index, size: f.data.byteLength, noteLinks: note.noteLinks ?? null, tags: note.tags ?? null, paper: note.paper ?? null };
   },
   /** Click a search result: `text` as found in the note's index note.
    *  Works out the ink as the plugin does and asks the open view to show
@@ -214,6 +214,7 @@ window.host = {
 host.showPdfImport = () => {
   if (!host.pdfImport) {
     const reader = new PdfReader({
+      paper: () => host.paper,
       start: async () => {
         const wasm = await webApp.pdfWasmModule();
         const w = new Worker(webApp.pluginWorkerUrl('src/pdf-import-worker.js'), { type: 'module' });
