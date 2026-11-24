@@ -1,4 +1,4 @@
-import init, { Canvas, ZipBuilder, peek_title, pack_for_sharing } from '../pkg/bedrock_web.js';
+import init, { Canvas, ZipBuilder, peek_title, pack_for_sharing, note_ink_json } from '../pkg/bedrock_web.js';
 import { InputController } from './input.js';
 import { Minimap } from './minimap.js';
 import { DOCKS, defaultLayout, loadLayouts, mapRect, orientationOf, placeAlong, snapDock, snapMap, stepAside } from './layout.js';
@@ -17,6 +17,7 @@ import { cleanName, folderContents, folderNameProblem, folderTrail, libraryFiles
 import { host } from './host.js';
 import * as collect from './collect.js';
 import { WordSharer } from './share-words.js';
+import { NoteMirrors, deviceStore, deviceQueue } from './mirror-notes.js';
 import { showGate, gateStyles } from './consent.js';
 import { perf, AutoSender } from './perf.js';
 import { buildReport, context as reportContext, sendReport } from './report-panel.js';
@@ -44,6 +45,14 @@ const DEFAULT_BRUSHES = {
 // The pen family shares one toolbar slot; tapping the active one shows them all.
 const FAMILY = ['pen', 'pencil', 'fountain', 'marker'];
 const SETTINGS_KEY = 'bedrock.settings.v1';
+/** What turning "Mirror my notes" on agrees to (consent version 4). */
+const MIRROR_CONSENT_TEXT = 'Mirror your notes to improve Bedrock\'s handwriting recognition?\n\n'
+  + 'Bedrock will keep a copy of the handwriting in all your notes, including the notes you have now, in its private training backend, and keep it up to date as you write. '
+  + 'Your strokes are sent where they are on the page, with their timing, so recognition can learn from notes exactly as they were written.\n\n'
+  + 'Only handwriting is sent: no typed text, pictures, highlighter, titles, file names or folders. '
+  + 'When you erase something, it is deleted from the copy too. Deleting a note deletes its copy. '
+  + '"Delete my contributions" on the Train page deletes everything.\n\n'
+  + 'You can turn this off at any time in the settings.';
 const MINIMAP_REST_MS = 3000; // the minimap fades back after this long without the view moving
 const PALM_GRACE_MS = 400; // the chrome ignores touches until this long after the Pencil lifts
 const AUTOSAVE_MS = 400; // research target: every stroke saved locally within a second
@@ -357,6 +366,62 @@ async function main() {
   // Leaving a note or the app: what it held is sent now, not in a minute.
   const shareWordsAndSend = () => shareWordsNow(true).then(() => { collect.flush().catch(() => {}); });
   setInterval(() => { if (!document.hidden) shareWordsNow(); }, 5000);
+  // "Mirror my notes": the handwriting of every note, kept up to date in
+  // the training data backend as it is written and erased, and the notes
+  // already in the library sent in full (mirror-notes.js).
+  const mirrors = new NoteMirrors({
+    store: deviceStore,
+    queue: deviceQueue,
+    enabled: () => collect.isMirroring(),
+    send: (uploads) => collect.sendNotes(uploads),
+    extra: () => ({ device: collect.deviceClass(), app_version: collect.APP_VERSION }),
+  });
+  let mirroredRevision = '';
+  /** The open note's mirror, from the canvas: only new strokes are read. */
+  const mirrorOpen = (force = false) => {
+    if (!collect.isMirroring() || viewOnly) return Promise.resolve(0);
+    const rev = `${note.id}:${canvas.revision()}`;
+    if (!force && rev === mirroredRevision) return Promise.resolve(0);
+    mirroredRevision = rev;
+    const ink = {
+      channels: JSON.parse(canvas.meta_json()).channels,
+      ids: Array.from(canvas.mirror_stroke_ids()),
+      stroke: (id) => {
+        const j = canvas.stroke_json(id);
+        if (!j) return null;
+        const st = JSON.parse(j);
+        return { id: String(st.id), start: st.start, points: st.points };
+      },
+    };
+    return mirrors.sync(note.id, ink).catch(() => 0);
+  };
+  /** Every other note in the library: read from its file when it changed
+   *  since it was last mirrored; deleted notes lose their mirror. */
+  let mirroringLibrary = null;
+  const mirrorLibrary = () => {
+    if (!collect.isMirroring() || !store || viewOnly) return Promise.resolve(0);
+    mirroringLibrary ||= (async () => {
+      try {
+        const metas = await store.list();
+        return await mirrors.library(
+          metas.map((m) => ({ id: m.id, modified: m.modified })),
+          async (id) => {
+            const rec = await store.get(id);
+            return rec ? JSON.parse(note_ink_json(rec.data)) : null;
+          },
+          note.id,
+        );
+      } catch (_) {
+        return 0;
+      } finally {
+        mirroringLibrary = null;
+      }
+    })();
+    return mirroringLibrary;
+  };
+  const mirrorAndSend = () => mirrorOpen(true).then(() => mirrors.flush()).catch(() => {});
+  setInterval(() => { if (!document.hidden) mirrorOpen(); }, 30_000);
+  setInterval(() => { if (!document.hidden) mirrorLibrary(); }, 10 * 60_000);
   wordMenu = new WordMenu($('word-menu'), canvas, stage, {
     readOnly: viewOnly,
     onChange: wordChanged,
@@ -585,6 +650,7 @@ async function main() {
   async function openNoteUntimed(id) {
     if (saveTimer) await saveNow();
     await shareWordsAndSend();
+    await mirrorOpen(true);
     const rec = store && (await store.get(id));
     if (!rec) return newNote();
     try {
@@ -608,6 +674,7 @@ async function main() {
   async function newNote() {
     if (saveTimer) await saveNow();
     await shareWordsAndSend();
+    await mirrorOpen(true);
     const folder = await libraryFolder();
     canvas.new_document(...randomSeed());
     if (host) canvas.set_title((await store?.list().catch(() => []))?.[0]?.title || '');
@@ -764,6 +831,7 @@ async function main() {
           await newNote();
         }
         renderLibrary();
+        mirrorLibrary();
       };
       li.append(open, rename, del);
       return li;
@@ -807,6 +875,7 @@ async function main() {
         await store.remove(n.id);
         if (n.id === note.id) await newNote();
         renderLibrary();
+        mirrorLibrary();
       };
       li.append(del);
       return li;
@@ -1706,6 +1775,29 @@ async function main() {
     saveSettings();
     if (settings.shareWords) collect.flush().catch(() => {});
   });
+  // "Mirror my notes": its own consent, asked here, on top of the consent
+  // on /train (mirror-notes.js, the note-mirrors spec).
+  $('mirror-notes').checked = collect.isMirroring();
+  $('mirror-notes').addEventListener('change', async (e) => {
+    if (!e.target.checked) {
+      collect.setMirroring(false);
+      toast('Your notes are no longer mirrored. What was sent stays until you delete your contributions on the Train page.', 7000);
+      return;
+    }
+    if (!collect.isReady()) {
+      e.target.checked = false;
+      toast('Set up saving on the Train page first (bedrock/train): it explains what is sent and needs your invite code.', 7000);
+      return;
+    }
+    if (!confirm(MIRROR_CONSENT_TEXT)) {
+      e.target.checked = false;
+      return;
+    }
+    collect.setMirroring(true);
+    await mirrorOpen(true);
+    await mirrorLibrary();
+    mirrors.flush().catch(() => {});
+  });
   // Performance reports sent by themselves: off until the person reads
   // what is sent and agrees (perf.js, openspec/specs/performance).
   perf.configure({
@@ -1917,11 +2009,14 @@ async function main() {
   // Flush pending saves when the app is backgrounded or closed (iPad
   // suspends hidden tabs without warning).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsAndSend(); }
+    if (document.visibilityState === 'hidden') { saveNow(); saveCamera(); shareWordsAndSend(); mirrorAndSend(); }
   });
-  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsAndSend(); });
+  window.addEventListener('pagehide', () => { saveNow(); saveCamera(); shareWordsAndSend(); mirrorAndSend(); });
 
   // ----- start ---------------------------------------------------------------------
+  // Notes changed while the app was closed (or on another device, through
+  // iCloud Drive) are mirrored once the app has settled.
+  setTimeout(() => { mirrorLibrary().then(() => mirrors.flush()).catch(() => {}); }, 8000);
   applyDock();
   applyTool();
   const startNote = host ? host.noteId : settings.lastNote;
@@ -1950,7 +2045,7 @@ async function main() {
   });
 
   // Handy for debugging and for the automated browser tests.
-  window.bedrock = { loading, noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, ready: true };
+  window.bedrock = { loading, noteInfo, renderLibrary, collect, wordSharer, importPdf, settings, canvas, input, showInk, frameStats, minimap, pictures, insertPictures, insertText, handwriting, recognizerView, wordMenu, selectionView, store, saveNow, openNote, newNote, get backgroundSaving() { return saver.available; }, saveStats, get noteId() { return note.id; }, perf, autoSender, mirrors, mirrorOpen, mirrorLibrary, ready: true };
   document.documentElement.dataset.ready = 'true';
   if (host) {
     host.on('flush', async () => { await saveNow(); await saveCamera(); });

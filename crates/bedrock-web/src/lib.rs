@@ -1015,6 +1015,19 @@ impl Canvas {
         out
     }
 
+    /// The ids of the strokes a note mirror holds: every stroke but
+    /// highlighters (`bedrock_core::ink_mirror`), in drawing order. Cheap,
+    /// so the app can tell what changed before reading any ink.
+    pub fn mirror_stroke_ids(&self) -> Vec<String> {
+        self.engine
+            .doc
+            .strokes()
+            .iter()
+            .filter(|s| s.brush.kind != bedrock_core::brush::BrushKind::Highlighter)
+            .map(|s| s.id.to_string())
+            .collect()
+    }
+
     /// One stroke as JSON (same shape as in note.json), for recognisers.
     pub fn stroke_json(&self, id: &str) -> Option<String> {
         let id = bedrock_core::stroke::StrokeId::parse(id)?;
@@ -1203,6 +1216,16 @@ impl NoteMirror {
     pub fn export_bedrock(&self) -> Vec<u8> {
         format::to_bedrock(self.inner.doc())
     }
+}
+
+/// The handwriting of a saved note (`.bedrock`, SVG or JSON bytes) as a
+/// note mirror holds it: `{"channels", "strokes": [{"id", "start",
+/// "points"}]}` (see `bedrock_core::ink_mirror`). Reads every note format
+/// version, so notes saved by any earlier Bedrock are mirrored in full.
+#[wasm_bindgen]
+pub fn note_ink_json(bytes: &[u8]) -> Result<String, JsValue> {
+    let loaded = format::load_bytes(bytes, 1).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(bedrock_core::ink_mirror::ink_json(&loaded.doc))
 }
 
 /// The colour of some strokes as `#rrggbb` (`#rrggbbaa` if not opaque) when

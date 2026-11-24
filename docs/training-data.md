@@ -54,6 +54,32 @@ time their note is open. A line longer than the backend takes in one sample
 The backend must accept version 3 before an app that sends it goes live: an
 older backend refuses it, and the app drops samples the server refuses.
 
+## Mirror my notes
+
+A second setting, "Mirror the handwriting of my notes, to improve
+recognition" (off by default, and only with the consent on `/train`),
+keeps a copy of the handwriting of every note in the backend, up to date
+as the writer adds and erases strokes. Turning it on asks first (consent
+version 4) and then sends every note already in the library in full,
+whatever version of the note format it was saved in. After that only
+changes are sent: strokes written since, and the ids of strokes erased
+since (the backend then deletes their ink). An erase that is undone sends
+the stroke again. Deleting a note deletes its copy.
+
+Only ink leaves the device: each stroke's id, start time and raw pen
+samples, under a random id for the note made on this device. No title,
+typed text, pictures, file name, folder, brush, colour or highlighter
+strokes. Uploads wait in IndexedDB `bedrock-mirror` while offline and go
+up once a minute, or at once when the app is hidden.
+
+Mirrors need a contributor secret: 64 random hex digits made on the
+device (`secret` in `bedrock.collect.v1`) and sent only in the
+`X-Contributor-Secret` header, so only this device can change or delete
+its mirrors. "Delete my contributions" on `/train` deletes them too, and
+the device forgets what it mirrored and turns mirroring off. The logic is
+in `apps/web/src/mirror-notes.js`; the formats are in the `note-mirrors`
+spec.
+
 ## What the training pages ask for
 
 The words, sentences and paragraphs are built into `apps/web/train/prompts.js`.

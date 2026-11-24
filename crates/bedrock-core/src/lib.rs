@@ -22,6 +22,7 @@ pub mod eraser;
 pub mod format;
 pub mod geom;
 pub mod handwriting;
+pub mod ink_mirror;
 pub mod input;
 pub mod mirror;
 pub mod overview;

@@ -15,6 +15,10 @@
  *  3: every word written in notes is sent, and agreeing is needed to use
  *     the app while the launch gate is on (see `LAUNCH_GATE`). */
 export const CONSENT_VERSION = 3;
+/** Version 3 plus mirroring whole notes (mirror-notes.js): asked for on
+ *  its own when the writer turns "Mirror my notes" on, and sent as the
+ *  consent version of mirror uploads. */
+export const MIRROR_CONSENT_VERSION = 4;
 /** While Bedrock is invite-only, the app and the Obsidian plugin ask for
  *  the invite code and this consent as soon as they start, and cannot be
  *  used without them. Set to false to make sharing optional again. It
@@ -110,7 +114,11 @@ const RETRY_MS = [15_000, 60_000, 300_000, 900_000];
 
 // ---- State ---------------------------------------------------------------
 
-/** `{ api, code, contributor, consent, handedness, sent, problem }`. */
+/** `{ api, code, contributor, consent, handedness, sent, problem, mirror,
+ *  secret, secretKnown }`. `mirror` is the consent version the writer gave
+ *  for note mirrors (0: off). `secret` is the contributor secret, made
+ *  here and sent only to the backend; `secretKnown` is set once the
+ *  backend has taken it, after which deleting sends it too. */
 export function loadState(storage = globalThis.localStorage) {
   let s = {};
   try { s = JSON.parse(storage.getItem(STATE_KEY) || '{}') || {}; } catch (_) { /* private mode */ }
@@ -122,7 +130,23 @@ export function loadState(storage = globalThis.localStorage) {
     handedness: s.handedness === 'left' || s.handedness === 'right' ? s.handedness : null,
     sent: Number.isInteger(s.sent) ? s.sent : 0,
     problem: typeof s.problem === 'string' ? s.problem : '',
+    mirror: s.mirror === MIRROR_CONSENT_VERSION ? s.mirror : 0,
+    secret: /^[0-9a-f]{64}$/.test(s.secret || '') ? s.secret : '',
+    secretKnown: s.secretKnown === true,
   };
+}
+
+/** True when note mirrors may be sent: saving is set up and the writer
+ *  agreed to mirroring. */
+export function isMirroring(s = loadState()) {
+  return isReady(s) && s.mirror === MIRROR_CONSENT_VERSION;
+}
+
+/** Turns note mirrors on (with their consent) or off. Makes the
+ *  contributor secret the first time. */
+export function setMirroring(on, storage = globalThis.localStorage) {
+  const s = loadState(storage);
+  return saveState({ mirror: on ? MIRROR_CONSENT_VERSION : 0, secret: s.secret || hex(randomBytes(32)) }, storage);
 }
 
 export function saveState(patch, storage = globalThis.localStorage) {
@@ -411,8 +435,15 @@ async function announce() {
   for (const fn of listeners) fn(st);
 }
 
-function headers(s, json = true) {
-  return { Authorization: `Bearer ${s.code}`, 'X-Contributor': s.contributor, ...(json ? { 'Content-Type': 'application/json' } : {}) };
+function headers(s, json = true, secret = false) {
+  return {
+    Authorization: `Bearer ${s.code}`,
+    'X-Contributor': s.contributor,
+    // Only where the backend needs it: a backend from before the secret
+    // does not allow the header, and a browser would then block the call.
+    ...(secret && s.secret ? { 'X-Contributor-Secret': s.secret } : {}),
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+  };
 }
 
 function contributor(s) {
@@ -590,18 +621,53 @@ export async function deleteMine() {
   // Works after "Stop saving" too: deleting never needs consent.
   if (s.code && isSafeApi(s.api) && isUuid(s.contributor)) {
     for (let i = 0; i < 50; i++) {
-      const res = await fetch(`${s.api}/v1/contributors/me`, { method: 'DELETE', headers: headers(s, false) });
+      const res = await fetch(`${s.api}/v1/contributors/me`, { method: 'DELETE', headers: headers(s, false, s.secretKnown) });
       if (!res.ok) throw new Error(`The server answered ${res.status}.`);
       const v = await res.json();
-      deleted += (v.deleted?.samples || 0) + (v.deleted?.paragraphs || 0);
+      deleted += (v.deleted?.samples || 0) + (v.deleted?.paragraphs || 0) + (v.deleted?.notes || 0);
       if (!v.more) break;
     }
   }
-  saveState({ sent: 0, problem: '' });
+  // The server no longer holds the secret; it is sent again with the next
+  // mirror upload.
+  saveState({ sent: 0, problem: '', secretKnown: false });
   // Which note words were sent (share-words.js): nothing is left to replace.
   try { globalThis.localStorage?.removeItem('bedrock.sharedWords.v1'); } catch (_) { /* private mode */ }
   await announce();
   return deleted;
+}
+
+/** Sends one request of note mirror uploads (mirror-notes.js). Returns
+ *  `{ done }`: the upload ids to take off the queue (stored, or refused
+ *  for good). Throws `{ later: true }` to try again later, with `stop`
+ *  when only the writer can fix it (a wrong code or secret). */
+export async function sendNotes(uploads, s = loadState()) {
+  if (!isMirroring(s) || !s.secret) throw { later: true, stop: true };
+  const body = JSON.stringify({ contributor: { ...contributor(s), consent_version: s.mirror }, notes: uploads });
+  let res;
+  try {
+    res = await postJson(`${s.api}/v1/notes`, headers(s, true, true), body);
+  } catch (e) {
+    warnNotSent(`no answer from ${s.api} (offline, or the browser blocked the request: ${e?.message || e})`);
+    throw { later: true };
+  }
+  if (!res.ok) warnNotSent(await refusal(res));
+  if (res.status === 401) throw { later: true, stop: true };
+  if (res.status === 400 || res.status === 413) {
+    // The request as a whole was refused: one upload at a time finds the
+    // one at fault, and a single refused upload is dropped.
+    if (uploads.length === 1) return { done: [uploads[0].id] };
+    let done = [];
+    for (const one of uploads) done = done.concat((await sendNotes([one], s)).done);
+    return { done };
+  }
+  if (!res.ok) throw { later: true };
+  if (!s.secretKnown) saveState({ secretKnown: true });
+  const v = await res.json();
+  const accepted = Array.isArray(v.accepted) ? v.accepted : [];
+  const refused = Array.isArray(v.refused) ? v.refused : [];
+  if (refused.length) warnRefused(refused.map((r) => `${String(r?.code ?? '?').slice(0, 40)} (${String(r?.detail ?? '').slice(0, 200)})`));
+  return { done: accepted.concat(refused.filter((r) => r.code !== 'storage' && r.id).map((r) => r.id)) };
 }
 
 /** The server's totals and this contributor's own count, or null. */

@@ -38,7 +38,9 @@ November 2026); the JSON inside is the same.
 **On the device**: the queue is IndexedDB database `bedrock-collect`
 (version 1, store keyed by sample `id`); consent, code and contributor id
 are in local storage `bedrock.collect.v1`; which sample was sent for each
-note word is in `bedrock.sharedWords.v1` (the newest 5000).
+note word is in `bedrock.sharedWords.v1` (the newest 5000). The same local
+storage holds `mirror`, `secret` and `secretKnown` for note mirrors (the
+`note-mirrors` spec).
 
 ## Requirements
 
