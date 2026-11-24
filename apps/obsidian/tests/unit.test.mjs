@@ -148,6 +148,21 @@ test('handwriting that looks like Markdown links does not become a link', () => 
   assert.doesNotMatch(md, /## Links/);
 });
 
+test('a handwritten # makes no tag or heading in the index note, and search still finds it', async () => {
+  const t = await readNoteText(inkNote(['# Forces', ['h1']], ['#physics', ['p1']], ['C#', ['c1']]));
+  const { markdown, spans } = indexLayout('Hashes.bedrock', t);
+  const body = markdown.split('\n## Text\n\n')[1].split('\n')[0];
+  assert.equal(body, '\\# Forces \\#physics C\\#', 'every # in the text is escaped, so Obsidian reads no tag and no heading');
+  assert.doesNotMatch(body, /(^|[^\\])#/);
+  // Search on the text still finds the words, with or without the #.
+  assert.ok(markdown.includes('#physics') && markdown.includes('Forces'));
+  assert.deepEqual(spans.map((s) => markdown.slice(s.start, s.end)), ['\\# Forces', '\\#physics', 'C\\#']);
+  const at = markdown.indexOf('#physics');
+  assert.deepEqual(strokesAt(spans, at, at + 8), ['p1']);
+  // The front matter tags and links keep their # as they were.
+  assert.match(markdown, /^tags: \[bedrock\]$/m);
+});
+
 /** A note whose words each have their own strokes: [text, [stroke ids]]. */
 const inkNote = (...items) => zip({
   'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [], padding: 'x'.repeat(500) }),
@@ -327,6 +342,31 @@ test('an index note links the index notes of the handwritten notes its note link
   const short = new Indexer(vault, undefined, (link) => (link === 'Gravity.bedrock' ? 'School/Gravity.bedrock' : null));
   assert.match(indexMarkdown('School/Forces.bedrock', { words: [], links: ['- [[Gravity.bedrock#^00000000000000aa|x]]'] }, { indexOf: (l) => short.indexOfLink(l, 'School/Forces.bedrock') }),
     /- \[\[Bedrock index\/School\/Gravity\.md\|Gravity\]\]\n$/);
+});
+
+test('index notes from before # was escaped: they still open their note, and are rewritten without tags', async () => {
+  const { readFileSync } = await import('node:fs');
+  const old = readFileSync(new URL('./fixtures/index-before-escaped-hashes.md', import.meta.url), 'utf8');
+  assert.equal(noteOfIndex(old), 'School/Hashes.bedrock');
+  const vault = new FakeVault();
+  const bin = (b) => (b.buffer ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : b);
+  await vault.createBinary('School/Hashes.bedrock', bin(zip({
+    'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [] }),
+    'recognized.json': JSON.stringify({ format: 'bedrock-recognition', version: 1, items: [{ id: 'r0', text: '# Forces', strokes: ['h1'] }, { id: 'r1', text: '#physics', strokes: ['p1'] }, { id: 'r2', text: 'Newton', strokes: ['n1'] }] }),
+    'links.md': '# Links in this note\n\n',
+  })));
+  const ix = new Indexer(vault);
+  await ix.sync();
+  // The old index note is newer than its note, as it is after an update.
+  const path = `${DEFAULT_INDEX_FOLDER}/School/Hashes.md`;
+  await vault.modify(vault.files.get(path), old);
+  assert.equal(noteForIndex(path, old, (p) => vault.files.has(p)), 'School/Hashes.bedrock');
+  // A search hit in the old index note still finds the words.
+  const at = old.indexOf('#physics');
+  assert.deepEqual(await strokesForIndexPlace('School/Hashes.bedrock', vault.files.get('School/Hashes.bedrock').data, old, { match: { matches: [[at, at + 8]] } }), ['p1']);
+  assert.equal(await ix.sync(), 1, 'rewritten once');
+  assert.equal(vault.files.get(path).data, old.replace('# Forces #physics Newton', '\\# Forces \\#physics Newton'), 'the same, with each # escaped');
+  assert.equal(await ix.sync(), 0);
 });
 
 test('index notes from before linked notes: they still open their note, and are rewritten with the section', async () => {
