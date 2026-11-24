@@ -201,6 +201,12 @@ impl Canvas {
         self.engine.pointer_up(id, pointer_kind(kind), Some(ScreenSample { x, y, pressure, altitude, azimuth, time }));
     }
 
+    /// The pen hovers above the glass at `time` (Unix ms); palm rejection
+    /// ignores touches that land while it does.
+    pub fn pen_hover(&mut self, time: f64) {
+        self.engine.pen_hover(time);
+    }
+
     pub fn pointer_cancel(&mut self, id: i32, kind: &str) {
         self.engine.pointer_cancel(id, pointer_kind(kind));
     }

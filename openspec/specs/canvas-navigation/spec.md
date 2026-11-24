@@ -18,6 +18,23 @@ for undo and redo, and palm rejection.
 <!-- test: pan_moves_content_with_finger -->
 <!-- test-js: apps/web/tests/app.test.mjs :: fingers pan the canvas and do not draw; a resting palm is ignored -->
 
+#### Scenario: A resting hand around the pen does not move the page
+Touches that land while the pen is on the glass, while it hovers above it
+(Apple Pencil hover), or less than 500 ms after it last touched or hovered
+are a resting hand: they neither pan, zoom, tap nor draw for as long as they
+stay down. If the hand lands first and moves the page, and the pen touches
+down within a second while the hand still rests, the page goes back to where
+it was when the hand landed. A finger that pans and lifts before the pen
+keeps its pan, and a finger more than 500 ms after the pen pans as usual.
+- **GIVEN** the pen tool
+- **WHEN** a palm lands just after the pen lifts, or while the pencil hovers, or just before the pen writes
+- **THEN** the page does not move, and only the pen leaves ink
+<!-- test: palm_landing_just_after_the_pen_lifts_is_ignored -->
+<!-- test: palm_resting_while_the_pencil_hovers_is_ignored -->
+<!-- test: palm_landing_before_the_pen_is_undone_when_the_pen_lands -->
+<!-- test: a_finger_pan_that_ended_before_the_pen_is_kept -->
+<!-- test-js: apps/web/tests/app.test.mjs :: a palm that lands while the pencil hovers, just after it lifts, or just before it writes does not move the page -->
+
 #### Scenario: Finger drawing mode
 - **GIVEN** finger drawing is turned on
 - **WHEN** one finger drags
@@ -118,3 +135,17 @@ opens with dots, as it did before grid became the default.
 - **WHEN** the minimap is shown
 - **THEN** each shows in its place and size, under the ink as on the page, from a small copy made once (at most 256 px on its long side); until that copy is ready it shows as a light card
 <!-- test-js: apps/web/tests/app.test.mjs :: the minimap shows pictures and text boxes under the ink -->
+
+## Palm rejection: why it is our own
+
+No library fits. Web pages get touches and the pen as plain Pointer Events
+with no palm flag; native iPad apps get palm rejection from iPadOS, which
+only stops touches once the Pencil is on the glass, so the palm that lands
+just before or between strokes still reaches the page. tldraw's "pen mode"
+(ignore every non-pen pointer once a pen is seen) is the closest known
+approach, but it is a rule inside their editor, not a library, and it would
+take away one finger panning, which Bedrock keeps. The rules above are a few
+lines in the engine (`crates/bedrock-core/src/engine.rs`), the same on every
+platform, and unit tested. Touch contact size (`PointerEvent.width`) is not
+used: it is not documented for iPad Safari and a fingertip and the edge of a
+palm overlap.

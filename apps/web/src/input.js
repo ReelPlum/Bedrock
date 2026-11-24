@@ -282,6 +282,8 @@ export class InputController {
       if (!kind) {
         // A pen moving with no button down and not drawing is hovering.
         if (e.pointerType === 'pen' && e.buttons === 0 && this.enabled) {
+          // A hand landing while the pencil hovers is a resting palm.
+          if (this.canvas.pen_hover) this.canvas.pen_hover(performance.timeOrigin + e.timeStamp);
           this.onHover({ x: e.clientX - this.rect.left, y: e.clientY - this.rect.top, eraser: kindOf(e) === 'eraser' });
         }
         return;

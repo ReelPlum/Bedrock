@@ -7,8 +7,9 @@
 //! * Pen and mouse draw (or erase, depending on the tool).
 //! * Fingers navigate: one finger pans, two fingers pan + pinch-zoom.
 //!   With "finger drawing" on, one finger draws instead.
-//! * Palm rejection: while a pen is down, touches are ignored, and a pen
-//!   touching down cancels any finger gesture.
+//! * Palm rejection: touches are ignored while a pen is down, hovers, or
+//!   lifted less than [`PALM_GRACE_MS`] ago; a pen touching down cancels
+//!   any finger gesture and undoes the pan of a palm that landed first.
 //! * Two-finger double tap = undo, three-finger double tap = redo.
 
 use crate::brush::Brush;
@@ -118,6 +119,9 @@ struct TouchGesture {
     start_time: f64,
     moved: f64,
     cancelled: bool,
+    /// Where the page was when the first finger touched down, so a palm
+    /// that moved it before the pen landed can be undone.
+    camera_at_start: Camera,
 }
 
 /// Gestures whose meaning lives in the app (e.g. which tool is current).
@@ -126,6 +130,13 @@ pub enum Gesture {
     /// One-finger double tap: switch between the eraser and the tool before.
     ToggleEraser,
 }
+
+/// Palm rejection: touches that start this soon after the pen last touched
+/// or hovered over the glass are a resting hand, not a finger.
+pub const PALM_GRACE_MS: f64 = 500.0;
+/// A touch that began at most this long before the pen landed, and still
+/// rests on the glass, was the palm: the page goes back to where it was.
+pub const PALM_LEAD_MS: f64 = 1000.0;
 
 pub const TAP_MAX_MS: f64 = 300.0;
 pub const TAP_MAX_MOVE: f64 = 12.0;
@@ -165,6 +176,8 @@ pub struct Engine {
     /// Previous multi-finger tap: (finger count, time it ended).
     last_tap: Option<(usize, f64)>,
     pen_down: bool,
+    /// When the pen last touched or hovered over the glass (Unix ms).
+    last_pen: f64,
     /// The committed scene (strokes, camera) must be redrawn.
     dirty: bool,
     /// Only the live stroke layer must be redrawn.
@@ -202,6 +215,7 @@ impl Engine {
             touch: TouchGesture::default(),
             last_tap: None,
             pen_down: false,
+            last_pen: f64::NEG_INFINITY,
             dirty: true,
             live_dirty: true,
             live: tessellate::LiveTessellator::new(),
@@ -306,7 +320,13 @@ impl Engine {
         let kind = self.effective_kind(kind);
         if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
             self.pen_down = true;
-            // Palm rejection: a pen always wins over fingers.
+            self.last_pen = s.time;
+            // Palm rejection: a pen always wins over fingers. A hand that
+            // landed just before the pen and moved the page is put back.
+            if !self.touch.touches.is_empty() && s.time - self.touch.start_time <= PALM_LEAD_MS {
+                self.camera = self.touch.camera_at_start;
+                self.dirty = true;
+            }
             self.touch = TouchGesture::default();
             self.last_tap = None;
             if matches!(self.active, Some(Active::Drawing { stroke: Stroke { device: InputDevice::Touch, .. }, .. })) {
@@ -314,7 +334,9 @@ impl Engine {
             }
         }
         if kind == PointerKind::Touch {
-            if self.pen_down {
+            // A hand resting while the pen writes, hovers, or has just
+            // lifted between words is not a finger.
+            if self.pen_down || s.time - self.last_pen <= PALM_GRACE_MS {
                 return;
             }
             self.touch_down(id, s);
@@ -378,6 +400,9 @@ impl Engine {
     /// Feed one (coalesced) sample. Call once per sample, in order.
     pub fn pointer_move(&mut self, id: i32, kind: PointerKind, s: ScreenSample) {
         let kind = self.effective_kind(kind);
+        if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
+            self.last_pen = self.last_pen.max(s.time);
+        }
         if kind == PointerKind::Touch && self.touch.touches.contains_key(&id) && !self.is_pointer_active(id) {
             self.touch_move(id, s);
             return;
@@ -474,6 +499,9 @@ impl Engine {
         let kind = self.effective_kind(kind);
         if matches!(kind, PointerKind::Pen | PointerKind::PenEraser) {
             self.pen_down = false;
+            if let Some(s) = s {
+                self.last_pen = self.last_pen.max(s.time);
+            }
         }
         if kind == PointerKind::Touch && self.touch.touches.contains_key(&id) {
             if let Some(s) = s {
@@ -552,6 +580,14 @@ impl Engine {
         }
     }
 
+    /// The pen hovers above the glass (Apple Pencil hover): a hand landing
+    /// now is resting, so touches are ignored as just after the pen lifts.
+    pub fn pen_hover(&mut self, time: f64) {
+        if !self.view_only {
+            self.last_pen = self.last_pen.max(time);
+        }
+    }
+
     fn is_pointer_active(&self, id: i32) -> bool {
         match &self.active {
             Some(Active::Drawing { pointer, .. })
@@ -626,7 +662,7 @@ impl Engine {
 
     fn touch_down(&mut self, id: i32, s: ScreenSample) {
         if self.touch.touches.is_empty() {
-            self.touch = TouchGesture { start_time: s.time, ..Default::default() };
+            self.touch = TouchGesture { start_time: s.time, camera_at_start: self.camera, ..Default::default() };
         }
         self.touch.touches.insert(id, s.pos());
         self.touch.max_touches = self.touch.max_touches.max(self.touch.touches.len());
@@ -1298,6 +1334,69 @@ mod tests {
         assert_eq!(e.camera, cam);
         assert_eq!(e.doc.len(), 1);
         assert_eq!(e.doc.strokes()[0].device, InputDevice::Pen);
+    }
+
+    #[test]
+    fn palm_landing_just_after_the_pen_lifts_is_ignored() {
+        let mut e = eng();
+        draw(&mut e, 1, PointerKind::Pen, (0.0, 0.0), (100.0, 0.0), 0.0);
+        let cam = e.camera;
+        // The hand settles between two words, a moment after the pen lifted
+        // (it lifted at 80 ms): two palm contacts pan and pinch.
+        let t = 80.0 + PALM_GRACE_MS - 50.0;
+        e.pointer_down(8, PointerKind::Touch, ScreenSample::new(500.0, 500.0, 0.0, t));
+        e.pointer_down(9, PointerKind::Touch, ScreenSample::new(560.0, 520.0, 0.0, t + 5.0));
+        e.pointer_move(8, PointerKind::Touch, ScreenSample::new(440.0, 470.0, 0.0, t + 20.0));
+        e.pointer_move(9, PointerKind::Touch, ScreenSample::new(620.0, 560.0, 0.0, t + 20.0));
+        e.pointer_up(8, PointerKind::Touch, Some(ScreenSample::new(440.0, 470.0, 0.0, t + 900.0)));
+        e.pointer_up(9, PointerKind::Touch, Some(ScreenSample::new(620.0, 560.0, 0.0, t + 900.0)));
+        assert_eq!(e.camera, cam, "the palm neither panned nor zoomed");
+        // A finger well after the pen still pans.
+        let later = t + 2000.0;
+        e.pointer_down(10, PointerKind::Touch, ScreenSample::new(500.0, 500.0, 0.0, later));
+        e.pointer_move(10, PointerKind::Touch, ScreenSample::new(450.0, 500.0, 0.0, later + 16.0));
+        e.pointer_up(10, PointerKind::Touch, Some(ScreenSample::new(450.0, 500.0, 0.0, later + 20.0)));
+        assert_ne!(e.camera, cam, "a finger long after the pen pans");
+    }
+
+    #[test]
+    fn palm_resting_while_the_pencil_hovers_is_ignored() {
+        let mut e = eng();
+        let cam = e.camera;
+        // Apple Pencil hover: the tip is above the glass, the hand lands.
+        e.pen_hover(1000.0);
+        e.pen_hover(1100.0);
+        e.pointer_down(9, PointerKind::Touch, ScreenSample::new(500.0, 500.0, 0.0, 1100.0 + PALM_GRACE_MS - 10.0));
+        e.pointer_move(9, PointerKind::Touch, ScreenSample::new(560.0, 520.0, 0.0, 1100.0 + PALM_GRACE_MS));
+        e.pointer_up(9, PointerKind::Touch, Some(ScreenSample::new(560.0, 520.0, 0.0, 1100.0 + PALM_GRACE_MS + 5.0)));
+        assert_eq!(e.camera, cam);
+    }
+
+    #[test]
+    fn palm_landing_before_the_pen_is_undone_when_the_pen_lands() {
+        let mut e = eng();
+        let cam = e.camera;
+        // The palm touches first and drags the page a little ...
+        e.pointer_down(8, PointerKind::Touch, ScreenSample::new(500.0, 500.0, 0.0, 0.0));
+        e.pointer_down(9, PointerKind::Touch, ScreenSample::new(560.0, 520.0, 0.0, 10.0));
+        e.pointer_move(8, PointerKind::Touch, ScreenSample::new(480.0, 490.0, 0.0, 40.0));
+        e.pointer_move(9, PointerKind::Touch, ScreenSample::new(600.0, 540.0, 0.0, 40.0));
+        assert_ne!(e.camera, cam);
+        // ... then the pen lands while the palm still rests.
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (200.0, 100.0), 300.0);
+        assert_eq!(e.camera, cam, "the page is back where it was before the palm");
+        assert_eq!(e.doc.len(), 1);
+    }
+
+    #[test]
+    fn a_finger_pan_that_ended_before_the_pen_is_kept() {
+        let mut e = eng();
+        e.pointer_down(8, PointerKind::Touch, ScreenSample::new(500.0, 500.0, 0.0, 0.0));
+        e.pointer_move(8, PointerKind::Touch, ScreenSample::new(400.0, 500.0, 0.0, 50.0));
+        e.pointer_up(8, PointerKind::Touch, Some(ScreenSample::new(400.0, 500.0, 0.0, 60.0)));
+        let panned = e.camera;
+        draw(&mut e, 1, PointerKind::Pen, (100.0, 100.0), (200.0, 100.0), 200.0);
+        assert_eq!(e.camera, panned);
     }
 
     #[test]
