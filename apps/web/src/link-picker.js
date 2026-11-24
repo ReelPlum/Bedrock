@@ -28,7 +28,9 @@ const DRAWING_AT_ONCE = 2;
 /** How wide (CSS px) a page's picture is beside its matches. */
 const THUMB_CSS = 96;
 /** How long scrolling must slow down before the pages in sight are drawn. */
-const SETTLE_MS = 120;
+const SETTLE_MS = 200;
+/** How far (CSS px) beyond the view a page counts as in sight. */
+const SIGHT_MARGIN = 150;
 
 const kindOf = (path) => {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
@@ -351,28 +353,64 @@ export class LinkPicker {
     let drawing = 0;
     // While the pages fly by (faster than a screen and a half a second),
     // nothing new is asked for; once the scrolling slows, the pages then in
-    // sight are drawn.
-    let lastScroll = { at: 0, top: 0 };
+    // sight are drawn. The speed is taken over the last 150 ms, not between
+    // two frames, so a slow device (long frames, big jumps) measures it right;
+    // and "slowed" waits at least one and a half frames.
+    let recent = [];
     let flying = false;
     let settle = null;
+    // Where the scrolling was last seen. The page can move before its scroll
+    // event comes (on a busy device the observer may report first): until
+    // the event is seen, nothing is drawn.
+    let seenTop = this.body.scrollTop;
+    // The scrolling has stopped (or slowed): draw what is in sight.
+    const rest = () => {
+      flying = false;
+      seenTop = this.body.scrollTop;
+      recent = [];
+      // What is in sight now, from where the pages are: not left to the
+      // observer's last report, which may still be on its way.
+      const view = this.body.getBoundingClientRect();
+      for (const b of this.body.querySelectorAll('.lp-lazy')) {
+        const r = b.getBoundingClientRect();
+        if (r.bottom > view.top - SIGHT_MARGIN && r.top < view.bottom + SIGHT_MARGIN && r.height > 0) inSight.add(b);
+        else inSight.delete(b);
+      }
+      pump();
+    };
     this.body.onscroll = () => {
       const now = performance.now();
-      const top = this.body.scrollTop;
-      const speed = Math.abs(top - lastScroll.top) / Math.max(1, now - lastScroll.at);
-      lastScroll = { at: now, top };
-      flying = speed > (this.body.clientHeight * 1.5) / 1000;
+      seenTop = this.body.scrollTop;
+      const gap = recent.length ? now - recent[recent.length - 1].at : 0;
+      recent.push({ at: now, top: this.body.scrollTop });
+      while (recent.length > 2 && now - recent[1].at > 150) recent.shift();
+      const first = recent[0];
+      const speed = recent.length > 1 ? Math.abs(this.body.scrollTop - first.top) / Math.max(1, now - first.at) : 0;
+      // The first move after a rest has no speed yet: it waits like a fling
+      // until the next one, or until the scrolling stops.
+      flying = recent.length < 2 || speed > (this.body.clientHeight * 1.5) / 1000;
       clearTimeout(settle);
-      settle = setTimeout(() => { flying = false; pump(); }, SETTLE_MS);
+      settle = setTimeout(rest, Math.min(600, Math.max(SETTLE_MS, gap * 1.5)));
     };
     const pump = () => {
+      if (this.body.scrollTop !== seenTop && !flying) {
+        // Moved, and its scroll event not seen yet: wait for it, or rest.
+        clearTimeout(settle);
+        settle = setTimeout(rest, SETTLE_MS);
+        return;
+      }
       while (drawing < DRAWING_AT_ONCE && !flying) {
         let next = null;
         let nextTop = Infinity;
+        const view = this.body.getBoundingClientRect();
         for (const b of inSight) {
           if (!b.isConnected || b.offsetParent === null) { inSight.delete(b); continue; }
-          if (b.dataset.drawing || Number(b.dataset.width || 0) >= wantOf(b)) continue;
-          const top = b.getBoundingClientRect().top;
-          if (top < nextTop) { next = b; nextTop = top; }
+          if (b.dataset.drawing || Number(b.dataset.failed || 0) >= 2 || Number(b.dataset.width || 0) >= wantOf(b)) continue;
+          // The observer's report can arrive late on a busy device: a page
+          // it says is in sight may have flown by since.
+          const r = b.getBoundingClientRect();
+          if (!(r.bottom > view.top - SIGHT_MARGIN && r.top < view.bottom + SIGHT_MARGIN)) { inSight.delete(b); continue; }
+          if (r.top < nextTop) { next = b; nextTop = r.top; }
         }
         if (!next) return;
         const b = next;
@@ -383,7 +421,8 @@ export class LinkPicker {
           .then((p) => {
             if (Number(b.dataset.width || 0) < width) { b.querySelector('img').src = p.url; b.dataset.width = String(width); }
           })
-          .catch(() => {})
+          // A page that cannot be drawn is tried once more, not forever.
+          .catch(() => { b.dataset.failed = String(Number(b.dataset.failed || 0) + 1); })
           .finally(() => { delete b.dataset.drawing; drawing--; pump(); });
       }
     };
@@ -392,7 +431,7 @@ export class LinkPicker {
         if (e.isIntersecting) inSight.add(e.target); else inSight.delete(e.target);
       }
       pump();
-    }, { root: this.body, rootMargin: '150px 0px' });
+    }, { root: this.body, rootMargin: `${SIGHT_MARGIN}px 0px` });
     const lazy = (b) => { b.classList.add('lp-lazy'); this.observer.observe(b); };
     // Every page keeps the first page's shape while it is not drawn, so the
     // scroll bar and the pages' places are right from the start.
