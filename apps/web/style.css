@@ -363,12 +363,14 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
   -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
 }
 .link-picker[hidden] { display: none; }
+/* A PDF open in the picker can be zoomed to one page across: room for it. */
+.link-picker.lp-wide { max-width: 900px; }
 .lp-head { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--chrome-border); }
 .lp-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 4px; }
 .lp-head button { padding: 8px 10px; border-radius: 9px; font-size: 14px; color: var(--accent); }
 .lp-filter { margin: 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--chrome-border); background: var(--field); color: var(--ink); font: inherit; }
 .lp-filter[hidden] { display: none; }
-.lp-body { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 0 0 8px; -webkit-user-select: none; user-select: none; }
+.lp-body { position: relative; flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 0 0 8px; -webkit-user-select: none; user-select: none; }
 .lp-tree { list-style: none; margin: 0; padding: 0; }
 .lp-tree button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 10px 12px; font-size: 15px; border-radius: 0; }
 .lp-tree button:active, .lp-tree button:hover { background: var(--hover); }
@@ -383,8 +385,22 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .lp-note { margin: 8px 12px; color: var(--muted); font-size: 13px; list-style: none; }
 .lp-whole { margin: 8px 12px 0; padding: 10px; border-radius: 9px; background: var(--accent-fill); color: #fff; font-size: 15px; width: calc(100% - 24px); }
 .lp-inside { padding: 0 12px; }
-.lp-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+.lp-pages { --lp-across: 3; display: grid; grid-template-columns: repeat(var(--lp-across), minmax(0, 1fr)); gap: 12px; }
+.lp-pages[hidden], .lp-hits[hidden] { display: none; }
+.lp-pdf-bar { position: sticky; top: 0; z-index: 1; display: flex; gap: 8px; align-items: center; margin: 0 -12px; padding: 8px 12px; background: var(--chrome); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.lp-find { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--chrome-border); background: var(--field); color: var(--ink); font: inherit; }
+.lp-zoom { display: flex; align-items: center; gap: 2px; }
+.lp-zoom button { width: 36px; height: 36px; border-radius: 9px; font-size: 20px; color: var(--accent); }
+.lp-zoom button:disabled { color: var(--muted); opacity: 0.5; }
+.lp-across { min-width: 62px; text-align: center; font-size: 12px; color: var(--muted); }
+.lp-hits { list-style: none; margin: 0; padding: 0; }
+.lp-hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 10px 8px; border-radius: 9px; font-size: 14px; }
+.lp-hit:active, .lp-hit:hover { background: var(--hover); }
+.lp-hit-page { font-size: 12px; color: var(--muted); }
+.lp-hit-text { color: var(--ink); }
+.lp-hit mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .lp-page { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 9px; font-size: 12px; color: var(--muted); }
+.lp-page { min-width: 0; }
 .lp-page img { width: 100%; min-height: 120px; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
 .lp-paper { position: relative; margin: 0 auto; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
 .lp-paper img { position: absolute; inset: 0; width: 100%; height: 100%; }

@@ -10,10 +10,19 @@
 // the canvas's frame: on the iPad a note picked there did not reach the link
 // box, and it had no folders, pages or places.
 //
+// An open PDF can be searched (the plugin finds the text the way the search
+// bar of Obsidian's PDF viewer does, with its find controller) and zoomed
+// (4, 3, 2 or 1 pages across).
+//
 // The host answers `list-files` ([{ path, link }]), `read-note { path }`
-// ({ data }) and `pdf-page { path, page, width }` ({ count, png }).
+// ({ data }), `pdf-page { path, page, width }` ({ count, png }) and
+// `pdf-find { path, query }` ({ count, total, hits: [{ page, before, match,
+// after, selection }] }).
 
 import { readZip, text } from './zip-read.js';
+
+/** The most pages side by side when a PDF is zoomed out. */
+const MAX_ACROSS = 4;
 
 const kindOf = (path) => {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
@@ -165,6 +174,8 @@ export class LinkPicker {
     });
     this.open = new Set();
     this.urls = [];
+    // Pages across when a PDF is open (zoom), kept while the canvas is.
+    this.across = 3;
   }
 
   get isOpen() { return !this.el.hidden; }
@@ -205,6 +216,7 @@ export class LinkPicker {
   }
 
   _showTree(empty = false) {
+    this.el.classList.remove('lp-wide');
     this._dropUrls();
     this.observer?.disconnect();
     this.back.hidden = true;
@@ -266,6 +278,7 @@ export class LinkPicker {
 
   /** A view of one file: "Link the whole file" and what is inside. */
   _openFile(f, wholeLabel) {
+    this.el.classList.remove('lp-wide');
     this._dropUrls();
     this.observer?.disconnect();
     this.back.hidden = false;
@@ -281,29 +294,54 @@ export class LinkPicker {
 
   async _showPdf(f) {
     const inside = this._openFile(f, 'Link the whole file');
-    const width = Math.round(Math.min(480, this.body.clientWidth || 320) * Math.min(window.devicePixelRatio || 1, 2));
-    const page = async (n) => {
-      const r = await this.rpc.call('pdf-page', { path: f.path, page: n, width });
-      const url = URL.createObjectURL(new Blob([r.png], { type: 'image/png' }));
-      this.urls.push(url);
-      return { count: r.count, url };
+    this.el.classList.add('lp-wide');
+    const name = nameOf(f.path);
+    const moved = () => this.title.textContent !== name;
+    // Pictures of pages already drawn, by page and width.
+    const drawn = new Map();
+    const page = async (n, width) => {
+      const key = `${n}@${width}`;
+      if (!drawn.has(key)) {
+        drawn.set(key, this.rpc.call('pdf-page', { path: f.path, page: n, width }).then((r) => {
+          const url = URL.createObjectURL(new Blob([r.png], { type: 'image/png' }));
+          this.urls.push(url);
+          return { count: r.count, url };
+        }));
+        drawn.get(key).catch(() => drawn.delete(key));
+      }
+      return drawn.get(key);
     };
     let first;
-    try { first = await page(1); } catch (e) {
+    try { first = await page(1, this._pageWidth()); } catch (e) {
       inside.replaceChildren(el('p', { className: 'lp-note', textContent: `This PDF could not be opened (${e.message}).` }));
       return;
     }
-    if (this.title.textContent !== nameOf(f.path)) return; // moved on
+    if (moved()) return;
+
+    // Search and zoom, above the pages.
+    const find = el('input', { className: 'lp-find', type: 'search', placeholder: 'Search in this PDF', autocomplete: 'off', spellcheck: false });
+    find.setAttribute('aria-label', 'Search the text of this PDF');
+    find.autocapitalize = 'off';
+    const zoomOut = el('button', { type: 'button', className: 'lp-zoom-out', textContent: '−' });
+    zoomOut.setAttribute('aria-label', 'More pages across');
+    const zoomIn = el('button', { type: 'button', className: 'lp-zoom-in', textContent: '+' });
+    zoomIn.setAttribute('aria-label', 'Fewer, bigger pages');
+    const across = el('span', { className: 'lp-across' });
+    const bar = el('div', { className: 'lp-pdf-bar' }, find, el('div', { className: 'lp-zoom' }, zoomOut, across, zoomIn));
+    const note = el('p', { className: 'lp-note', textContent: 'Tap a page to link to it.' });
     const grid = el('div', { className: 'lp-pages' });
-    inside.replaceChildren(el('p', { className: 'lp-note', textContent: 'Tap a page to link to it.' }), grid);
-    // Pages are drawn as they scroll into sight.
+    const results = el('ul', { className: 'lp-hits', hidden: true });
+    inside.replaceChildren(bar, note, results, grid);
+
+    // Pages are drawn as they scroll into sight, as wide as they are shown.
+    const show = (b) => {
+      const width = this._pageWidth();
+      if (Number(b.dataset.width) >= width) return;
+      b.dataset.width = String(width);
+      page(Number(b.dataset.page), width).then((p) => { b.querySelector('img').src = p.url; }).catch(() => { delete b.dataset.width; });
+    };
     this.observer = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        if (!e.isIntersecting || e.target.dataset.loaded) continue;
-        e.target.dataset.loaded = 'true';
-        this.observer.unobserve(e.target);
-        page(Number(e.target.dataset.page)).then((p) => { e.target.querySelector('img').src = p.url; }).catch(() => {});
-      }
+      for (const e of entries) if (e.isIntersecting) show(e.target);
     }, { root: this.body, rootMargin: '400px' });
     for (let n = 1; n <= first.count; n++) {
       const img = el('img', { alt: '' });
@@ -312,8 +350,108 @@ export class LinkPicker {
       b.dataset.page = String(n);
       b.addEventListener('click', () => this._finish(`${f.link}#page=${n}`));
       grid.append(b);
-      if (n === 1) { img.src = first.url; b.dataset.loaded = 'true'; } else this.observer.observe(b);
+      if (n === 1) { img.src = first.url; b.dataset.width = String(this._pageWidth()); }
+      this.observer.observe(b);
     }
+
+    // Zoom: 4, 3, 2 or 1 pages across, with − and +, a pinch, or a
+    // pinch on a trackpad (ctrl + wheel). The page at the top stays there.
+    const setAcross = (cols) => {
+      cols = Math.min(MAX_ACROSS, Math.max(1, cols));
+      // The page at the top of the view (under the search bar), and how far
+      // down it the view is, as a share of its height.
+      const line = this.body.scrollTop + bar.offsetHeight;
+      const top = line > grid.offsetTop ? [...grid.children].find((b) => b.offsetTop + b.offsetHeight > line) : null;
+      const into = top ? (line - top.offsetTop) / top.offsetHeight : 0;
+      this.across = cols;
+      grid.style.setProperty('--lp-across', String(cols));
+      grid.dataset.across = String(cols);
+      across.textContent = cols === 1 ? '1 page' : `${cols} across`;
+      zoomIn.disabled = cols === 1;
+      zoomOut.disabled = cols === MAX_ACROSS;
+      if (top) this.body.scrollTop = top.offsetTop + into * top.offsetHeight - bar.offsetHeight;
+      // Sharper pictures for pages now shown bigger.
+      for (const b of grid.children) {
+        const r = b.getBoundingClientRect();
+        const view = this.body.getBoundingClientRect();
+        if (r.bottom > view.top - 400 && r.top < view.bottom + 400) show(b);
+      }
+    };
+    zoomIn.addEventListener('click', () => setAcross(this.across - 1));
+    zoomOut.addEventListener('click', () => setAcross(this.across + 1));
+    setAcross(this.across);
+    let pinch = null;
+    const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    grid.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinch = spread(e.touches); }, { passive: true });
+    grid.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 2 || !pinch) return;
+      e.preventDefault();
+      const d = spread(e.touches);
+      if (d / pinch > 1.3) { setAcross(this.across - 1); pinch = d; } else if (d / pinch < 0.77) { setAcross(this.across + 1); pinch = d; }
+    }, { passive: false });
+    grid.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinch = null; });
+    let wheel = 0;
+    grid.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      wheel += e.deltaY;
+      if (Math.abs(wheel) < 40) return;
+      setAcross(this.across + (wheel > 0 ? 1 : -1));
+      wheel = 0;
+    }, { passive: false });
+
+    // Search: the PDF's text, found the way Obsidian's PDF viewer finds it
+    // (the plugin uses its find controller). Tap a hit to link its page.
+    let asked = 0;
+    let timer = null;
+    const search = async () => {
+      const q = find.value.trim();
+      const mine = ++asked;
+      if (!q) {
+        results.hidden = true;
+        grid.hidden = false;
+        note.textContent = 'Tap a page to link to it.';
+        return;
+      }
+      grid.hidden = true;
+      results.hidden = false;
+      note.textContent = 'Searching…';
+      results.replaceChildren();
+      let r;
+      try { r = await this.rpc.call('pdf-find', { path: f.path, query: q }); } catch (e) {
+        if (mine === asked && !moved()) note.textContent = `This PDF could not be searched (${e.message}).`;
+        return;
+      }
+      if (mine !== asked || moved()) return;
+      const hits = r?.hits || [];
+      const total = r?.total ?? hits.length;
+      note.textContent = !total ? 'Not found in this PDF. Text in pictures (scans) cannot be searched.'
+        : total > hits.length ? `${total} matches; the first ${hits.length} are listed. Tap one to link its page.`
+          : `${total === 1 ? '1 match' : `${total} matches`}. Tap one to link its page.`;
+      for (const h of hits) {
+        const b = el('button', { type: 'button', className: 'lp-hit' },
+          el('span', { className: 'lp-hit-page', textContent: `Page ${h.page}` }),
+          el('span', { className: 'lp-hit-text' },
+            h.before.trimStart(), el('mark', { textContent: h.match }), h.after.trimEnd()));
+        b.dataset.page = String(h.page);
+        b.setAttribute('aria-label', `Link to page ${h.page}: ${h.before}${h.match}${h.after}`);
+        b.addEventListener('click', () => this._finish(`${f.link}#page=${h.page}`));
+        results.append(el('li', {}, b));
+      }
+    };
+    find.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 300); });
+    find.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); search(); }
+    });
+  }
+
+  /** How wide a page's picture is drawn: as wide as it is shown, in device
+   *  pixels (at most twice the CSS size). */
+  _pageWidth() {
+    const inner = Math.max(200, (this.body.clientWidth || 320) - 24);
+    const gaps = 12 * (this.across - 1);
+    const css = (inner - gaps) / this.across - 12;
+    return Math.min(2000, Math.max(50, Math.round(css * Math.min(window.devicePixelRatio || 1, 2) / 50) * 50));
   }
 
   async _showNote(f) {

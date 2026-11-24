@@ -20,6 +20,7 @@ import { FakeVault } from '/obsidian/tests/fake-vault.mjs';
 import { askAtLaunch } from '/obsidian/src/consent.js';
 import { InlineApp } from '/obsidian/src/inline-app.js';
 import { watchKeyboard } from '/obsidian/src/keyboard.js';
+import { PdfPages } from '/obsidian/src/pdf-pages.js';
 
 const webApp = new InlineApp(await (await fetch('/bundle.json')).json());
 
@@ -46,8 +47,31 @@ async function pdfPage(path, page, width) {
   g.font = '40px sans-serif';
   g.fillText(`${path} p${page}`, 10, 60);
   const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
-  calls.push(['pdf-page', path, page]);
+  calls.push(['pdf-page', path, page, width]);
   return { count: 3, png: await blob.arrayBuffer() };
+}
+
+/** The text of each harness PDF's three pages, as PDF.js gives it. */
+const PDF_TEXT = [
+  [{ str: 'Newton wrote about forces.', hasEOL: false }],
+  [{ str: 'The second law of motion', hasEOL: true }, { str: 'says F = ma, for every force.', hasEOL: false }],
+  [{ str: 'A force on a body changes its motion.', hasEOL: false }],
+];
+/** The plugin's search of a PDF (PdfPages.find), on that text. Obsidian's
+ *  viewer is not loaded here, so its own matching is used. */
+const pdfSearch = new PdfPages({
+  pdfjs: async () => ({
+    getDocument: () => ({ promise: Promise.resolve({
+      numPages: 3,
+      getPage: async (n) => ({ getTextContent: async () => ({ items: PDF_TEXT[n - 1] }) }),
+    }) }),
+  }),
+  read: async (path) => ({ bytes: new ArrayBuffer(4), version: path }),
+  viewer: () => null,
+});
+async function pdfFind(path, query) {
+  calls.push(['pdf-find', path, query]);
+  return pdfSearch.find(path, query);
 }
 
 window.host = {
@@ -111,6 +135,7 @@ window.host = {
       },
       listTags: async () => { calls.push(['tags']); return host.vaultTags; },
       pdfPage,
+      pdfFind,
       openLink: (target, source) => calls.push(['open', target, source]),
       copyLink: async (stroke, source) => { calls.push(['copy', stroke, source]); },
       start: () => { const st = host.starts.get(file.path) ?? null; host.starts.delete(file.path); return st; },
