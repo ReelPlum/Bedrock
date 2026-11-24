@@ -26,6 +26,19 @@ export function noteOfIndex(markdown) {
 
 const escapeText = (s) => s.replace(/([[\]])/g, '\\$1');
 
+/** Recognised text as it goes in the text section: also `#` is escaped
+ *  (`\#`), so a handwritten `#word` is no Obsidian tag and a `#` at the
+ *  start is no heading. Markdown shows it as a plain `#`, and a search for
+ *  `#word` or `word` still finds it. */
+const escapeBody = (s) => escapeText(s).replace(/#/g, '\\#');
+
+/** Was this index note written before `#` in the text was escaped (does
+ *  its text section hold a bare `#`)? Such a note is written again. */
+export function hasBareHash(markdown) {
+  const body = markdown.split('\n## Text\n\n')[1];
+  return body !== undefined && /(^|[^\\])#/.test(body.split('\n')[0]);
+}
+
 /** A tag as Obsidian takes it (letters, digits, `_`, `-`, `/`, not only
  *  digits), as bedrock-core's `clean_tag` stores them. */
 export const isTag = (t) => typeof t === 'string' && /^[\p{L}\p{N}_\-/]+$/u.test(t) && !/^[\d/]+$/.test(t);
@@ -125,7 +138,7 @@ export function indexLayout(notePath, { words, items, links, tags = [] }, { inde
   let body = '';
   for (const p of pieces) {
     if (body) body += ' ';
-    const t = escapeText(p.text);
+    const t = escapeBody(p.text);
     spans.push({ start: head.length + body.length, end: head.length + body.length + t.length, strokes: p.strokes || [] });
     body += t;
   }

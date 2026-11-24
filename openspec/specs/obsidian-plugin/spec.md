@@ -96,7 +96,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Index note contents
 - **GIVEN** a `.bedrock` file
 - **WHEN** it is indexed
-- **THEN** its index note holds the recognised text (Markdown link syntax in handwriting is escaped) and its links, and every word knows the strokes it came from
+- **THEN** its index note holds the recognised text (Markdown link syntax and `#` in handwriting are escaped, so it makes no links, tags or headings) and its links, and every word knows the strokes it came from
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: reads stored and deflated entries from a .bedrock archive -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: a damaged or empty file gives no entries instead of throwing -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: index note holds the handwriting text and the links -->

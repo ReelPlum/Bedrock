@@ -294,8 +294,11 @@ Newton Hooke
 as something other than text, such as `"true"`); a note without tags has
 `tags: [bedrock]`. The text is
 the recognised items in saved order, separated by spaces, with `[` and `]`
-escaped so handwriting never becomes a link; `_Nothing read yet._` when
-there is none. `## Links` is present only when the note has links, and is
+escaped so handwriting never becomes a link, and `#` written `\#` so it
+never becomes a tag or a heading; `_Nothing read yet._` when there is none.
+Sidecars written before `#` was escaped (November 2026) read and open as
+before; the Obsidian plugin writes them again the next time it indexes the
+vault. `## Links` is present only when the note has links, and is
 the list from `links.md`. `## Linked handwritten notes` is present only
 when those links lead to other handwritten notes (`.bedrock`): it links
 each one's index note once (its sidecar, or in Obsidian its note in the

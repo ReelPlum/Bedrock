@@ -8,7 +8,7 @@
 // ZIP), so an index note can be rebuilt from any .bedrock file, including
 // ones written by the web app or edited on another device.
 
-import { LINKED_NOTES_HEADING, indexLayout, indexMarkdown, noteLinkTargets, noteOfIndex, readNoteText, sidecarPath } from '../../web/src/sidecar.js';
+import { LINKED_NOTES_HEADING, hasBareHash, indexLayout, indexMarkdown, noteLinkTargets, noteOfIndex, readNoteText, sidecarPath } from '../../web/src/sidecar.js';
 
 // The Markdown itself is made by a module shared with the web app, which
 // writes the same sidecars when it exports a library.
@@ -202,7 +202,8 @@ export class Indexer {
         const md = await this.vault.cachedRead(idx);
         // Written before linked notes got their own section: write again.
         const older = !md.includes(`\n${LINKED_NOTES_HEADING}\n`) && noteLinkTargets(md.split('\n## Links\n')[1]?.split('\n')).length > 0;
-        if (noteOfIndex(md) === f.path && !older) continue;
+        // Written before a handwritten # was escaped (it made tags): write again.
+        if (noteOfIndex(md) === f.path && !older && !hasBareHash(md)) continue;
       }
       const bytes = await this.vault.readBinary(f);
       if (bytes.byteLength && (await this.update(f.path, bytes))) n++;

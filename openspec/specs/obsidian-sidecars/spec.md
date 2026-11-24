@@ -44,6 +44,20 @@ the same bytes the Bedrock Obsidian plugin writes for that note.
 - **THEN** the sidecar follows the new name, then is deleted
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: a sidecar moves with its note when the note is renamed, and goes when it is deleted -->
 
+### Requirement: A handwritten # SHALL make no tag or heading in a sidecar
+
+#### Scenario: Handwriting with #
+- **GIVEN** a note whose recognised text has `#` in it (`# Forces #physics C#`)
+- **WHEN** its sidecar (index note) is written
+- **THEN** each `#` in the text section is written `\#`, so Obsidian sees no tag and no heading and shows a plain `#`; a search for `physics` or `#physics` still finds it, and a hit on it leads to its ink
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a handwritten # makes no tag or heading in the index note, and search still finds it -->
+
+#### Scenario: Sidecars from before # was escaped
+- **GIVEN** an index note written before `#` was escaped, newer than its note
+- **WHEN** it is opened, searched, and the vault is indexed
+- **THEN** it still opens its note and a hit finds the ink, and it is written again once, with each `#` escaped
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: index notes from before # was escaped: they still open their note, and are rewritten without tags -->
+
 ### Requirement: A sidecar SHALL carry the note's tags and the links of the whole note
 
 #### Scenario: Tags and note links in the sidecar
