@@ -49,9 +49,9 @@ the results.
 No data format changes. The links made are `#page=N`, Obsidian's page links
 already used. `pdf-find` is between the plugin and the canvas it ships with,
 and nothing new is stored. Linking the exact passage (Obsidian's
-`#page=N&selection=…`) is not done: it would put a new kind of link text in
-notes, so it waits for Frederik's go-ahead; `selection` is returned so it
-would be a small change.
+`#page=N&selection=…`) would put a new kind of link text in notes; Frederik
+was asked and chose links to the page (2026-11-24). `selection` is still
+returned, so passage links would be a small change later.
 
 ## Open source used
 
