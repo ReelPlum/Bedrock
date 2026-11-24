@@ -6,6 +6,7 @@ import { Handwriting } from './handwriting.js';
 import { RecognizerView } from './recognizer-view.js';
 import { WordMenu } from './word-menu.js';
 import { NoteInfo } from './note-info.js';
+import { libraryTags } from './tag-suggest.js';
 import { KeepInView } from './keep-in-view.js';
 import { SelectionView } from './selection-view.js';
 import { SwatchPicker } from './swatch-picker.js';
@@ -1345,9 +1346,13 @@ async function main() {
   }
 
   // Tags and links of the whole note (note-info.js).
+  // Its tag box suggests tags in use: the host's (every tag in the
+  // Obsidian vault) or those of the other notes in the library.
+  const tagCache = new Map();
   noteInfo = new NoteInfo($('note-info'), canvas, {
     lockLinks: viewOnly,
     onChange: () => { savedRevision = -1; saveChange(); },
+    knownTags: async () => (host ? host.tags() : store ? libraryTags(store, { except: note.id, cache: tagCache }) : []),
   });
 
   // ----- menu ------------------------------------------------------------------

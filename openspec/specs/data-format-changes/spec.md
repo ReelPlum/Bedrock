@@ -67,6 +67,12 @@ just before the change, kept as a fixture that is never regenerated.
 - **THEN** the index note comes out byte for byte the same, and the old one still names its note
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: index notes from before tags: an untagged note indexes the same, and old index notes still open their note -->
 
+#### Scenario: Index notes from before linked notes
+- **GIVEN** an index note written before index notes linked the index notes of linked handwritten notes
+- **WHEN** it is opened, searched, and the plugin indexes the vault
+- **THEN** it still opens its note at the words found, and is rewritten once with the `## Linked handwritten notes` section
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: index notes from before linked notes: they still open their note, and are rewritten with the section -->
+
 #### Scenario: A newer file is read as far as possible
 - **GIVEN** a note from a newer version with fields this version does not know
 - **WHEN** it is opened and saved

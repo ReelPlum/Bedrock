@@ -415,6 +415,43 @@ test('a note made about a page starts with its link, saved at once; tags and lin
   await ctx.close();
 });
 
+test('the tag box suggests every tag in the vault, from Markdown notes too, and a tap adds one', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => {
+    host.vaultTags = [{ tag: 'physics/forces', count: 3 }, { tag: 'Exam-prep', count: 5 }, { tag: 'reading', count: 1 }];
+  });
+  const frame = await openFile(page, 'Tagged.bedrock');
+  await clickIn(page, frame, '#btn-menu');
+  await clickIn(page, frame, '#menu [data-action="note-info"]');
+  await frame.waitForFunction(() => document.querySelectorAll('#note-info .ni-option').length === 3);
+  const offered = () => frame.evaluate(() => [...document.querySelectorAll('#note-info .ni-option')].map((o) => o.textContent));
+  assert.deepEqual(await offered(), ['#Exam-prep', '#physics/forces', '#reading']);
+  await frame.fill('#note-info .ni-tags + form input', 'forc');
+  assert.deepEqual(await offered(), ['#physics/forces']);
+  await clickIn(page, frame, '#note-info .ni-option[data-tag="physics/forces"]');
+  assert.deepEqual(await frame.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()).tags), ['physics/forces']);
+  assert.ok((await page.evaluate(() => host.calls)).some((c) => c[0] === 'tags'), 'asked the plugin');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a plugin without list-tags suggests nothing and the tag box works as before', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => { host.vaultTags = undefined; });
+  const frame = await openFile(page, 'Old plugin.bedrock');
+  // As an older plugin: the request is unknown.
+  await page.evaluate(() => { delete host.session.handlers['list-tags']; });
+  await clickIn(page, frame, '#btn-menu');
+  await clickIn(page, frame, '#menu [data-action="note-info"]');
+  await frame.waitForTimeout(300);
+  assert.equal(await frame.isVisible('#note-info .ni-suggest'), false);
+  await frame.fill('#note-info .ni-tags + form input', 'physics');
+  await frame.press('#note-info .ni-tags + form input', 'Enter');
+  assert.deepEqual(await frame.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()).tags), ['physics']);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 async function clickIn(page, frame, selector) {
   const b = await frame.evaluate((s) => document.querySelector(s).getBoundingClientRect().toJSON(), selector);
   await page.mouse.click(b.left + b.width / 2, b.top + b.height / 2);

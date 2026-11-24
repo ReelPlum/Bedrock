@@ -122,4 +122,11 @@ const Platform = { isDesktopApp: false, isMobileApp: false, isMobile: false };
 
 const normalizePath = (p) => p.replace(/\/+/g, '/').replace(/^\/|\/$/g, '') || '/';
 
-module.exports = { Platform, Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
+// Obsidian's getAllTags: the cache's #tags and front matter tags, with '#'.
+function getAllTags(cache) {
+  const fm = cache?.frontmatter?.tags;
+  const front = (Array.isArray(fm) ? fm : typeof fm === 'string' ? fm.split(/[,\s]+/) : []).filter(Boolean).map((t) => `#${String(t).replace(/^#/, '')}`);
+  return [...front, ...(cache?.tags || []).map((t) => t.tag)];
+}
+
+module.exports = { getAllTags, Platform, Events, TFile, TFolder, Menu, WorkspaceLeaf, Plugin, Modal, FileView, loadPdfJs, PluginSettingTab, Setting, Notice, normalizePath, requestUrl };
