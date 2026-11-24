@@ -1324,9 +1324,9 @@ test('at start, the plugin asks for the invite code and consent in a window, and
   await page.waitForFunction(() => !document.getElementById('consent-window'));
   assert.equal(await page.evaluate(() => document.querySelectorAll('iframe.bedrock-welcome-frame').length), 0, 'the hidden page is gone too');
   const s = await page.evaluate(() => ({ c: JSON.parse(localStorage.getItem('bedrock.collect.v1')), set: JSON.parse(localStorage.getItem('bedrock.settings.v1')) }));
-  assert.equal(s.c.consent, 3);
+  assert.equal(s.c.consent, 4);
   assert.equal(s.c.code, CODE);
-  assert.equal(s.set.shareWords, true);
+  assert.equal(s.c.mirror, 4, '"Mirror my notes" is turned on by agreeing');
   // A note opened now has no gate over it.
   await openFile(page, 'Gate.bedrock');
   const frame = await frameOf(page, '#frame');
@@ -1337,7 +1337,7 @@ test('at start, the plugin asks for the invite code and consent in a window, and
 });
 
 test('at start, nothing is shown when consent is already given', async () => {
-  const state = { code: CODE, consent: 3, contributor: '5b0f2e4c-8a1d-4c3e-9f6a-2d7b1c0e4a99' };
+  const state = { code: CODE, consent: 4, contributor: '5b0f2e4c-8a1d-4c3e-9f6a-2d7b1c0e4a99' };
   const { page, ctx, errors } = await openHostWithServer(state);
   assert.equal(await page.evaluate(() => host.launch()), 'not-needed');
   assert.equal(await page.evaluate(() => host.windows), 0);
@@ -1430,6 +1430,60 @@ test("PDFs dropped on the settings' drop zone become notes at the vault root tha
   const frame = await openFile(page, 'Forces.bedrock');
   assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 5, 'it opens with its handwriting');
   assert.equal(await frame.evaluate(() => document.getElementById('title').value), 'Forces');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('tags are added to many notes at once from the file menu, with tags in use suggested, and their paper is changed', async () => {
+  const { page, ctx, errors } = await openHost();
+  let frame = await openFile(page, 'Forces.bedrock');
+  await writeWord(frame);
+  await until(page, () => host.vault.files.get('Forces.bedrock').data.byteLength > 0);
+  await page.evaluate(async () => {
+    await host.vault.createBinary('Term 1/Motion.bedrock', host.vault.files.get('Forces.bedrock').data.slice(0));
+    await host.vault.createBinary('Empty.bedrock', new ArrayBuffer(0));
+    host.vaultTags = [{ tag: 'physics/forces', count: 3 }, { tag: 'Exam-prep', count: 5 }];
+    host.showBulkEdit('tags', ['Forces.bedrock', 'Term 1/Motion.bedrock', 'Empty.bedrock']);
+  });
+  await page.waitForFunction(() => document.querySelectorAll('#bulk-edit .bedrock-bulk-option').length === 2);
+  assert.match(await page.textContent('#bulk-edit p'), /all 3 notes/);
+  await page.fill('#bulk-edit input', 'exa');
+  assert.deepEqual(await page.$$eval('#bulk-edit .bedrock-bulk-option', (o) => o.map((x) => x.textContent)), ['#Exam-prep']);
+  await page.click('#bulk-edit .bedrock-bulk-option');
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#bulk-edit input')), true, 'the box keeps focus');
+  await page.fill('#bulk-edit input', '#lab work');
+  await page.click('#bulk-edit button[type="submit"]');
+  await until(page, () => host.bulkEdited);
+  const s = await page.evaluate(() => host.bulkEdited);
+  assert.deepEqual(s.changed, ['Forces.bedrock', 'Term 1/Motion.bedrock']);
+  assert.deepEqual(s.failed, [{ path: 'Empty.bedrock', reason: 'nothing written in it yet' }]);
+  for (const path of s.changed) {
+    const f = await page.evaluate((p) => host.files(p), path);
+    assert.deepEqual(f.tags, ['Exam-prep', 'lab-work'], path);
+    assert.equal(f.strokes, 4, 'the writing is kept');
+    assert.match(f.index, /tags:[\s\S]*Exam-prep[\s\S]*lab-work/, 'the index note lists them, for Obsidian search and the tag pane');
+  }
+  // Again: nothing changes, and the files are left alone.
+  const before = await page.evaluate(() => host.vault.files.get('Forces.bedrock').data.byteLength);
+  await page.evaluate(() => host.showBulkEdit('tags', ['Forces.bedrock']));
+  await page.fill('#bulk-edit input', 'exam-PREP');
+  await page.keyboard.press('Enter');
+  await page.click('#bulk-edit button[type="submit"]');
+  await until(page, () => host.bulkEdited);
+  assert.deepEqual(await page.evaluate(() => host.bulkEdited.unchanged), ['Forces.bedrock']);
+  assert.equal(await page.evaluate(() => host.vault.files.get('Forces.bedrock').data.byteLength), before);
+
+  // Paper.
+  await page.evaluate(() => host.showBulkEdit('paper', ['Forces.bedrock', 'Term 1/Motion.bedrock']));
+  assert.deepEqual(await page.$$eval('#bulk-edit .bedrock-bulk-paper', (b) => b.map((x) => x.textContent)), ['Grid', 'Dots', 'Lines', 'Plain']);
+  await page.click('#bulk-edit .bedrock-bulk-paper[data-paper="lines"]');
+  await until(page, () => host.bulkEdited);
+  assert.deepEqual(await page.evaluate(() => host.bulkEdited.changed), ['Forces.bedrock', 'Term 1/Motion.bedrock']);
+  assert.equal((await page.evaluate(() => host.files('Term 1/Motion.bedrock'))).paper, 'lines');
+  frame = await openFile(page, 'Term 1/Motion.bedrock');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.paper()), 'lines', 'it opens on its new paper');
+  assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 4, 'with its writing');
+  assert.deepEqual(await frame.evaluate(() => JSON.parse(bedrock.canvas.note_info_json()).tags), ['Exam-prep', 'lab-work']);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

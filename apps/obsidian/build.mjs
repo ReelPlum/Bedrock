@@ -42,8 +42,9 @@ const WORKERS = ['src/save-worker.js', 'src/recognizer-worker.js'];
 /** Binary and data files the app fetches, by their path. */
 const FILES = ['pkg/bedrock_web_bg.wasm', 'pkg/bedrock_pdf_bg.wasm', 'dict/en.aff', 'dict/en.dic.gz'];
 /** The plugin's own workers (in apps/obsidian), started in Obsidian's
- *  window, not in a canvas: the PDF reader of the bulk import. */
-const PLUGIN_WORKERS = ['src/pdf-import-worker.js'];
+ *  window, not in a canvas: the PDF reader of the bulk import, and the
+ *  note editor of "Add tags…" and "Change paper…" (bulk-edit.js). */
+const PLUGIN_WORKERS = ['src/pdf-import-worker.js', 'src/note-edit-worker.js'];
 
 
 const inlineScript = (js) => js.replace(/<\/(script)/gi, '<\\/$1');

@@ -23,6 +23,7 @@ import { watchKeyboard } from '/obsidian/src/keyboard.js';
 import { PdfPages } from '/obsidian/src/pdf-pages.js';
 import { BulkImport, PdfReader } from '/obsidian/src/bulk-import.js';
 import { mountPdfDrop } from '/obsidian/src/pdf-drop.js';
+import { BulkEdit, mountPaperForm, mountTagForm } from '/obsidian/src/bulk-edit.js';
 
 const webApp = new InlineApp(await (await fetch('/bundle.json')).json());
 
@@ -229,6 +230,33 @@ host.showPdfImport = () => {
   el.style.cssText = 'position:fixed;left:0;bottom:0;width:400px;height:200px;background:#fff';
   document.body.append(el);
   return mountPdfDrop(el, host.pdfImport);
+};
+/** "Add tags…" / "Change paper…" for the notes at `paths`, as main.js
+ *  builds them: the form in a div, the change made by the real note editor
+ *  in a worker. `host.bulkEdited` is the summary once it is done. */
+host.showBulkEdit = (kind, paths) => {
+  if (!host.bulkEdit) {
+    const editor = new PdfReader({
+      start: async () => {
+        const wasm = await webApp.wasmModule();
+        const w = new Worker(webApp.pluginWorkerUrl('src/note-edit-worker.js'), { type: 'module' });
+        w.postMessage({ wasm });
+        return w;
+      },
+    });
+    host.bulkEdit = new BulkEdit({ vault, edit: (b, c) => editor.convert(b, c), index: (path, bytes) => indexer.update(path, bytes) });
+  }
+  const files = paths.map((p) => vault.files.get(p));
+  document.getElementById('bulk-edit')?.remove();
+  const el = document.createElement('div');
+  el.id = 'bulk-edit';
+  el.style.cssText = 'position:fixed;right:0;top:0;width:400px;background:#fff';
+  document.body.append(el);
+  host.bulkEdited = null;
+  const done = (change) => { el.remove(); host.bulkEdit.run(files, change).then((s) => { host.bulkEdited = s; }); };
+  return kind === 'tags'
+    ? !!mountTagForm(el, { count: files.length, known: async () => host.vaultTags, onSubmit: (tags) => done({ tags }), onCancel: () => el.remove() })
+    : !!mountPaperForm(el, { count: files.length, onSubmit: (paper) => done({ paper }), onCancel: () => el.remove() });
 };
 </script>
 </body>

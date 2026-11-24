@@ -15,6 +15,7 @@ import { packWebApp } from '../build.mjs';
 import { GRAPH_FILTER, copyGraphFilter } from '../src/graph.js';
 import { BulkImport, PdfReader } from '../src/bulk-import.js';
 import { droppedFiles } from '../src/pdf-drop.js';
+import { BulkEdit, menuTitles, notesIn, summary as editSummary, typedTag } from '../src/bulk-edit.js';
 import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } from '../src/report.js';
 
 /** A ZIP like zip.rs writes: each entry deflated if that is smaller. */
@@ -1246,4 +1247,68 @@ test('bulk PDF import: a dropped folder is searched for its files, in its folder
   const s = await job.finished();
   assert.deepEqual(s.imported.map((i) => i.path), ['Physics.bedrock', 'Maths.bedrock', 'Chemistry.bedrock', 'Loose.bedrock']);
   assert.deepEqual(s.failed, [{ name: 'Cover.png', reason: 'not a PDF' }]);
+});
+
+test('bulk edit: the notes picked are the .bedrock files selected and those in a folder and its folders, each once', () => {
+  const file = (path) => ({ path, extension: path.split('.').pop() });
+  const a = file('A.bedrock');
+  const folder = { path: 'Term 1', children: [file('Term 1/B.bedrock'), file('Term 1/B.bedrock.md'), { path: 'Term 1/Week 2', children: [file('Term 1/Week 2/C.bedrock')] }] };
+  assert.deepEqual(notesIn([a, file('Notes.md'), file('Lecture.pdf'), folder, a]).map((f) => f.path), ['A.bedrock', 'Term 1/B.bedrock', 'Term 1/Week 2/C.bedrock']);
+  assert.deepEqual(notesIn([file('Notes.md')]), []);
+  assert.deepEqual(menuTitles(1), { tags: 'Add tags…', paper: 'Change paper…' });
+  assert.deepEqual(menuTitles(3), { tags: 'Add tags to 3 notes…', paper: 'Change paper of 3 notes…' });
+  assert.match(menuTitles(3, true).tags, /notes in this folder/);
+  assert.equal(typedTag('  #Exam prep '), 'Exam-prep');
+  assert.equal(typedTag('physics/forces'), 'physics/forces');
+  assert.equal(typedTag('2024'), null, 'digits only are not a tag, as in Obsidian');
+  assert.equal(typedTag('#'), null);
+  assert.equal(typedTag('lab work!'), 'lab-work', 'other characters are dropped, as bedrock-core does');
+});
+
+test('bulk edit: each note is changed one at a time, saved first if open, indexed, and one that fails is listed while the rest go on', async () => {
+  const vault = new FakeVault();
+  const enc = (t) => new TextEncoder().encode(t).buffer;
+  await vault.createBinary('A.bedrock', enc('note A'));
+  await vault.createBinary('B.bedrock', enc('note B tagged'));
+  await vault.createBinary('Broken.bedrock', enc('broken'));
+  await vault.createBinary('New.bedrock', new ArrayBuffer(0));
+  const log = [];
+  let held = 0;
+  let most = 0;
+  const job = new BulkEdit({
+    vault,
+    edit: async (bytes, change) => {
+      held++;
+      most = Math.max(most, held);
+      await new Promise((r) => setTimeout(r, 2));
+      held--;
+      const t = new TextDecoder().decode(bytes);
+      log.push(['edit', t, change]);
+      if (t === 'broken') throw new Error('note.json is missing or damaged');
+      return t.includes('tagged') ? null : { bedrock: enc(`${t} + ${change.tags.join(',')}`) };
+    },
+    before: async (f) => log.push(['before', f.path]),
+    index: async (path) => log.push(['index', path]),
+    pause: async () => log.push(['pause']),
+  });
+  const files = ['A.bedrock', 'B.bedrock', 'Broken.bedrock', 'New.bedrock'].map((p) => vault.files.get(p));
+  const progress = [];
+  const s = await job.run(files, { tags: ['#exam prep', 'Exam-prep', 'bad tag!', '1'] }, (i, n) => progress.push(`${i}/${n}`));
+  assert.deepEqual(s.tags, ['exam-prep', 'bad-tag'], 'as stored, each once whatever its case; not-tags left out');
+  assert.deepEqual(s.changed, ['A.bedrock']);
+  assert.deepEqual(s.unchanged, ['B.bedrock']);
+  assert.deepEqual(s.failed, [{ path: 'Broken.bedrock', reason: 'note.json is missing or damaged' }, { path: 'New.bedrock', reason: 'nothing written in it yet' }]);
+  assert.equal(new TextDecoder().decode(vault.files.get('A.bedrock').data), 'note A + exam-prep,bad-tag');
+  assert.equal(new TextDecoder().decode(vault.files.get('Broken.bedrock').data), 'broken', 'left alone');
+  assert.equal(most, 1, 'one note at a time');
+  assert.deepEqual(progress, ['1/4', '2/4', '3/4', '4/4']);
+  assert.deepEqual(log.slice(0, 4).map((l) => l[0]), ['before', 'edit', 'index', 'pause'], 'saved first, then changed and indexed, then Obsidian runs');
+  assert.ok(!log.some((l) => l[0] === 'index' && l[1] !== 'A.bedrock'), 'only a changed note is indexed again');
+  assert.match(editSummary(s), /^Tagged #exam-prep, #bad-tag: 1 note changed; 1 note already had them; 2 notes not changed \(Broken\.bedrock: note\.json is missing or damaged; New\.bedrock: nothing written in it yet\)\.$/);
+
+  const p = await job.run(files.slice(0, 1), { paper: 'lines' });
+  assert.deepEqual(log.at(-3)[2], { tags: [], paper: 'lines' });
+  assert.match(editSummary(p), /^Paper set to lines: 1 note changed\.$/);
+  const none = await job.run(files, { paper: 'music' });
+  assert.deepEqual(none.changed.concat(none.unchanged, none.failed), [], 'an unknown paper changes nothing');
 });

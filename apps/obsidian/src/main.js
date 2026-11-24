@@ -16,6 +16,7 @@ import { ErrorLog, pluginWatcher, reportsAddress, sendReport, withPluginSlow } f
 import { GRAPH_FILTER, GRAPH_HOW, copyGraphFilter } from './graph.js';
 import { BulkImport, PdfReader } from './bulk-import.js';
 import { mountPdfDrop, summary as importSummary } from './pdf-drop.js';
+import { BulkEdit, menuTitles, mountPaperForm, mountTagForm, notesIn, summary as editSummary } from './bulk-edit.js';
 import { DEFAULT_INDEX_FOLDER, Indexer, isIndexPath, noteForIndex, noteOfIndex, strokesForIndexPlace } from './index-note.js';
 
 export const VIEW_TYPE = 'bedrock-note';
@@ -43,6 +44,25 @@ class ConsentModal extends Modal {
     this.contentEl.empty?.();
     this.whenClosed();
   }
+}
+
+/** "Add tags…" and "Change paper…" for many notes (bulk-edit.js): the
+ *  form is written into the modal by `mount(el, close)`. */
+class BulkEditModal extends Modal {
+  constructor(app, title, mount) {
+    super(app);
+    this.title = title;
+    this.mount = mount;
+  }
+
+  onOpen() {
+    this.modalEl?.addClass?.('bedrock-bulk-modal');
+    this.titleEl?.setText?.(this.title);
+    this.form = this.mount(this.contentEl, () => this.close());
+    this.form?.input?.focus?.();
+  }
+
+  onClose() { this.contentEl?.empty?.(); }
 }
 
 class ReportModal extends Modal {
@@ -264,7 +284,7 @@ export default class BedrockPlugin extends Plugin {
         new Notice(msg, s.failed.length ? 15000 : 8000);
       },
     });
-    this.register(() => { this.pdfImport.stop(); this.pdfReader?.close(); });
+    this.register(() => { this.pdfImport.stop(); this.pdfReader?.close(); this.noteEditor?.close(); });
     this.kv = {
       get: (key) => this.cameras[key],
       set: async (key, value) => {
@@ -290,6 +310,10 @@ export default class BedrockPlugin extends Plugin {
         .setIcon('pen-tool')
         .onClick(() => this.newNote(file.path)));
     }));
+    // Right-click (desktop) or hold (iPad) one note, several selected
+    // notes, or a folder: add tags to them, or change their paper.
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => this.addBulkEditItems(menu, [file])));
+    this.registerEvent(this.app.workspace.on('files-menu', (menu, files) => this.addBulkEditItems(menu, files)));
     this.addCommand({ id: 'new-note', name: 'New handwritten note', callback: () => this.newNote() });
     this.addCommand({
       id: 'new-linked-note',
@@ -401,6 +425,91 @@ export default class BedrockPlugin extends Plugin {
    *  Resolves to how it went. */
   importPdfs(files) {
     return this.pdfImport.add(files);
+  }
+
+  /** "Add tags…" and "Change paper…" in a file menu, when `files` (the
+   *  files picked, or one folder) hold handwritten notes. */
+  addBulkEditItems(menu, files) {
+    const list = Array.isArray(files) ? files : [files];
+    const notes = notesIn(list);
+    if (!notes.length) return;
+    const folder = list.length === 1 && list[0] instanceof TFolder;
+    const titles = menuTitles(notes.length, folder);
+    menu.addItem((item) => {
+      item.setTitle(titles.tags).setIcon('tags').onClick(() => this.openTagForm(list));
+      item.setSection?.('action');
+    });
+    menu.addItem((item) => {
+      item.setTitle(titles.paper).setIcon('layout-grid').onClick(() => this.openPaperForm(list));
+      item.setSection?.('action');
+    });
+  }
+
+  /** Asks for the tags to add to the notes in `files`, then adds them. */
+  openTagForm(files) {
+    const n = notesIn(files).length;
+    const modal = new BulkEditModal(this.app, n === 1 ? 'Add tags' : `Add tags to ${n} notes`, (el, close) => mountTagForm(el, {
+      count: n,
+      known: async () => vaultTags(this.app, getAllTags),
+      onSubmit: (tags) => { close(); this.editNotes(files, { tags }); },
+      onCancel: close,
+    }));
+    modal.open();
+    return modal;
+  }
+
+  /** Asks for the paper of the notes in `files`, then sets it. */
+  openPaperForm(files) {
+    const n = notesIn(files).length;
+    const modal = new BulkEditModal(this.app, n === 1 ? 'Change paper' : `Change paper of ${n} notes`, (el, close) => mountPaperForm(el, {
+      count: n,
+      onSubmit: (paper) => { close(); this.editNotes(files, { paper }); },
+      onCancel: close,
+    }));
+    modal.open();
+    return modal;
+  }
+
+  /** Adds tags to, or sets the paper of, every note in `files`, one at a
+   *  time. A notice says how it went. Resolves to the summary. */
+  async editNotes(files, change) {
+    this.bulkEdit ||= new BulkEdit({
+      vault: this.app.vault,
+      edit: (bytes, c) => this.editNote(bytes, c),
+      // An open note saves what was drawn last first, and reloads after.
+      before: async (file) => {
+        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+          if (leaf.view?.file === file) await leaf.view.bridge?.send('flush', {}, 3000).catch(() => null);
+        }
+      },
+      index: (path, bytes) => (this.settings.index ? this.indexer.update(path, bytes) : null),
+    });
+    const n = notesIn(files).length;
+    if (n > 20) new Notice(`Changing ${n} notes…`);
+    const s = await this.bulkEdit.run(files, change);
+    for (const f of s.failed) this.errors.record(`Bedrock: a note was not changed (${f.reason})`, null, 'error');
+    new Notice(editSummary(s), s.failed.length ? 15000 : 5000);
+    return s;
+  }
+
+  /** A note's bytes with tags added or its paper set, in a worker
+   *  (src/note-edit-worker.js) with the canvas's WebAssembly; null when
+   *  nothing changes. */
+  editNote(bytes, { tags = [], paper = '' }) {
+    this.noteEditor ||= new PdfReader({
+      start: async () => {
+        const wasm = await this.webApp.wasmModule();
+        if (!wasm) throw new Error('Bedrock is missing from the plugin');
+        const w = new Worker(this.webApp.pluginWorkerUrl('src/note-edit-worker.js'), { type: 'module' });
+        w.postMessage({ wasm });
+        return w;
+      },
+      timeoutMs: 60_000,
+      freshEvery: 200,
+      late: 'it took too long to change',
+      stopped: 'the note could not be read',
+    });
+    return this.noteEditor.convert(bytes, { tags, paper });
   }
 
   /** One PDF to a note's bytes, in a worker (src/pdf-import-worker.js)

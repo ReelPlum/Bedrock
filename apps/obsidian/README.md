@@ -64,6 +64,13 @@ makes the note in that folder.
   menu adds and removes the note's tags (shown in the index note's front
   matter, so Obsidian's tag pane and search find them) and links that belong
   to no handwriting (a vault file or PDF page from the picker, or a website).
+- **Tag many notes, or change their paper, at once.** Right-click (hold on
+  the iPad) a handwritten note, several selected ones, or a folder in the
+  file explorer and choose "Add tags…" or "Change paper…". The tag box
+  suggests the tags already in the vault. Every note gets the tags (keeping
+  its own) or the paper, one note at a time in a worker, without opening
+  them; an open note saves first and reloads. A notice says how many changed
+  and lists any that could not be changed, with the reason.
 - **Link to a word.** Hold a word and choose "Copy a link to here". Pasted
   into any note, the link (`[[Physics.bedrock#^9f2c4e1a7b3d5f60]]`) opens the
   handwriting at that word.

@@ -560,3 +560,44 @@ test('the settings have a place to drop PDFs, which imports them at the vault ro
   assert.match(fake.Notice.shown.at(-1), /2 notes made at the top of the vault; 1 file not imported/, 'a notice says when it is done, with the settings closed too');
   tab.hide();
 });
+
+test('right-clicking (or holding) one note, several selected notes or a folder offers to add tags and change the paper', async () => {
+  const { plugin, vault, app } = await loaded();
+  await vault.createFolder('Physics');
+  const a = await vault.createBinary('Physics/Forces.bedrock', new TextEncoder().encode('A').buffer);
+  const b = await vault.createBinary('Motion.bedrock', new TextEncoder().encode('B').buffer);
+  const md = await vault.create('Notes.md', '# hi');
+  const folder = new fake.TFolder('Physics');
+  folder.children = [a];
+  const items = async (event, files) => {
+    const menu = new fake.Menu();
+    await app.workspace.trigger(event, menu, files, 'file-explorer-context-menu');
+    return menu.items.filter((i) => /tags|paper/i.test(i.title || '')).map((i) => i);
+  };
+  assert.deepEqual((await items('file-menu', a)).map((i) => [i.title, i.icon]), [['Add tags…', 'tags'], ['Change paper…', 'layout-grid']]);
+  assert.deepEqual((await items('files-menu', [a, b, md])).map((i) => i.title), ['Add tags to 2 notes…', 'Change paper of 2 notes…'], 'only the handwritten notes count');
+  assert.deepEqual((await items('file-menu', folder)).map((i) => i.title), ['Add tags to notes in this folder…', 'Change paper of notes in this folder…']);
+  assert.deepEqual(await items('file-menu', md), [], 'a Markdown note is left alone');
+  assert.deepEqual(await items('files-menu', [md]), []);
+
+  // Picking an item asks in a window, then changes every note (the real
+  // editor is a worker with the WebAssembly, host.test.mjs; here a stand-in).
+  const changes = [];
+  plugin.editNote = async (bytes, change) => { changes.push([new TextDecoder().decode(bytes), change]); return { bedrock: new TextEncoder().encode('tagged').buffer }; };
+  fake.Modal.opened.length = 0;
+  fake.Notice.shown.length = 0;
+  const [tagsItem, paperItem] = await items('files-menu', [a, b]);
+  tagsItem.click();
+  const modal = fake.Modal.opened.at(-1);
+  assert.equal(modal.title, 'Add tags to 2 notes');
+  const s = await plugin.editNotes([a, b], { tags: ['exam'] });
+  assert.deepEqual(s.changed, ['Physics/Forces.bedrock', 'Motion.bedrock']);
+  assert.deepEqual(changes.map((c) => c[0]), ['A', 'B']);
+  assert.equal(new TextDecoder().decode(vault.files.get('Motion.bedrock').data), 'tagged');
+  assert.match(fake.Notice.shown.at(-1), /Tagged #exam: 2 notes changed/);
+  paperItem.click();
+  assert.equal(fake.Modal.opened.at(-1).title, 'Change paper of 2 notes');
+  await plugin.editNotes([b], { paper: 'dots' });
+  assert.deepEqual(changes.at(-1)[1], { tags: [], paper: 'dots' });
+  assert.match(fake.Notice.shown.at(-1), /Paper set to dots: 1 note changed/);
+});
