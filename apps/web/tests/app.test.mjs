@@ -219,6 +219,39 @@ test('fingers pan the canvas and do not draw; a resting palm is ignored', async 
   await ctx.close();
 });
 
+test('a palm that lands while the pencil hovers, just after it lifts, or just before it writes does not move the page', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const start = bedrock.canvas.camera();
+    const now = performance.now();
+    // The pencil hovers above the glass and the hand lands: two palm
+    // contacts that would pan and pinch.
+    t.ev('pointermove', 1, 'pen', 300, 300, { pressure: 0, buttons: 0, time: now });
+    t.ev('pointerdown', 30, 'touch', 600, 600, { time: now + 100 });
+    t.ev('pointerdown', 31, 'touch', 660, 620, { time: now + 105 });
+    t.ev('pointermove', 30, 'touch', 540, 560, { time: now + 130 });
+    t.ev('pointermove', 31, 'touch', 720, 680, { time: now + 130 });
+    t.ev('pointerup', 30, 'touch', 540, 560, { time: now + 400 });
+    t.ev('pointerup', 31, 'touch', 720, 680, { time: now + 400 });
+    await t.frame();
+    const hovering = bedrock.canvas.camera();
+    // Much later the palm lands first and drags, then the pen writes.
+    const later = now + 5000;
+    t.ev('pointerdown', 32, 'touch', 600, 600, { time: later });
+    t.ev('pointermove', 32, 'touch', 560, 580, { time: later + 30 });
+    t.ev('pointerdown', 2, 'pen', 200, 200, { time: later + 200 });
+    t.ev('pointermove', 2, 'pen', 300, 200, { time: later + 210 });
+    t.ev('pointerup', 2, 'pen', 300, 200, { time: later + 220 });
+    t.ev('pointerup', 32, 'touch', 560, 580, { time: later + 600 });
+    await t.frame();
+    return { start, hovering, wrote: bedrock.canvas.camera(), strokes: bedrock.canvas.stroke_count() };
+  });
+  assert.deepEqual(r.hovering, r.start, 'a palm under the hovering pencil did not move the page');
+  assert.deepEqual(r.wrote, r.start, 'the palm that landed first was undone when the pen wrote');
+  assert.equal(r.strokes, 1, 'the pen drew');
+  await ctx.close();
+});
+
 test('two-finger double tap undoes and three-finger double tap redoes; single taps do nothing', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {
@@ -1877,7 +1910,9 @@ test('a lassoed paragraph becomes one link but stays separate words; "Not a word
     bedrock.wordMenu.open(d);
     out.doodleMenu = [$('wm-word').textContent, $('wm-kind').textContent, $('wm-drawing').hidden];
     bedrock.wordMenu.close();
-    // One-finger double tap: eraser, then back to the lasso.
+    // One-finger double tap: eraser, then back to the lasso. A finger right
+    // after the pen is taken for the palm, so first let the pen rest.
+    await new Promise((res) => setTimeout(res, 600));
     const tap = async () => {
       t.ev('pointerdown', 9, 'touch', 700, 600);
       t.ev('pointerup', 9, 'touch', 700, 600);
