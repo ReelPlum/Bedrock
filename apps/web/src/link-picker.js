@@ -23,6 +23,12 @@ import { readZip, text } from './zip-read.js';
 
 /** The most pages side by side when a PDF is zoomed out. */
 const MAX_ACROSS = 4;
+/** How many page pictures are asked of the host at once. */
+const DRAWING_AT_ONCE = 2;
+/** How wide (CSS px) a page's picture is beside its matches. */
+const THUMB_CSS = 96;
+/** How long scrolling must slow down before the pages in sight are drawn. */
+const SETTLE_MS = 120;
 
 const kindOf = (path) => {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
@@ -205,6 +211,7 @@ export class LinkPicker {
     const r = this.resolve;
     this.resolve = null;
     this.el.hidden = true;
+    this.body.onscroll = null;
     this._dropUrls();
     this.observer?.disconnect();
     r?.(value);
@@ -217,6 +224,7 @@ export class LinkPicker {
 
   _showTree(empty = false) {
     this.el.classList.remove('lp-wide');
+    this.body.onscroll = null;
     this._dropUrls();
     this.observer?.disconnect();
     this.back.hidden = true;
@@ -279,6 +287,7 @@ export class LinkPicker {
   /** A view of one file: "Link the whole file" and what is inside. */
   _openFile(f, wholeLabel) {
     this.el.classList.remove('lp-wide');
+    this.body.onscroll = null;
     this._dropUrls();
     this.observer?.disconnect();
     this.back.hidden = false;
@@ -333,16 +342,68 @@ export class LinkPicker {
     const results = el('ul', { className: 'lp-hits', hidden: true });
     inside.replaceChildren(bar, note, results, grid);
 
-    // Pages are drawn as they scroll into sight, as wide as they are shown.
-    const show = (b) => {
-      const width = this._pageWidth();
-      if (Number(b.dataset.width) >= width) return;
-      b.dataset.width = String(width);
-      page(Number(b.dataset.page), width).then((p) => { b.querySelector('img').src = p.url; }).catch(() => { delete b.dataset.width; });
+    // Only the pages in sight are drawn, two at a time, the top one first.
+    // A page that scrolls out of sight before its turn is skipped, so fast
+    // scrolling does not queue every page passed on the way.
+    const thumbWidth = () => Math.round(THUMB_CSS * Math.min(window.devicePixelRatio || 1, 2) / 50) * 50;
+    const wantOf = (b) => (b.classList.contains('lp-hit-thumb') ? thumbWidth() : this._pageWidth());
+    const inSight = new Set();
+    let drawing = 0;
+    // While the pages fly by (faster than a screen and a half a second),
+    // nothing new is asked for; once the scrolling slows, the pages then in
+    // sight are drawn.
+    let lastScroll = { at: 0, top: 0 };
+    let flying = false;
+    let settle = null;
+    this.body.onscroll = () => {
+      const now = performance.now();
+      const top = this.body.scrollTop;
+      const speed = Math.abs(top - lastScroll.top) / Math.max(1, now - lastScroll.at);
+      lastScroll = { at: now, top };
+      flying = speed > (this.body.clientHeight * 1.5) / 1000;
+      clearTimeout(settle);
+      settle = setTimeout(() => { flying = false; pump(); }, SETTLE_MS);
+    };
+    const pump = () => {
+      while (drawing < DRAWING_AT_ONCE && !flying) {
+        let next = null;
+        let nextTop = Infinity;
+        for (const b of inSight) {
+          if (!b.isConnected || b.offsetParent === null) { inSight.delete(b); continue; }
+          if (b.dataset.drawing || Number(b.dataset.width || 0) >= wantOf(b)) continue;
+          const top = b.getBoundingClientRect().top;
+          if (top < nextTop) { next = b; nextTop = top; }
+        }
+        if (!next) return;
+        const b = next;
+        const width = wantOf(b);
+        b.dataset.drawing = 'true';
+        drawing++;
+        page(Number(b.dataset.page), width)
+          .then((p) => {
+            if (Number(b.dataset.width || 0) < width) { b.querySelector('img').src = p.url; b.dataset.width = String(width); }
+          })
+          .catch(() => {})
+          .finally(() => { delete b.dataset.drawing; drawing--; pump(); });
+      }
     };
     this.observer = new IntersectionObserver((entries) => {
-      for (const e of entries) if (e.isIntersecting) show(e.target);
-    }, { root: this.body, rootMargin: '400px' });
+      for (const e of entries) {
+        if (e.isIntersecting) inSight.add(e.target); else inSight.delete(e.target);
+      }
+      pump();
+    }, { root: this.body, rootMargin: '150px 0px' });
+    const lazy = (b) => { b.classList.add('lp-lazy'); this.observer.observe(b); };
+    // Every page keeps the first page's shape while it is not drawn, so the
+    // scroll bar and the pages' places are right from the start.
+    const shape = await new Promise((resolve) => {
+      const probe = new Image();
+      probe.onload = () => resolve(probe.naturalWidth && probe.naturalHeight ? `${probe.naturalWidth} / ${probe.naturalHeight}` : '1 / 1.3');
+      probe.onerror = () => resolve('1 / 1.3');
+      probe.src = first.url;
+    });
+    if (moved()) return;
+    inside.style.setProperty('--lp-page-shape', shape);
     for (let n = 1; n <= first.count; n++) {
       const img = el('img', { alt: '' });
       const b = el('button', { type: 'button', className: 'lp-page' }, img, el('span', { textContent: `Page ${n}` }));
@@ -351,9 +412,8 @@ export class LinkPicker {
       b.addEventListener('click', () => this._finish(`${f.link}#page=${n}`));
       grid.append(b);
       if (n === 1) { img.src = first.url; b.dataset.width = String(this._pageWidth()); }
-      this.observer.observe(b);
+      lazy(b);
     }
-
     // Zoom: 4, 3, 2 or 1 pages across, with − and +, a pinch, or a
     // pinch on a trackpad (ctrl + wheel). The page at the top stays there.
     const setAcross = (cols) => {
@@ -371,11 +431,7 @@ export class LinkPicker {
       zoomOut.disabled = cols === MAX_ACROSS;
       if (top) this.body.scrollTop = top.offsetTop + into * top.offsetHeight - bar.offsetHeight;
       // Sharper pictures for pages now shown bigger.
-      for (const b of grid.children) {
-        const r = b.getBoundingClientRect();
-        const view = this.body.getBoundingClientRect();
-        if (r.bottom > view.top - 400 && r.top < view.bottom + 400) show(b);
-      }
+      pump();
     };
     zoomIn.addEventListener('click', () => setAcross(this.across - 1));
     zoomOut.addEventListener('click', () => setAcross(this.across + 1));
@@ -428,18 +484,37 @@ export class LinkPicker {
       note.textContent = !total ? 'Not found in this PDF. Text in pictures (scans) cannot be searched.'
         : total > hits.length ? `${total} matches; the first ${hits.length} are listed. Tap one to link its page.`
           : `${total === 1 ? '1 match' : `${total} matches`}. Tap one to link its page.`;
+      // The matches page by page, each page with its picture.
+      const byPage = new Map();
       for (const h of hits) {
-        const b = el('button', { type: 'button', className: 'lp-hit' },
-          el('span', { className: 'lp-hit-page', textContent: `Page ${h.page}` }),
-          el('span', { className: 'lp-hit-text' },
-            h.before.trimStart(), el('mark', { textContent: h.match }), h.after.trimEnd()));
-        b.dataset.page = String(h.page);
-        b.setAttribute('aria-label', `Link to page ${h.page}: ${h.before}${h.match}${h.after}`);
-        b.addEventListener('click', () => this._finish(`${f.link}#page=${h.page}`));
-        results.append(el('li', {}, b));
+        if (!byPage.has(h.page)) byPage.set(h.page, []);
+        byPage.get(h.page).push(h);
+      }
+      for (const [n, list] of byPage) {
+        const thumb = el('button', { type: 'button', className: 'lp-hit-thumb' }, el('img', { alt: '' }));
+        thumb.dataset.page = String(n);
+        thumb.setAttribute('aria-label', `Link to page ${n}`);
+        thumb.addEventListener('click', () => this._finish(`${f.link}#page=${n}`));
+        const texts = el('div', { className: 'lp-hit-texts' },
+          el('span', { className: 'lp-hit-page', textContent: `Page ${n}${list.length > 1 ? ` · ${list.length} matches` : ''}` }));
+        for (const h of list) {
+          const b = el('button', { type: 'button', className: 'lp-hit' },
+            el('span', { className: 'lp-hit-text' },
+              h.before.trimStart(), el('mark', { textContent: h.match }), h.after.trimEnd()));
+          b.dataset.page = String(n);
+          b.setAttribute('aria-label', `Link to page ${n}: ${h.before}${h.match}${h.after}`);
+          b.addEventListener('click', () => this._finish(`${f.link}#page=${n}`));
+          texts.append(b);
+        }
+        const row = el('li', { className: 'lp-hit-row' }, thumb, texts);
+        row.dataset.page = String(n);
+        results.append(row);
+        lazy(thumb);
       }
     };
-    find.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 300); });
+    find.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 200); });
+    // The plugin starts reading the text now, so the first search is quick.
+    this.rpc.call('pdf-find', { path: f.path, query: '' }).catch(() => {});
     find.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); search(); }
     });

@@ -17,15 +17,54 @@ export class PdfPages {
     this.open = null; // { path, version, pdf: Promise }
   }
 
-  async _pdf(path) {
+  /** The open PDF (`this.open`), opened again only when the file changed.
+   *  `read` may hand the bytes as a function, so a page asked for of the
+   *  open PDF does not read the whole file again. */
+  async _doc(path) {
     const { bytes, version } = await this.read(path);
-    if (this.open?.path === path && this.open.version === version) return this.open.pdf;
+    if (this.open?.path === path && this.open.version === version) return this.open;
     this.close();
     const lib = await this.pdfjs();
-    const pdf = lib.getDocument({ data: new Uint8Array(bytes) }).promise;
-    this.open = { path, version, pdf };
-    pdf.catch(() => { if (this.open?.pdf === pdf) this.open = null; });
-    return pdf;
+    const data = typeof bytes === 'function' ? await bytes() : bytes;
+    const pdf = lib.getDocument({ data: new Uint8Array(data) }).promise;
+    const open = { path, version, pdf, pages: null, finder: null, searching: Promise.resolve(), last: null };
+    this.open = open;
+    pdf.catch(() => { if (this.open === open) this.open = null; });
+    return open;
+  }
+
+  async _pdf(path) {
+    return (await this._doc(path)).pdf;
+  }
+
+  /** Start reading the PDF's text for search, once per opened file, so
+   *  searches after the first only match (milliseconds). */
+  async prepare(path) {
+    const open = await this._doc(path);
+    const pdf = await open.pdf;
+    if (!open.pages) {
+      // Each page's text as PDF.js's find controller joins it: its items,
+      // with a line break after each one that ends a line; and folded once.
+      open.pages = (async () => {
+        const pages = [];
+        for (let n = 1; n <= pdf.numPages; n++) {
+          let items = [];
+          try {
+            const page = await pdf.getPage(n);
+            items = (await page.getTextContent({ disableNormalization: true })).items || [];
+          } catch { /* a page without text */ }
+          const p = pageText(items);
+          p.fold = folded(p.text);
+          pages.push(p);
+        }
+        return pages;
+      })();
+      const viewer = this.viewer?.();
+      if (viewer?.PDFFindController && viewer.EventBus) {
+        try { open.finder = viewerFinder(viewer, pdf); } catch { open.finder = null; }
+      }
+    }
+    return open;
   }
 
   /** `{ count, png }`: how many pages, and page `n` drawn `width` px wide. */
@@ -59,47 +98,31 @@ export class PdfPages {
    *  line ends forgiven. Before Obsidian has loaded its viewer, the same
    *  rules are applied here (`findInText`). */
   async find(path, query, limit = 100) {
-    const pdf = await this._pdf(path);
+    const open = await this.prepare(path);
+    const pdf = await open.pdf;
     const count = pdf.numPages;
     const q = String(query ?? '').trim();
+    // An empty search only starts reading the text (the picker asks as a
+    // PDF opens).
     if (!q) return { count, total: 0, hits: [] };
-    // Each page's text as PDF.js's find controller joins it: its items,
-    // with a line break after each one that ends a line.
-    const pages = [];
-    for (let n = 1; n <= count; n++) {
-      let items = [];
-      try {
-        const page = await pdf.getPage(n);
-        items = (await page.getTextContent({ disableNormalization: true })).items || [];
-      } catch { /* a page without text */ }
-      pages.push(pageText(items));
-    }
-    const viewer = this.viewer?.();
-    let found = null;
-    if (viewer?.PDFFindController && viewer.EventBus) {
-      try {
-        found = (await findWithViewer(viewer, pdf, q))?.map((m, i) => m.map((hit) => fromItemsOnly(pages[i], hit)));
-      } catch { found = null; }
-    }
-    found ||= pages.map((p) => findInText(p.text, q));
-    const hits = [];
-    let total = 0;
-    found.forEach((matches, i) => {
-      for (const [at, length] of matches || []) {
-        total++;
-        if (hits.length >= limit) continue;
-        const { text, starts } = pages[i];
-        hits.push({
-          page: i + 1,
-          // Up to about 40 letters before and 60 after, in whole words.
-          before: at > 40 ? `…${oneLine(text.slice(at - 40, at)).replace(/^\S*\s/, '')}` : oneLine(text.slice(0, at)),
-          match: oneLine(text.slice(at, at + length)),
-          after: text.length > at + length + 60 ? `${oneLine(text.slice(at + length, at + length + 60)).replace(/\s\S*$/, '')}…` : oneLine(text.slice(at + length)),
-          selection: selectionOf(starts, pages[i].items, at, at + length),
-        });
+    // One search at a time per PDF; the same search again is answered from
+    // the last one.
+    const run = open.searching.then(async () => {
+      if (open.last?.q === q && open.last.limit === limit) return open.last.result;
+      const pages = await open.pages;
+      let found = null;
+      if (open.finder) {
+        try {
+          found = (await open.finder.find(q))?.map((m, i) => m.map((hit) => fromItemsOnly(pages[i], hit)));
+        } catch { found = null; }
       }
+      found ||= pages.map((p) => findInText(p.text, q, p.fold));
+      const result = { count, ...hitsOf(pages, found, limit) };
+      open.last = { q, limit, result };
+      return result;
     });
-    return { count, total, hits };
+    open.searching = run.catch(() => {});
+    return run;
   }
 
   close() {
@@ -169,10 +192,10 @@ function folded(text) {
 /** `[[at, length], …]`: where `query` is in `text`, matched the way the
  *  search bar of Obsidian's PDF viewer matches (see `folded`). Used before
  *  Obsidian has loaded its PDF viewer, whose find controller does this. */
-export function findInText(text, query) {
+export function findInText(text, query, fold = folded(text)) {
   const q = folded(query).out.trim();
   if (!q) return [];
-  const { out, at } = folded(text);
+  const { out, at } = fold;
   const hits = [];
   for (let k = out.indexOf(q); k !== -1; k = out.indexOf(q, k + q.length)) {
     const start = at[k];
@@ -181,46 +204,62 @@ export function findInText(text, query) {
   return hits;
 }
 
-/** The matches per page that PDF.js's find controller (the one behind
- *  Obsidian's PDF search bar) finds for `query` in `pdf`, as
- *  `[[[at, length], …], …]`, or null if it could not be used. */
-export async function findWithViewer(viewer, pdf, query, timeoutMs = 30000) {
+/** PDF.js's find controller (the one behind Obsidian's PDF search bar),
+ *  kept for one open PDF: it reads the text once and then only matches.
+ *  `find(query)` resolves to `[[[at, length], …], …]` per page (in the
+ *  page's items joined with nothing between them: `fromItemsOnly`), or
+ *  null if it did not answer. */
+export function viewerFinder(viewer, pdf, timeoutMs = 30000) {
   const count = pdf.numPages;
   const eventBus = new viewer.EventBus();
-  // The controller asks the viewer's link service which page is open, and
-  // turns it to the first match; there is no viewer here.
   const linkService = { page: 1, pagesCount: count, rotation: 0, goToPage() {}, goToDestination() {} };
   const fc = new viewer.PDFFindController({ linkService, eventBus, updateMatchesCountOnProgress: false });
   fc.setDocument(pdf);
-  const ready = () => {
-    const m = fc.pageMatches;
-    if (!m) return false;
-    for (let i = 0; i < count; i++) if (!m[i]) return false;
-    return true;
+  const state = (query) => ({ source: null, type: 'again', query, phraseSearch: true, caseSensitive: false, entireWord: false, highlightAll: false, findPrevious: false, matchDiacritics: false });
+  // An empty search starts its reading of the text.
+  eventBus.dispatch('find', state(''));
+  return {
+    find(query) {
+      return new Promise((resolve) => {
+        let timer = null;
+        const done = (ok) => {
+          eventBus.off('updatefindmatchescount', onCount);
+          clearTimeout(timer);
+          if (!ok) return resolve(null);
+          const lengths = fc.pageMatchesLength || [];
+          resolve(Array.from({ length: count }, (_, i) => (fc.pageMatches[i] || []).map((at, k) => [at, lengths[i]?.[k] ?? query.length])));
+        };
+        // Told once every page has been matched.
+        const onCount = () => done(true);
+        eventBus.on('updatefindmatchescount', onCount);
+        timer = setTimeout(() => done(false), timeoutMs);
+        eventBus.dispatch('find', state(query));
+      });
+    },
   };
-  const done = new Promise((resolve) => {
-    const started = Date.now();
-    const check = () => {
-      if (ready()) resolve(true);
-      else if (Date.now() - started > timeoutMs) resolve(false);
-      else setTimeout(check, 15);
-    };
-    check();
+}
+
+/** `{ total, hits }` of the matches per page (`[[at, length], …]` in each
+ *  page's `text`), at most `limit` hits in page order. */
+function hitsOf(pages, found, limit) {
+  const hits = [];
+  let total = 0;
+  found.forEach((matches, i) => {
+    for (const [at, length] of matches || []) {
+      total++;
+      if (hits.length >= limit) continue;
+      const { text, starts } = pages[i];
+      hits.push({
+        page: i + 1,
+        // Up to about 40 letters before and 60 after, in whole words.
+        before: at > 40 ? `…${oneLine(text.slice(at - 40, at)).replace(/^\S*\s/, '')}` : oneLine(text.slice(0, at)),
+        match: oneLine(text.slice(at, at + length)),
+        after: text.length > at + length + 60 ? `${oneLine(text.slice(at + length, at + length + 60)).replace(/\s\S*$/, '')}…` : oneLine(text.slice(at + length)),
+        selection: selectionOf(starts, pages[i].items, at, at + length),
+      });
+    }
   });
-  eventBus.dispatch('find', {
-    source: null,
-    type: '',
-    query,
-    phraseSearch: true,
-    caseSensitive: false,
-    entireWord: false,
-    highlightAll: false,
-    findPrevious: false,
-    matchDiacritics: false,
-  });
-  if (!(await done)) return null;
-  const lengths = fc.pageMatchesLength || [];
-  return Array.from({ length: count }, (_, i) => fc.pageMatches[i].map((at, k) => [at, lengths[i]?.[k] ?? query.length]));
+  return { total, hits };
 }
 
 /** A match found by PDF.js's find controller, `[at, length]` in the page's

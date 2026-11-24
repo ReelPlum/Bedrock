@@ -246,7 +246,7 @@ export default class BedrockPlugin extends Plugin {
       read: async (path) => {
         const f = this.app.vault.getAbstractFileByPath(path);
         if (!(f instanceof TFile)) throw new Error('No such file.');
-        return { bytes: await this.app.vault.readBinary(f), version: f.stat.mtime };
+        return { bytes: () => this.app.vault.readBinary(f), version: f.stat.mtime };
       },
     });
     this.register(() => this.pdfPages.close());

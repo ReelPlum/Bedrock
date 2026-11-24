@@ -394,14 +394,19 @@ svg .dots { stroke-width: 3.2; stroke-linecap: round; }
 .lp-zoom button:disabled { color: var(--muted); opacity: 0.5; }
 .lp-across { min-width: 62px; text-align: center; font-size: 12px; color: var(--muted); }
 .lp-hits { list-style: none; margin: 0; padding: 0; }
-.lp-hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 10px 8px; border-radius: 9px; font-size: 14px; }
+.lp-hit-row { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--chrome-border); }
+.lp-hit-row:last-child { border-bottom: 0; }
+.lp-hit-thumb { flex: none; width: 96px; padding: 0; border-radius: 4px; }
+.lp-hit-thumb img { display: block; width: 100%; aspect-ratio: var(--lp-page-shape, 1 / 1.3); object-fit: contain; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
+.lp-hit-texts { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lp-hit { display: block; width: 100%; text-align: left; padding: 6px 8px; border-radius: 9px; font-size: 14px; }
 .lp-hit:active, .lp-hit:hover { background: var(--hover); }
-.lp-hit-page { font-size: 12px; color: var(--muted); }
+.lp-hit-page { font-size: 12px; color: var(--muted); padding: 2px 8px 0; }
 .lp-hit-text { color: var(--ink); }
 .lp-hit mark { background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .lp-page { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 9px; font-size: 12px; color: var(--muted); }
 .lp-page { min-width: 0; }
-.lp-page img { width: 100%; min-height: 120px; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
+.lp-page img { width: 100%; aspect-ratio: var(--lp-page-shape, 1 / 1.3); object-fit: contain; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
 .lp-paper { position: relative; margin: 0 auto; background: #fff; border: 1px solid var(--chrome-border); border-radius: 4px; }
 .lp-paper img { position: absolute; inset: 0; width: 100%; height: 100%; }
 .lp-word { position: absolute; border-radius: 6px; border: 1.5px solid color-mix(in srgb, var(--paper-accent) 60%, transparent); background: color-mix(in srgb, var(--paper-accent) 10%, transparent); }
