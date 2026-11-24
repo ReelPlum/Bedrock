@@ -940,3 +940,25 @@ test('every tag in the vault is offered for the tag box: Markdown notes and inde
   assert.deepEqual(await session.handlers['list-tags'](), [{ tag: 'x', count: 1 }]);
   assert.deepEqual(await createSession({ vault: new FakeVault(), file: () => null, kv: new Map() }).handlers['list-tags'](), []);
 });
+
+test("a PDF's text is read once for search; later searches only match", async () => {
+  const { PdfPages } = await import('../src/pdf-pages.js');
+  const read = [];
+  const texts = ['Newton wrote about forces.', 'The second law of motion.', 'A force changes motion.'];
+  let bytesRead = 0;
+  const pages = new PdfPages({
+    pdfjs: async () => ({ getDocument: () => ({ promise: Promise.resolve({
+      numPages: 3,
+      getPage: async (n) => ({ getTextContent: async () => { read.push(n); return { items: [{ str: texts[n - 1] }] }; } }),
+    }) }) }),
+    // The bytes only when the PDF is opened, not for every request.
+    read: async () => ({ version: 1, bytes: async () => { bytesRead++; return new ArrayBuffer(4); } }),
+    viewer: () => null,
+  });
+  assert.deepEqual(await pages.find('P.pdf', ''), { count: 3, total: 0, hits: [] });
+  assert.deepEqual((await pages.find('P.pdf', 'force')).hits.map((h) => h.page), [1, 3]);
+  assert.deepEqual((await pages.find('P.pdf', 'motion')).hits.map((h) => h.page), [2, 3]);
+  assert.equal((await pages.find('P.pdf', 'motion')).total, 2);
+  assert.deepEqual(read, [1, 2, 3], 'each page read once');
+  assert.equal(bytesRead, 1);
+});

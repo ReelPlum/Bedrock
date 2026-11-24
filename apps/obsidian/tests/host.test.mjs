@@ -571,6 +571,11 @@ test('the link picker searches the text of an open PDF and links the page of a m
     { page: '3', text: 'A force on a body changes its motion.', mark: 'force' },
   ]);
   assert.equal(await frame.evaluate(() => document.querySelector('#link-picker .lp-pages').hidden), true, 'the matches stand in for the pages');
+  // Frederik: "on the search view I want to see the pages where it found the
+  // matching text". Each page with matches shows its picture beside them.
+  assert.deepEqual(await frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-hit-row')].map((r) => [r.dataset.page, r.querySelector('.lp-hit-page').textContent])),
+    [['1', 'Page 1'], ['2', 'Page 2'], ['3', 'Page 3']]);
+  await frame.waitForFunction(() => [...document.querySelectorAll('#link-picker .lp-hit-thumb img')].every((i) => i.complete && i.naturalWidth > 0));
   assert.match(await frame.textContent('#link-picker .lp-inside > .lp-note'), /^3 matches/);
   // Words over a line break are found too.
   await frame.fill('#link-picker .lp-find', 'law of motion says');
@@ -588,7 +593,8 @@ test('the link picker searches the text of an open PDF and links the page of a m
   await frame.fill('#link-picker .lp-find', '');
   await frame.waitForFunction(() => !document.querySelector('#link-picker .lp-pages').hidden);
   const asked = await page.evaluate(() => host.calls.filter((c) => c[0] === 'pdf-find').map((c) => [c[1], c[2]]));
-  assert.deepEqual(asked, [['Papers/Paper.pdf', 'FORCE'], ['Papers/Paper.pdf', 'law of motion says'], ['Papers/Paper.pdf', 'quantum']]);
+  assert.deepEqual(asked[0], ['Papers/Paper.pdf', ''], 'the plugin starts reading the text as the PDF opens');
+  assert.deepEqual(asked.filter((a) => a[1]), [['Papers/Paper.pdf', 'FORCE'], ['Papers/Paper.pdf', 'law of motion says'], ['Papers/Paper.pdf', 'quantum']]);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -652,6 +658,51 @@ test('an open PDF in the link picker zooms from 3 pages across to 2 and 1 and ba
   await ctx.close();
 });
 
+// Frederik: "RN it loads everything from the top to bottom when I scroll
+// fast. It should somehow only load the images for the pages visible at the
+// moment supporting fast scrolling."
+test('only the pages in sight are drawn: a fast scroll skips the pages passed on the way', async () => {
+  const { page, ctx, errors } = await openHost();
+  await page.evaluate(() => { host.vault.createBinary('Papers/Long.pdf', new ArrayBuffer(4)); host.pdfDrawMs = 40; });
+  const frame = await openFile(page, 'Physics.bedrock');
+  await writeWord(frame);
+  await openPicker(page, frame);
+  await frame.click('#link-picker .lp-folder[data-path="Papers"]');
+  await frame.click('#link-picker .lp-file[data-path="Papers/Long.pdf"]');
+  await frame.waitForSelector('#link-picker .lp-page[data-page="80"]');
+  /** Pages in sight now, and pages drawn so far. */
+  const state = () => frame.evaluate(() => {
+    const body = document.querySelector('#link-picker .lp-body').getBoundingClientRect();
+    const seen = [...document.querySelectorAll('#link-picker .lp-page')].filter((b) => {
+      const r = b.getBoundingClientRect();
+      return r.bottom > body.top && r.top < body.bottom;
+    }).map((b) => Number(b.dataset.page));
+    const drawn = [...document.querySelectorAll('#link-picker .lp-page')].filter((b) => b.dataset.width).map((b) => Number(b.dataset.page));
+    return { seen, drawn };
+  });
+  await frame.waitForFunction(() => document.querySelector('#link-picker .lp-page[data-page="2"]').dataset.width);
+  // Pages not drawn yet already have their place (the first page's shape).
+  const heights = await frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-page img')].slice(0, 30).map((i) => Math.round(i.getBoundingClientRect().height)));
+  assert.equal(new Set(heights).size, 1, `every page as tall as the first: ${heights}`);
+  // A fling to the end: every page goes by, a frame at a time.
+  await frame.evaluate(async () => {
+    const body = document.querySelector('#link-picker .lp-body');
+    for (let i = 1; i <= 60; i++) {
+      body.scrollTop = (body.scrollHeight * i) / 60;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+  });
+  const end = await state();
+  assert.ok(end.seen.includes(80));
+  await until(frame, (pages) => pages.every((n) => document.querySelector(`#link-picker .lp-page[data-page="${n}"]`).dataset.width), end.seen);
+  const asked = await page.evaluate(() => [...new Set(host.calls.filter((c) => c[0] === 'pdf-page' && c[1] === 'Papers/Long.pdf').map((c) => c[2]))]);
+  assert.ok(asked.length <= 30, `${asked.length} of 80 pages drawn: ${asked.sort((a, b) => a - b)}`);
+  assert.ok(!asked.includes(45), 'a page only flown past is not drawn');
+  assert.ok((await page.evaluate(() => host.pdfDrawing)) <= 2, 'at most two pages asked for at once');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // The plugin's search is PDF.js's find controller, the one behind the search
 // bar of Obsidian's PDF viewer (Obsidian's `window.pdfjsViewer`), here the
 // same controller from pdfjs-dist on a real PDF; before Obsidian loads its
@@ -690,7 +741,7 @@ test("the plugin searches a real PDF with the find controller of Obsidian's PDF 
     return out;
   });
   const { viewer, own } = r;
-  assert.equal(viewer.controllers, 4, "the viewer's find controller did the search");
+  assert.equal(viewer.controllers, 1, "the viewer's find controller did the search, one kept for the open PDF");
   assert.equal(own.controllers, 0);
   // Accents are optional: "cafe" finds "Café" and "cafe".
   assert.deepEqual(viewer.cafe.hits.map((h) => [h.page, h.match, h.selection]), [[2, 'Café', [1, 13, 1, 17]], [2, 'cafe', [1, 22, 1, 26]]]);

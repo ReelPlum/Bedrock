@@ -35,20 +35,33 @@ let file = null;
 let keyboard = null;
 
 /** A PDF's page as the plugin draws it (PdfPages, with Obsidian's PDF.js):
- *  here every PDF has three pages, each a picture saying its number. */
+ *  here every PDF has three pages (80 if its name has "Long"), each a
+ *  picture saying its number. Drawing takes `host.pdfDrawMs`, one page at a
+ *  time as in the plugin; `host.pdfDrawing` counts how many were asked for
+ *  at once, at most. */
+let drawingNow = 0;
+let drawQueue = Promise.resolve();
 async function pdfPage(path, page, width) {
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = Math.round(width * 1.3);
-  const g = c.getContext('2d');
-  g.fillStyle = '#fff';
-  g.fillRect(0, 0, c.width, c.height);
-  g.fillStyle = '#000';
-  g.font = '40px sans-serif';
-  g.fillText(`${path} p${page}`, 10, 60);
-  const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+  drawingNow++;
+  window.host.pdfDrawing = Math.max(window.host.pdfDrawing || 0, drawingNow);
+  const draw = drawQueue.then(async () => {
+    if (window.host.pdfDrawMs) await new Promise((r) => setTimeout(r, window.host.pdfDrawMs));
+    const c = document.createElement('canvas');
+    c.width = width;
+    c.height = Math.round(width * 1.3);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#000';
+    g.font = '40px sans-serif';
+    g.fillText(`${path} p${page}`, 10, 60);
+    return new Promise((r) => c.toBlob(r, 'image/png'));
+  });
+  drawQueue = draw.catch(() => {});
+  const blob = await draw;
+  drawingNow--;
   calls.push(['pdf-page', path, page, width]);
-  return { count: 3, png: await blob.arrayBuffer() };
+  return { count: /Long/.test(path) ? 80 : 3, png: await blob.arrayBuffer() };
 }
 
 /** The text of each harness PDF's three pages, as PDF.js gives it. */

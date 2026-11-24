@@ -128,7 +128,7 @@ the page shares Obsidian's origin, the app's `localStorage` keys (all
 | app | `list-tags` | every tag in the vault, to suggest in the tag box: `[{ tag, count }]` without `#`, from Markdown notes and index notes alike (`src/tags.js`), leaving out `bedrock`; `count` is how many notes have it. An app asking a plugin without it gets an error and suggests nothing |
 | app | `read-note { path }` | `{ data }`: the bytes of another `.bedrock` file, for its picture in the link picker (nothing but `.bedrock` files) |
 | app | `pdf-page { path, page, width }` | `{ count, png }`: a PDF's page count and page `page` drawn `width` px wide with Obsidian's PDF.js (`src/pdf-pages.js`) |
-| app | `pdf-find { path, query }` | `{ count, total, hits }`: where `query` is in a PDF, found by the find controller of Obsidian's PDF viewer (or the same rules before it is loaded); each hit has `page`, `before`, `match`, `after` and `selection` (`src/pdf-pages.js`) |
+| app | `pdf-find { path, query }` | `{ count, total, hits }`: where `query` is in a PDF, found by the find controller of Obsidian's PDF viewer (or the same rules before it is loaded); each hit has `page`, `before`, `match`, `after` and `selection`. The text is read once per opened PDF; an empty `query` only starts reading it (`src/pdf-pages.js`) |
 | app | `open-link { type, target }` | opens the note in Obsidian |
 | app | `rename { title }` | the name typed in the canvas header is done (Enter, or leaving the box): the plugin renames the file to it in its folder with `fileManager.renameFile` (so links follow), unless the name is empty or another file has it; `{ name }`, the file's name after |
 | app | `copy-link { stroke }` | puts a link to the word with that stroke on the clipboard |
