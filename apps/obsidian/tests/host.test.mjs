@@ -1010,6 +1010,8 @@ test('bug: a PDF imported into a vault note is saved into that file, and is ther
   frame = await openFile(page, 'Lectures/Lecture 8.bedrock');
   assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 5, 'both pages are in the note');
   assert.equal(await frame.evaluate(() => document.getElementById('title').value), 'Lecture 8', "the note keeps its file's name");
+  assert.equal(await frame.evaluate(() => bedrock.canvas.paper()), 'grid', 'on the paper for new notes (was plain)');
+  assert.equal((await page.evaluate(() => host.files('Lectures/Lecture 8.bedrock'))).paper, 'grid');
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -1023,8 +1025,10 @@ test("a PDF's pages are imported one below another into a note made about a page
   let frame = await openFile(page, 'Lectures/Lecture 9 notes.bedrock');
   await until(page, () => host.vault.files.get('Lectures/Lecture 9 notes.bedrock').data.byteLength > 0);
   await frame.evaluate(() => { bedrock.handwriting.enabled = false; });
+  await page.evaluate(() => { host.paper = 'dots'; }); // "Paper for new notes"
   const pages = await frame.evaluate(async (bytes) => bedrock.importPdf({ name: 'Scan.pdf', bytes: new Uint8Array(bytes) }), goodnotesLikePdf());
   assert.equal(pages, 1, 'one note: the file that is open');
+  await until(page, async () => (await host.files('Lectures/Lecture 9 notes.bedrock')).paper === 'dots');
   await until(page, async () => (await host.files('Lectures/Lecture 9 notes.bedrock')).strokes === 5);
   // Page 2 (one stroke) sits below page 1 (400 high), not on top of it.
   const ys = await frame.evaluate(() => JSON.parse(bedrock.canvas.export_json()).strokes.map((s) => s.points[1]));
@@ -1320,9 +1324,9 @@ test('at start, the plugin asks for the invite code and consent in a window, and
   await page.waitForFunction(() => !document.getElementById('consent-window'));
   assert.equal(await page.evaluate(() => document.querySelectorAll('iframe.bedrock-welcome-frame').length), 0, 'the hidden page is gone too');
   const s = await page.evaluate(() => ({ c: JSON.parse(localStorage.getItem('bedrock.collect.v1')), set: JSON.parse(localStorage.getItem('bedrock.settings.v1')) }));
-  assert.equal(s.c.consent, 3);
+  assert.equal(s.c.consent, 4);
   assert.equal(s.c.code, CODE);
-  assert.equal(s.set.shareWords, true);
+  assert.equal(s.c.mirror, 4, '"Mirror my notes" is turned on by agreeing');
   // A note opened now has no gate over it.
   await openFile(page, 'Gate.bedrock');
   const frame = await frameOf(page, '#frame');
@@ -1333,7 +1337,7 @@ test('at start, the plugin asks for the invite code and consent in a window, and
 });
 
 test('at start, nothing is shown when consent is already given', async () => {
-  const state = { code: CODE, consent: 3, contributor: '5b0f2e4c-8a1d-4c3e-9f6a-2d7b1c0e4a99' };
+  const state = { code: CODE, consent: 4, contributor: '5b0f2e4c-8a1d-4c3e-9f6a-2d7b1c0e4a99' };
   const { page, ctx, errors } = await openHostWithServer(state);
   assert.equal(await page.evaluate(() => host.launch()), 'not-needed');
   assert.equal(await page.evaluate(() => host.windows), 0);
@@ -1395,6 +1399,7 @@ test('renaming the file in Obsidian puts the new name in the header', async () =
 test("PDFs dropped on the settings' drop zone become notes at the vault root that open with their handwriting", async () => {
   const { page, ctx, errors } = await openHost();
   await page.evaluate(async () => {
+    host.paper = 'lines'; // "Paper for new notes"
     await host.vault.createBinary('Lecture.bedrock', new ArrayBuffer(0));
     host.showPdfImport();
   });
@@ -1420,6 +1425,7 @@ test("PDFs dropped on the settings' drop zone become notes at the vault root tha
   const f = await page.evaluate(() => host.files('Forces.bedrock'));
   assert.equal(f.strokes, 5, 'both pages, one below the other');
   assert.match(f.index, /hi/, "the index note has GoodNotes' reading of the words");
+  assert.equal(f.paper, 'lines', 'on the paper for new notes');
   assert.equal((await page.evaluate(() => host.files('Lecture.bedrock'))).size, 0, 'the note that was there is untouched');
   const frame = await openFile(page, 'Forces.bedrock');
   assert.equal(await frame.evaluate(() => bedrock.canvas.stroke_count()), 5, 'it opens with its handwriting');

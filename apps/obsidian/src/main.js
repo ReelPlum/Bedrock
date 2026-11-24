@@ -516,6 +516,7 @@ export default class BedrockPlugin extends Plugin {
    *  with PDF import's WebAssembly, so Obsidian never freezes. */
   readPdf(bytes) {
     this.pdfReader ||= new PdfReader({
+      paper: () => this.settings.newNotePaper,
       start: async () => {
         const wasm = await this.webApp.pdfWasmModule();
         const w = new Worker(this.webApp.pluginWorkerUrl('src/pdf-import-worker.js'), { type: 'module' });

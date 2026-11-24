@@ -215,6 +215,7 @@ window.host = {
 host.showPdfImport = () => {
   if (!host.pdfImport) {
     const reader = new PdfReader({
+      paper: () => host.paper,
       start: async () => {
         const wasm = await webApp.pdfWasmModule();
         const w = new Worker(webApp.pluginWorkerUrl('src/pdf-import-worker.js'), { type: 'module' });

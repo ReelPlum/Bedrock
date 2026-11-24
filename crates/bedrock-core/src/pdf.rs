@@ -69,6 +69,22 @@ pub struct PdfPage {
     pub warnings: Vec<String>,
 }
 
+/// The papers a note can have (`paper` in `note.json`).
+pub const PAPERS: [&str; 4] = ["grid", "dots", "lines", "plain"];
+
+/// The paper an imported note is on unless the app names another: the
+/// paper new notes start with (grid).
+pub const DEFAULT_PAPER: &str = "grid";
+
+impl PdfPage {
+    /// The note on `paper` (the app's paper for new notes); a name that is
+    /// not a paper leaves it on [`DEFAULT_PAPER`].
+    pub fn on_paper(mut self, paper: &str) -> Self {
+        self.doc.paper = if PAPERS.contains(&paper) { paper } else { DEFAULT_PAPER }.to_string();
+        self
+    }
+}
+
 /// True if `bytes` look like a PDF file.
 pub fn is_pdf(bytes: &[u8]) -> bool {
     bytes.len() > 8 && bytes[..bytes.len().min(1024)].windows(5).any(|w| w == b"%PDF-")
@@ -1073,7 +1089,7 @@ fn pressure_for(width: f64, size: f64) -> f32 {
 
 fn build_page(ink: &Ink<'_>, media: Rect, top: f64, seed: u64, t: &mut f64, pictures: &mut Pictures) -> PdfPage {
     let mut doc = Document::new(seed);
-    doc.paper = "plain".into();
+    doc.paper = DEFAULT_PAPER.into();
     let to_page = |p: Vec2| Vec2::new(p.x - media.min.x, top + media.max.y - p.y);
     let mut strokes = Vec::new();
     let mut warnings = Vec::new();
@@ -1384,6 +1400,25 @@ mod tests {
         // A PDF with no ink at all gives no note.
         let blank = page_pdf("q 1 1 1 sc 0 0 600 400 re f Q");
         assert!(import_as_one_note(&blank, 7, 0.0).unwrap().is_none());
+    }
+
+    #[test]
+    fn pdf_notes_start_on_the_paper_for_new_notes() {
+        // Was "plain": imported notes are on the paper new notes start with.
+        for p in import(&sample_pdf(true), 7, 0.0).unwrap() {
+            assert_eq!(p.doc.paper, "grid");
+        }
+        let one = import_as_one_note(&three_pages_one_empty(), 7, 0.0).unwrap().unwrap();
+        assert_eq!(one.doc.paper, "grid");
+        // The app's chosen paper is kept, and saved with the note.
+        let dots = import_as_one_note(&three_pages_one_empty(), 7, 0.0).unwrap().unwrap().on_paper("dots");
+        let back = crate::format::load_bytes(&crate::format::to_bedrock(&dots.doc), 2).unwrap().doc;
+        assert_eq!(back.paper, "dots");
+        for p in PAPERS {
+            assert_eq!(import(&sample_pdf(true), 7, 0.0).unwrap().remove(0).on_paper(p).doc.paper, p);
+        }
+        // A name that is not a paper is never kept.
+        assert_eq!(import(&sample_pdf(true), 7, 0.0).unwrap().remove(0).on_paper("<b>").doc.paper, "grid");
     }
 
     #[test]

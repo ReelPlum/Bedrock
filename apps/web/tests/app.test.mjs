@@ -1125,6 +1125,65 @@ test('the formula recogniser runs Pix2Text MFR through Transformers.js (one runt
   await ctx.close();
 });
 
+test('the handwriting model download is announced only when it is really downloaded, not each time a note opens with it cached (regression)', async () => {
+  // In Obsidian every note opens a fresh copy of the app, and each one
+  // said "Downloading the handwriting model" even though the model came
+  // from the browser's cache. The real Transformers.js, served locally,
+  // with the tiny formula model (tests/fixtures/mfr).
+  const { readFile } = await import('node:fs/promises');
+  const { TRANSFORMERS_JS } = await import('./fetch-libs.mjs');
+  const ctx = await env.browser.newContext({ viewport: { width: 1024, height: 768 } });
+  const served = []; // files really sent; a missing optional file (404) is not a download
+  await ctx.route('https://cdn.jsdelivr.net/npm/onnxruntime-web@*/dist/**', async (route) => {
+    const file = new URL(route.request().url()).pathname.split('/').pop();
+    route.fulfill({ body: await readFile(new URL(`../node_modules/onnxruntime-web/dist/${file}`, import.meta.url)), contentType: file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript' });
+  });
+  await ctx.route('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1', async (route) => route.fulfill({ body: await readFile(TRANSFORMERS_JS), contentType: 'text/javascript' }));
+  await ctx.route('https://huggingface.co/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const m = path.match(/^\/breezedeus\/pix2text-mfr-1\.5\/resolve\/main\/+(.+)$/);
+    try {
+      if (!m) throw new Error('not here');
+      const body = await readFile(new URL(`./fixtures/mfr/${m[1]}`, import.meta.url));
+      served.push(path);
+      route.fulfill({ body, contentType: 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+    } catch (_) { route.fulfill({ status: 404, body: 'not found', headers: { 'access-control-allow-origin': '*' } }); }
+  });
+  /** Opens the app (a note) and reads one formula; the toasts it showed. */
+  const readOnce = async () => {
+    const { page, errors } = await openApp(env, { context: ctx });
+    const r = await page.evaluate(async () => {
+      const toasts = [];
+      const el = document.getElementById('toast');
+      new MutationObserver(() => { if (!el.hidden) toasts.push(el.textContent); }).observe(el, { childList: true, characterData: true, subtree: true, attributes: true });
+      const c = new OffscreenCanvas(120, 80);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 120, 80);
+      g.fillStyle = '#000'; g.fillRect(20, 38, 80, 4);
+      const image = await c.convertToBlob({ type: 'image/png' });
+      const hw = bedrock.handwriting;
+      hw.engine = null;
+      const out = await hw._engine()({ kind: 'math', image }).catch((e) => ({ error: e.message }));
+      await new Promise((res) => setTimeout(res, 50));
+      return { out, toasts };
+    });
+    await page.close();
+    return { ...r, errors };
+  };
+  const first = await readOnce();
+  const onnxFirst = served.filter((p) => p.endsWith('.onnx')).length;
+  const second = await readOnce();
+  const onnxSecond = served.filter((p) => p.endsWith('.onnx')).length - onnxFirst;
+  assert.ok(!first.out.error, first.out.error);
+  assert.ok(!second.out.error, second.out.error);
+  const download = (ts) => ts.filter((t) => /Downloading the handwriting model/.test(t));
+  assert.ok(onnxFirst > 0, 'the first note downloads the model');
+  assert.equal(download(first.toasts).length, 1, `the first download is announced: ${JSON.stringify(first.toasts)}`);
+  assert.equal(onnxSecond, 0, 'the next note loads the model from the cache');
+  assert.deepEqual(download(second.toasts), [], 'a model loaded from the cache is not announced');
+  await ctx.close();
+});
+
 test('careful reading: the larger model re-reads words after a pause, stops when writing resumes, and follows the menu mode', async () => {
   const { page, ctx, errors } = await openApp(env);
   const r = await page.evaluate(async () => {

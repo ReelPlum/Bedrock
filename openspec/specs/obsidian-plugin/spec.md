@@ -96,7 +96,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 #### Scenario: Index note contents
 - **GIVEN** a `.bedrock` file
 - **WHEN** it is indexed
-- **THEN** its index note holds the recognised text (Markdown link syntax in handwriting is escaped) and its links, and every word knows the strokes it came from
+- **THEN** its index note holds the recognised text (Markdown link syntax and `#` in handwriting are escaped, so it makes no links, tags or headings) and its links, and every word knows the strokes it came from
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: reads stored and deflated entries from a .bedrock archive -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: a damaged or empty file gives no entries instead of throwing -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: index note holds the handwriting text and the links -->
@@ -298,7 +298,8 @@ is read and written by bedrock-core, as everywhere else.
 of PDFs too) or chosen with "Choose PDFs…", and make each a `.bedrock` note at
 the vault's root, named after the PDF, as importing a PDF into an open note
 makes it (every page with ink or pictures, one below another, with the PDF's
-reading of the handwriting). No data format changes.
+reading of the handwriting), on the "Paper for new notes" setting's paper.
+No data format changes.
 
 #### Scenario: Dropping a GoodNotes library
 - **GIVEN** PDFs exported from GoodNotes, and a file that is not a PDF
