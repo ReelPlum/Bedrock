@@ -50,16 +50,22 @@ export async function readNoteText(bytes) {
       .filter((i) => i.text);
   } catch (_) { /* damaged: no text */ }
   const links = text(files.get('links.md')).split('\n').filter((l) => /^- /.test(l));
-  let tags = [];
+  const tags = noteJsonTags(text(files.get('note.json')));
+  return { words: items.map((i) => i.text), items, links, tags };
+}
+
+/** The note's tags from the text of its note.json (`tags`), leaving out
+ *  `bedrock` (every index note has it). */
+export function noteJsonTags(json) {
   try {
     // Only the top-level `tags` list is wanted: found without parsing every
     // stroke of a big note. (Inside a JSON string a quote is escaped, so
     // `"tags":[` there cannot match.)
-    const m = /[{,]"tags":(\[[^\]]*\])/.exec(text(files.get('note.json')));
+    const m = /[{,]"tags":(\[[^\]]*\])/.exec(json);
     const list = m ? JSON.parse(m[1]) : [];
-    if (Array.isArray(list)) tags = [...new Set(list.filter(isTag))].filter((t) => t.toLowerCase() !== 'bedrock');
+    if (Array.isArray(list)) return [...new Set(list.filter(isTag))].filter((t) => t.toLowerCase() !== 'bedrock');
   } catch (_) { /* damaged: no tags */ }
-  return { words: items.map((i) => i.text), items, links, tags };
+  return [];
 }
 
 export const LINKED_NOTES_HEADING = '## Linked handwritten notes';

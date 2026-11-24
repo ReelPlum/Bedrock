@@ -865,3 +865,25 @@ test('the link picker finds the words of notes with their samples in points.bin,
   assert.deepEqual(after.words, before.words);
   assert.throws(() => readPointsBin(Uint8Array.from(bin.slice(0, -1))), /ends early/);
 });
+
+test('every tag in the vault is offered for the tag box: Markdown notes and index notes, counted per note, without bedrock', async () => {
+  const { vaultTags } = await import('../src/tags.js');
+  const { getAllTags } = (await import('./fake-obsidian.cjs')).default;
+  const caches = new Map([
+    ['Lecture 3.md', { tags: [{ tag: '#physics/forces' }, { tag: '#Exam' }], frontmatter: { tags: ['biology'] } }],
+    ['Bedrock index/Notes.md', { frontmatter: { tags: ['bedrock', 'Biology', 'exam'] } }],
+    ['Empty.md', null],
+  ]);
+  const app = {
+    vault: { getMarkdownFiles: () => [...caches.keys()].map((path) => ({ path })) },
+    metadataCache: { getFileCache: (f) => caches.get(f.path) },
+  };
+  assert.deepEqual(vaultTags(app, getAllTags), [
+    { tag: 'biology', count: 2 },
+    { tag: 'physics/forces', count: 1 },
+    { tag: 'Exam', count: 2 },
+  ]);
+  const session = createSession({ vault: new FakeVault(), file: () => null, kv: new Map(), listTags: async () => [{ tag: 'x', count: 1 }] });
+  assert.deepEqual(await session.handlers['list-tags'](), [{ tag: 'x', count: 1 }]);
+  assert.deepEqual(await createSession({ vault: new FakeVault(), file: () => null, kv: new Map() }).handlers['list-tags'](), []);
+});
