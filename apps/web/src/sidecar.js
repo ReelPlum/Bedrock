@@ -62,10 +62,46 @@ export async function readNoteText(bytes) {
   return { words: items.map((i) => i.text), items, links, tags };
 }
 
+export const LINKED_NOTES_HEADING = '## Linked handwritten notes';
+
+/** The link targets (`[[target#anchor|text]]` -> `target`) of `links`
+ *  lines that point at a handwritten note (`.bedrock`), each once. */
+export function noteLinkTargets(links) {
+  const out = [];
+  for (const line of links || []) {
+    for (const m of line.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
+      const t = m[1].trim();
+      if (/\.bedrock$/i.test(t) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+/** The graph only draws a link between two notes it shows, and a link to
+ *  a handwritten note points at its `.bedrock` file, which a tidy graph
+ *  hides. So each linked handwritten note's index note is linked too:
+ *  `indexOf(target)` gives its path (with `.md`), or null when there is
+ *  none. Without `indexOf`, a target is a path from the root and its index
+ *  note is its sidecar. */
+function linkedNoteLines(notePath, links, indexOf = sidecarPath) {
+  const own = indexOf(notePath);
+  const lines = [];
+  for (const t of noteLinkTargets(links)) {
+    const idx = indexOf(t);
+    // A link to a word of this same note needs no edge.
+    if (!idx || idx === own) continue;
+    const name = t.split('/').pop().replace(/\.bedrock$/i, '');
+    const line = `- [[${idx}|${escapeText(name)}]]`;
+    if (!lines.includes(line)) lines.push(line);
+  }
+  return lines;
+}
+
 /** The index note's Markdown, and where each piece of text sits in it:
  *  `spans` are `{ start, end, strokes }` with offsets into `markdown`.
- *  `notePath` is the note's path from the vault (or export) root. */
-export function indexLayout(notePath, { words, items, links, tags = [] }) {
+ *  `notePath` is the note's path from the vault (or export) root;
+ *  `indexOf` finds the index notes of linked handwritten notes (above). */
+export function indexLayout(notePath, { words, items, links, tags = [] }, { indexOf } = {}) {
   const name = notePath.split('/').pop().replace(/\.bedrock$/i, '');
   const head = [
     '---',
@@ -89,15 +125,17 @@ export function indexLayout(notePath, { words, items, links, tags = [] }) {
   }
   const lines = [body || '_Nothing read yet._', ''];
   if (links.length) lines.push('## Links', '', ...links, '');
+  const linked = linkedNoteLines(notePath, links, indexOf);
+  if (linked.length) lines.push(LINKED_NOTES_HEADING, '', ...linked, '');
   return { markdown: head + lines.join('\n'), spans };
 }
 
 /** The index note's Markdown. */
-export function indexMarkdown(notePath, content) {
-  return indexLayout(notePath, content).markdown;
+export function indexMarkdown(notePath, content, opts) {
+  return indexLayout(notePath, content, opts).markdown;
 }
 
 /** The sidecar Markdown for a note file's bytes at `notePath`. */
-export async function sidecarMarkdown(notePath, bytes) {
-  return indexMarkdown(notePath, await readNoteText(bytes));
+export async function sidecarMarkdown(notePath, bytes, opts) {
+  return indexMarkdown(notePath, await readNoteText(bytes), opts);
 }

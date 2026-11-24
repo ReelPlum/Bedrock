@@ -288,6 +288,65 @@ test('a library exported by the website drops into the vault root and is already
   assert.ok(![...vault.files.keys()].some((p) => p.startsWith(DEFAULT_INDEX_FOLDER)));
 });
 
+/** "Newton Hooke" (strokes s1, s2) with these links. */
+const inkLinked = (links) => zip({
+  'note.json': JSON.stringify({ format: 'bedrock-note', version: 1, strokes: [] }),
+  'recognized.json': JSON.stringify({ format: 'bedrock-recognition', version: 1, items: [{ id: 'r0', text: 'Newton', strokes: ['s1'] }, { id: 'r1', text: 'Hooke', strokes: ['s2'] }] }),
+  'links.md': `# Links in this note\n\n${links.map((l) => `- ${l}\n`).join('')}`,
+});
+
+test('an index note links the index notes of the handwritten notes its note links, so the graph shows the edge', async () => {
+  const vault = new FakeVault();
+  const bin = (b) => (b.buffer ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : b);
+  await vault.createBinary('School/Gravity.bedrock', bin(note(['g'])));
+  await vault.createBinary('Kept/Beside.bedrock', bin(note(['b'])));
+  await vault.create('Kept/Beside.bedrock.md', 'a sidecar');
+  await vault.createBinary('School/Forces.bedrock', bin(inkLinked([
+    '[[School/Gravity.bedrock#^00000000000000aa|Hooke]]',
+    '[[School/Gravity.bedrock]]',
+    '[[Kept/Beside.bedrock]]',
+    '[[School/Forces.bedrock#^00000000000000bb|Newton]]',
+    '[[Gone.bedrock]]',
+    '[[Lectures/Week 3.pdf#page=4|Week 3, page 4]]',
+  ])));
+  const ix = new Indexer(vault);
+  await ix.sync();
+  const md = vault.files.get(`${DEFAULT_INDEX_FOLDER}/School/Forces.md`).data;
+  assert.match(md, /## Links\n\n(- .*\n){6}\n## Linked handwritten notes\n\n- \[\[Bedrock index\/School\/Gravity\.md\|Gravity\]\]\n- \[\[Kept\/Beside\.bedrock\.md\|Beside\]\]\n$/,
+    'each linked note once, by its index note (in the index folder, or its sidecar); not the note itself, not a missing note');
+  // The words are where they were: a search hit still finds their strokes.
+  const bytes = vault.files.get('School/Forces.bedrock').data;
+  const at = md.indexOf('Hooke');
+  assert.deepEqual(await strokesForIndexPlace('School/Forces.bedrock', bytes, md, { match: { matches: [[at, at + 5]] } }), ['s2']);
+  // Notes linking no handwritten note get no section.
+  assert.doesNotMatch(vault.files.get(`${DEFAULT_INDEX_FOLDER}/School/Gravity.md`).data, /Linked handwritten notes/);
+  // Obsidian's own resolver: a short link text finds the note.
+  const short = new Indexer(vault, undefined, (link) => (link === 'Gravity.bedrock' ? 'School/Gravity.bedrock' : null));
+  assert.match(indexMarkdown('School/Forces.bedrock', { words: [], links: ['- [[Gravity.bedrock#^00000000000000aa|x]]'] }, { indexOf: (l) => short.indexOfLink(l, 'School/Forces.bedrock') }),
+    /- \[\[Bedrock index\/School\/Gravity\.md\|Gravity\]\]\n$/);
+});
+
+test('index notes from before linked notes: they still open their note, and are rewritten with the section', async () => {
+  const { readFileSync } = await import('node:fs');
+  const old = readFileSync(new URL('./fixtures/index-before-linked-notes.md', import.meta.url), 'utf8');
+  assert.equal(noteOfIndex(old), 'School/Forces.bedrock');
+  const vault = new FakeVault();
+  const bin = (b) => (b.buffer ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : b);
+  await vault.createBinary('School/Gravity.bedrock', bin(note(['g'])));
+  await vault.createBinary('School/Forces.bedrock', bin(inkLinked(['[[School/Gravity.bedrock#^00000000000000aa|Hooke]]', '[[Ideas]]'])));
+  const ix = new Indexer(vault);
+  await ix.sync();
+  // The old index note is newer than its note, as it is after an update.
+  await vault.modify(vault.files.get(`${DEFAULT_INDEX_FOLDER}/School/Forces.md`), old);
+  assert.equal(noteForIndex(`${DEFAULT_INDEX_FOLDER}/School/Forces.md`, old, (p) => vault.files.has(p)), 'School/Forces.bedrock');
+  // A search hit in the old index note still finds the words.
+  const at = old.indexOf('Hooke');
+  assert.deepEqual(await strokesForIndexPlace('School/Forces.bedrock', vault.files.get('School/Forces.bedrock').data, old, { match: { matches: [[at, at + 5]] } }), ['s2']);
+  assert.equal(await ix.sync(), 1, 'rewritten once');
+  assert.equal(vault.files.get(`${DEFAULT_INDEX_FOLDER}/School/Forces.md`).data, `${old}\n## Linked handwritten notes\n\n- [[Bedrock index/School/Gravity.md|Gravity]]\n`, 'the same, with the section added');
+  assert.equal(await ix.sync(), 0);
+});
+
 test('a library dropped into a subfolder: sidecars open their note and are fixed to the new path', async () => {
   const vault = new FakeVault();
   await dropLibrary(vault, await webLibrary(), 'Imports/Bedrock notes');

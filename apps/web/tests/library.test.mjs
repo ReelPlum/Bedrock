@@ -102,6 +102,17 @@ test('an exported library is a folder tree with a Markdown sidecar beside every 
   assert.equal(md, await sidecarMarkdown('School/Physics/Forces.bedrock', notes[0].data), 'the same bytes the plugin writes');
 });
 
+test('an exported sidecar links the sidecars of the exported notes its note links', async () => {
+  const notes = [
+    { id: '1111222233334444', title: 'Forces', folder: 'f2', data: bedrock({ words: ['Newton'], links: ['[[School/Physics/Gravity.bedrock#^00000000000000aa|Newton]]', '[[Elsewhere.bedrock]]', '[[Ideas]]'] }) },
+    { id: '5555666677778888', title: 'Gravity', folder: 'f2', data: bedrock() },
+  ];
+  const map = new Map(await libraryFiles(folders, notes));
+  const md = new TextDecoder().decode(map.get('School/Physics/Forces.bedrock.md'));
+  assert.match(md, /\n## Linked handwritten notes\n\n- \[\[School\/Physics\/Gravity\.bedrock\.md\|Gravity\]\]\n$/, 'only notes in the export');
+  assert.doesNotMatch(new TextDecoder().decode(map.get('School/Physics/Gravity.bedrock.md')), /Linked handwritten notes/);
+});
+
 test('a note with a damaged file still gets a sidecar', async () => {
   const files = await libraryFiles([], [{ id: '1', title: 'Broken', data: new Uint8Array([1, 2, 3]) }]);
   const md = new TextDecoder().decode(new Map(files).get('Broken.bedrock.md'));
