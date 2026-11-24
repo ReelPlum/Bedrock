@@ -20,5 +20,5 @@
 #### Scenario: Only the pages in sight are drawn
 - **GIVEN** a long PDF open in the link picker
 - **WHEN** it is scrolled fast to the end
-- **THEN** pages that only flew by are not drawn, the pages in sight at the end are, at most two pictures are asked for at once, and pages not drawn yet already have their place
+- **THEN** pages that only flew by are not drawn (also on a slow device, with long frames), the pages in sight at the end are, at most two pictures are asked for at once, and pages not drawn yet already have their place
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: only the pages in sight are drawn: a fast scroll skips the pages passed on the way -->

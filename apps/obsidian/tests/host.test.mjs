@@ -670,34 +670,67 @@ test('only the pages in sight are drawn: a fast scroll skips the pages passed on
   await frame.click('#link-picker .lp-folder[data-path="Papers"]');
   await frame.click('#link-picker .lp-file[data-path="Papers/Long.pdf"]');
   await frame.waitForSelector('#link-picker .lp-page[data-page="80"]');
-  /** Pages in sight now, and pages drawn so far. */
-  const state = () => frame.evaluate(() => {
+  /** Pages in sight now. */
+  const inSight = () => frame.evaluate(() => {
     const body = document.querySelector('#link-picker .lp-body').getBoundingClientRect();
-    const seen = [...document.querySelectorAll('#link-picker .lp-page')].filter((b) => {
+    return [...document.querySelectorAll('#link-picker .lp-page')].filter((b) => {
       const r = b.getBoundingClientRect();
       return r.bottom > body.top && r.top < body.bottom;
     }).map((b) => Number(b.dataset.page));
-    const drawn = [...document.querySelectorAll('#link-picker .lp-page')].filter((b) => b.dataset.width).map((b) => Number(b.dataset.page));
-    return { seen, drawn };
   });
+  /** Wait until these pages are drawn; on a timeout, say how each stands. */
+  const drawnAll = async (pages) => {
+    try {
+      // The browser tests run about four times slower on GitHub's machines.
+      await until(frame, (ps) => ps.every((n) => document.querySelector(`#link-picker .lp-page[data-page="${n}"]`).dataset.width), pages, 20000);
+    } catch {
+      const how = await frame.evaluate((ps) => ps.map((n) => {
+        const b = document.querySelector(`#link-picker .lp-page[data-page="${n}"]`);
+        return `${n}: width ${b.dataset.width ?? '-'}, drawing ${b.dataset.drawing ?? '-'}, failed ${b.dataset.failed ?? '-'}`;
+      }), pages);
+      assert.fail(`pages in sight not drawn: ${how.join('; ')}`);
+    }
+  };
+  const asked = () => page.evaluate(() => [...new Set(host.calls.filter((c) => c[0] === 'pdf-page' && c[1] === 'Papers/Long.pdf').map((c) => c[2]))]);
   await frame.waitForFunction(() => document.querySelector('#link-picker .lp-page[data-page="2"]').dataset.width);
   // Pages not drawn yet already have their place (the first page's shape).
   const heights = await frame.evaluate(() => [...document.querySelectorAll('#link-picker .lp-page img')].slice(0, 30).map((i) => Math.round(i.getBoundingClientRect().height)));
   assert.equal(new Set(heights).size, 1, `every page as tall as the first: ${heights}`);
-  // A fling to the end: every page goes by, a frame at a time.
-  await frame.evaluate(async () => {
+  // A fling in 0.6 s, every page going by. The scroll follows the clock, not
+  // the frames, so a busy machine flings as fast; `slowFrames` makes each
+  // frame take that long (a slow device: fewer frames, bigger jumps).
+  const fling = (to, slowFrames = 0) => frame.evaluate(async ([to, busy]) => {
     const body = document.querySelector('#link-picker .lp-body');
-    for (let i = 1; i <= 60; i++) {
-      body.scrollTop = (body.scrollHeight * i) / 60;
+    const from = body.scrollTop;
+    const end = to === 'end' ? body.scrollHeight - body.clientHeight : 0;
+    const start = performance.now();
+    for (;;) {
+      const k = Math.min(1, (performance.now() - start) / 600);
+      body.scrollTop = from + (end - from) * k;
       await new Promise((r) => requestAnimationFrame(r));
+      const t = performance.now();
+      while (performance.now() - t < busy) { /* a slow frame */ }
+      if (k === 1) break;
     }
-  });
-  const end = await state();
-  assert.ok(end.seen.includes(80));
-  await until(frame, (pages) => pages.every((n) => document.querySelector(`#link-picker .lp-page[data-page="${n}"]`).dataset.width), end.seen);
-  const asked = await page.evaluate(() => [...new Set(host.calls.filter((c) => c[0] === 'pdf-page' && c[1] === 'Papers/Long.pdf').map((c) => c[2]))]);
-  assert.ok(asked.length <= 30, `${asked.length} of 80 pages drawn: ${asked.sort((a, b) => a - b)}`);
-  assert.ok(!asked.includes(45), 'a page only flown past is not drawn');
+  }, [to, slowFrames]);
+  await fling('end');
+  const bottom = await inSight();
+  assert.ok(bottom.includes(80));
+  await drawnAll(bottom);
+  let pages = await asked();
+  assert.ok(pages.length <= 30, `${pages.length} of 80 pages drawn: ${pages.sort((a, b) => a - b)}`);
+  // Pages 30 to 50 only fly by. A very busy machine can stall on one frame
+  // long enough to count as a rest, and draw that one row (3 pages); never
+  // more.
+  const middle = (ps) => ps.filter((n) => n >= 30 && n <= 50);
+  assert.ok(middle(pages).length <= 3, `pages only flown past are not drawn: ${pages.sort((a, b) => a - b)}`);
+  // Back to the top on a slow device: frames of 150 ms.
+  await fling('top', 150);
+  const top = await inSight();
+  assert.ok(top.includes(1));
+  await drawnAll(top);
+  pages = await asked();
+  assert.ok(middle(pages).length <= 3, `on a slow device too: ${pages.sort((a, b) => a - b)}`);
   assert.ok((await page.evaluate(() => host.pdfDrawing)) <= 2, 'at most two pages asked for at once');
   assert.deepEqual(errors, []);
   await ctx.close();
