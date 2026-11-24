@@ -190,9 +190,13 @@ export class BulkImport {
  *  afresh every `freshEvery` PDFs: WebAssembly memory only grows, so this
  *  gives back what a big PDF took. */
 export class PdfReader {
-  /** `start()` resolves to a started Worker (or a stand-in). */
-  constructor({ start, timeoutMs = 120_000, freshEvery = 25 }) {
+  /** `start()` resolves to a started Worker (or a stand-in). `late` and
+   *  `stopped` say what went wrong, for a worker that does other work
+   *  with the same protocol (bulk-edit.js: notes tagged in many at once). */
+  constructor({ start, timeoutMs = 120_000, freshEvery = 25, late = 'the PDF reader did not finish reading this PDF in time', stopped = 'the PDF reader stopped' }) {
     this.start = start;
+    this.late = late;
+    this.stopped = stopped;
     this.timeoutMs = timeoutMs;
     this.freshEvery = freshEvery;
     this.worker = null;
@@ -209,14 +213,14 @@ export class PdfReader {
 
   /** The note made of the PDF's `bytes` (handed over to the worker), as
    *  `{ bedrock: ArrayBuffer, warnings, strokes }`, or null if no page has
-   *  ink or pictures. */
-  convert(bytes) {
-    const run = this.chain.then(() => this.convertNow(bytes));
+   *  ink or pictures. `extra` goes in the message with the bytes. */
+  convert(bytes, extra = {}) {
+    const run = this.chain.then(() => this.convertNow(bytes, extra));
     this.chain = run.catch(() => null);
     return run;
   }
 
-  async convertNow(bytes) {
+  async convertNow(bytes, extra) {
     if (this.worker && this.used >= this.freshEvery) this.drop();
     if (!this.worker) this.worker = await this.start();
     const w = this.worker;
@@ -232,7 +236,7 @@ export class PdfReader {
       this.cancel = () => done(reject, new Error('stopped'));
       const timer = setTimeout(() => {
         this.drop();
-        done(reject, new Error('the PDF reader did not finish reading this PDF in time'));
+        done(reject, new Error(this.late));
       }, this.timeoutMs);
       w.onmessage = (e) => {
         const m = e.data || {};
@@ -243,9 +247,9 @@ export class PdfReader {
       w.onerror = (e) => {
         e?.preventDefault?.();
         this.drop();
-        done(reject, new Error(`the PDF reader stopped (${e?.message || 'it crashed'})`));
+        done(reject, new Error(`${this.stopped} (${e?.message || 'it crashed'})`));
       };
-      w.postMessage({ id, bytes, start: Date.now() }, [bytes]);
+      w.postMessage({ ...extra, id, bytes, start: Date.now() }, [bytes]);
     });
   }
 

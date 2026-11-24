@@ -1169,6 +1169,24 @@ pub fn pack_for_sharing(bytes: &[u8]) -> Vec<u8> {
     bedrock_core::zip::repack(bytes, bedrock_core::zip::SHARE_LEVEL)
 }
 
+/// A saved note with tags added and its paper set, without opening it on a
+/// canvas (the Obsidian plugin's "Add tags…" and "Change paper…" for many
+/// notes; see `bedrock_core::note_edit`). `paper` "" leaves it. Undefined
+/// when nothing changes, so the file is left alone.
+#[wasm_bindgen]
+pub fn edit_saved_note(
+    bytes: &[u8],
+    tags: Vec<String>,
+    paper: &str,
+    now: f64,
+    seed_hi: u32,
+    seed_lo: u32,
+) -> Result<Option<Vec<u8>>, JsValue> {
+    let edit = bedrock_core::note_edit::NoteEdit { tags, paper: (!paper.is_empty()).then(|| paper.to_string()), now };
+    bedrock_core::note_edit::edit_note(bytes, seed(seed_hi, seed_lo), &edit)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Note title stored in a file, without opening it on the canvas (for the library).
 #[wasm_bindgen]
 pub fn peek_title(bytes: &[u8]) -> Option<String> {

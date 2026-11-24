@@ -38,3 +38,18 @@
 .bedrock-pdf-progress { width: 100%; margin-top: 6px; }
 .bedrock-pdf-failures { margin-top: 6px; font-size: var(--font-smaller); }
 .bedrock-pdf-failures ul { max-height: 30vh; overflow: auto; margin: 4px 0 0; }
+
+/* "Add tags…" and "Change paper…" for many notes (src/bulk-edit.js). The
+   suggestions sit above the tag box, so the iPad keyboard never hides them. */
+.bedrock-bulk-form { display: flex; flex-direction: column; gap: 8px; }
+.bedrock-bulk-form p { margin: 0 0 4px; color: var(--text-muted); }
+.bedrock-bulk-tags, .bedrock-bulk-suggest { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.bedrock-bulk-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--background-modifier-hover); color: var(--text-normal); }
+.bedrock-bulk-remove { padding: 0 6px; min-height: 0; height: auto; background: none; box-shadow: none; color: var(--text-muted); }
+.bedrock-bulk-option { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--background-modifier-border); cursor: pointer; color: var(--text-accent); }
+.bedrock-bulk-option[aria-selected="true"], .bedrock-bulk-option:hover { background: var(--background-modifier-hover); }
+.bedrock-bulk-input { width: 100%; }
+.bedrock-bulk-error { color: var(--text-error); font-size: var(--font-smaller); }
+.bedrock-bulk-papers { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.bedrock-bulk-paper { height: 48px; }
+.bedrock-bulk-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }

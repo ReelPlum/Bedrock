@@ -25,6 +25,7 @@ pub mod handwriting;
 pub mod ink_mirror;
 pub mod input;
 pub mod mirror;
+pub mod note_edit;
 pub mod overview;
 #[cfg(feature = "pdf")]
 pub mod pdf;
