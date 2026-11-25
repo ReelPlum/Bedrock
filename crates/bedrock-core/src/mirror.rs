@@ -43,21 +43,26 @@ pub fn meta_only(d: &Document) -> Document {
     m
 }
 
-/// Fingerprint of the strokes (ids, order and sample counts) and pictures.
+/// Fingerprint of the strokes (ids, order and sample counts) and pictures,
+/// a plain BLAKE3 hash (`docs/security.md`) of those numbers.
+///
+/// Samples are not read: a stroke never changes under its id (moving,
+/// recolouring or cutting it gives new ids, see
+/// `hash_notices_a_moved_or_recoloured_stroke`), so ids and counts tell two
+/// copies apart, and the check stays a few milliseconds on 100 000 strokes.
+/// It is never stored: the page and its save worker run the same
+/// WebAssembly and compare it in memory.
 pub fn content_hash(d: &Document) -> String {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    let mut mix = |v: u64| {
-        for b in v.to_le_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
-        }
-    };
+    let mut bytes = Vec::with_capacity(16 * (d.len() + d.images().len()) + 8);
+    let mut mix = |v: u64| bytes.extend_from_slice(&v.to_le_bytes());
     for s in d.strokes() {
         mix(s.id.0);
         mix(s.points.len() as u64);
     }
     // Pictures, and whether their files are here (a copy without a
-    // picture's file must not be saved).
+    // picture's file must not be saved), after a marker that keeps
+    // strokes and pictures from running into each other.
+    mix(u64::MAX);
     for i in d.images() {
         mix(i.id.0);
         match &i.text {
@@ -65,7 +70,8 @@ pub fn content_hash(d: &Document) -> String {
             None => mix(d.assets.get(&i.file).map_or(0, |b| b.len() as u64 + 1)),
         }
     }
-    format!("{h:016x}:{}", d.len())
+    let hash = blake3::hash(&bytes);
+    format!("{}:{}", &hash.to_hex()[..16], d.len())
 }
 
 #[derive(Debug, Default)]
@@ -262,6 +268,26 @@ mod tests {
         assert_eq!(content_hash(&a), content_hash(&b));
         stroke(&mut b, 5.0);
         assert_ne!(content_hash(&a), content_hash(&b));
+    }
+
+    /// The fingerprint reads ids and sample counts, not the samples. That
+    /// is enough only because a stroke never changes under its id: moving,
+    /// recolouring, erasing part of it or duplicating it gives new ids. A
+    /// change that kept the id would let the two copies differ unseen.
+    #[test]
+    fn hash_notices_a_moved_or_recoloured_stroke() {
+        let mut a = Document::new(1);
+        let id = stroke(&mut a, 0.0);
+        let before = content_hash(&a);
+        let moved = a.translate(&[id], crate::geom::Vec2::new(3.0, 0.0));
+        assert_eq!(moved.len(), 1);
+        assert_ne!(moved[0], id, "a moved stroke gets a new id");
+        assert_ne!(content_hash(&a), before, "a move changes the fingerprint");
+        let before = content_hash(&a);
+        let recoloured = a.recolor(&moved, Rgba::rgb(0xff, 0, 0));
+        assert_ne!(recoloured[0].1, moved[0], "a recoloured stroke gets a new id");
+        assert_ne!(content_hash(&a), before, "a recolour changes the fingerprint");
+        assert!(a.strokes().iter().all(|s| s.id != id), "no stroke kept its old id");
     }
 
     #[test]
