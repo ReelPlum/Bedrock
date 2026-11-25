@@ -443,7 +443,11 @@ test('bug: an upload with no connection says so in the console', async () => {
   page.on('console', (m) => logged.push(`${m.type()}: ${m.text()}`));
   await writeOne(page);
   await settle(page, () => /1 waiting/.test(document.getElementById('count').textContent));
-  assert.ok(logged.some((l) => /^warning: .*samples were not sent.*no answer/.test(l)), logged.join(' | '));
+  // "1 waiting" shows as soon as the sample is queued; the warning comes
+  // after both tries (gzip, then plain) have failed, so wait for it.
+  const warned = () => logged.some((l) => /^warning: .*samples were not sent.*no answer/.test(l));
+  for (let i = 0; i < 200 && !warned(); i++) await page.waitForTimeout(50);
+  assert.ok(warned(), logged.join(' | '));
   await ctx.close();
 });
 
