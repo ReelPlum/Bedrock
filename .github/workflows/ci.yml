@@ -23,6 +23,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # docs/security.md rule 6: no known advisories in the dependencies.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=low
+        working-directory: apps/web
+      - run: npm audit --audit-level=low
+        working-directory: apps/obsidian
+
   web:
     runs-on: ubuntu-latest
     steps:
@@ -56,7 +74,7 @@ jobs:
       - name: Install Playwright
         working-directory: apps/web
         run: |
-          npm install --no-package-lock
+          npm ci
           npx playwright install --with-deps chromium
       - name: Browser tests
         working-directory: apps/web
@@ -65,7 +83,7 @@ jobs:
       - name: Obsidian plugin tests
         working-directory: apps/obsidian
         run: |
-          npm install --no-package-lock
+          npm ci
           npm test
       - name: Build Obsidian plugin
         working-directory: apps/obsidian

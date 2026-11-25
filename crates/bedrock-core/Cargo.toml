@@ -25,6 +25,7 @@ roxmltree = "0.21"
 spellbook = "0.4"
 rstar = "0.14"
 leb128 = "0.2"
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }

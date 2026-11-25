@@ -84,6 +84,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **THEN** each comes back to its own view
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: the camera is remembered per vault file -->
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: session camera is kept per file; the link picker and links get the note path -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: the camera follows a renamed note, even with search switched off -->
 
 #### Scenario: The bridge to the web app
 - **GIVEN** the web app running in the view
@@ -112,6 +113,7 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 <!-- test-js: apps/obsidian/tests/unit.test.mjs :: indexer sync indexes notes written elsewhere and skips up-to-date ones -->
 <!-- test-js: apps/obsidian/tests/plugin.test.mjs :: at start, an empty (new) note is left alone: nothing to index yet -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: correcting what the recogniser read updates the search index -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: renaming an empty note makes no index note -->
 
 ### Requirement: Search hits and links SHALL lead to the ink
 
@@ -150,6 +152,51 @@ jumping from a search hit or a link to the ink. Sidecars beside notes are
 - **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`); the word menu moves above the keyboard, any other text box being typed in slides into sight with the page (`keep-in-view.js`), and both go back when the keyboard goes
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the word menu moves above the iPad keyboard, and back when it goes -->
 <!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: any text box being typed in slides into sight above the iPad keyboard, and back after -->
+
+#### Scenario: The iPad keyboard does not hide the word menu
+- **GIVEN** a word's menu open low in the view on an iPad
+- **WHEN** the on-screen keyboard comes up (Obsidian sets `--keyboard-height` and fires `keyboardWillShow` without resizing the view) or the visible part of the window shrinks
+- **THEN** the view tells the canvas how much of its bottom is hidden (`inset { bottom }`), the menu moves above the keyboard with its text box in sight, and back when the keyboard goes
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: bug: the word menu moves above the iPad keyboard, and back when it goes -->
+
+#### Scenario: Searching a PDF to link the page of a passage
+- **GIVEN** a PDF open in the link picker
+- **WHEN** text is typed in "Search in this PDF"
+- **THEN** the matches are listed instead of the pages, each with its page and the words around it, found the way the search bar of Obsidian's PDF viewer finds them (any case, accents optional, over line breaks and hyphens at line ends); tapping a match links its page (`[[File.pdf#page=N]]`); no match says so; an empty search shows the pages again
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker searches the text of an open PDF and links the page of a match -->
+
+#### Scenario: The PDF search is Obsidian's
+- **GIVEN** the plugin asked by the canvas to search a PDF (`pdf-find { path, query }`, a PDF and at most 200 letters only)
+- **WHEN** Obsidian has loaded its PDF viewer (`window.pdfjsViewer`)
+- **THEN** the viewer's PDF.js find controller finds the matches; before that the plugin's own matching, which finds the same; each match carries its page, the words around it and where it is in the page's text items (Obsidian's `selection=` numbers); at most 100 are listed, with the total
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the plugin searches a real PDF with the find controller of Obsidian's PDF viewer, and without it finds the same -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a PDF search's matches name the passage in the page's text items, as Obsidian's selection links count them -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas may search PDFs only, for a short text -->
+
+#### Scenario: Zooming a PDF in the link picker
+- **GIVEN** a PDF open in the link picker, 3 pages across
+- **WHEN** + or −, a pinch, or a trackpad pinch (ctrl + wheel) is used
+- **THEN** the pages go to 2 and 1 across (bigger) or back to 3 and 4 (smaller), the page at the top stays in place, pages shown bigger are drawn again sharper, a page still links when tapped, and the next PDF opens as zoomed
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: an open PDF in the link picker zooms from 3 pages across to 2 and 1 and back, with buttons, a pinch or a trackpad -->
+
+#### Scenario: Searching a PDF shows the pages it was found on
+- **GIVEN** a PDF open in the link picker
+- **WHEN** text is searched for
+- **THEN** the matches are listed page by page, each page with its picture beside its matches, and tapping the picture or a match links the page
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker searches the text of an open PDF and links the page of a match -->
+
+#### Scenario: A PDF's text is read once for search
+- **GIVEN** a PDF opened in the link picker
+- **WHEN** it is searched again and again
+- **THEN** the plugin reads each page's text once (starting as the PDF opens), and later searches only match the kept text; the file's bytes are read once per opened file, not for every page drawn
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a PDF's text is read once for search; later searches only match -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the plugin searches a real PDF with the find controller of Obsidian's PDF viewer, and without it finds the same -->
+
+#### Scenario: Only the pages in sight are drawn
+- **GIVEN** a long PDF open in the link picker
+- **WHEN** it is scrolled fast to the end
+- **THEN** pages that only flew by are not drawn (also on a slow device, with long frames), the pages in sight at the end are, at most two pictures are asked for at once, and pages not drawn yet already have their place
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: only the pages in sight are drawn: a fast scroll skips the pages passed on the way -->
 
 ### Requirement: A handwritten note SHALL be made from a note or PDF, linking to it
 
@@ -354,3 +401,180 @@ Obsidian's Electron and iPadOS's WebKit) is about 60 lines. With one file at
 a time the queue is a loop, and p-queue would not give the timeout and
 restart of a stuck worker, which is the part that takes care. PDFs are read
 by the existing `bedrock-pdf` WebAssembly (`hayro-syntax`, see `import-pdf`).
+
+### Requirement: The plugin SHALL be released from this repository so BRAT and Obsidian can install it
+
+#### Scenario: The manifest is at the repository root
+- **GIVEN** the repository
+- **WHEN** Obsidian or BRAT reads `manifest.json` at its root
+- **THEN** it follows Obsidian's manifest rules and `versions.json` maps its version to its `minAppVersion`
+<!-- test-js: apps/obsidian/tests/release.test.mjs :: manifest.json at the repository root follows Obsidian's rules and is listed in versions.json -->
+
+#### Scenario: Tagging a version publishes it
+- **GIVEN** a tag `0.2.0` equal to the manifest version, or a beta tag `0.2.0-beta.1`
+- **WHEN** it is pushed
+- **THEN** a GitHub release with that tag carries `main.js`, `manifest.json` (with the tag as its version) and `styles.css`, and a beta is a pre-release; a tag that is not the manifest version, or is not a plugin version, is refused before building
+<!-- test-js: apps/obsidian/tests/release.test.mjs :: a release tag must be the manifest version; a beta tag gets its own version in the released manifest -->
+
+#### Scenario: A broken manifest is not released
+- **GIVEN** a manifest that breaks Obsidian's rules, or a version missing from `versions.json`
+- **WHEN** a version is tagged
+- **THEN** the release is refused and says why
+<!-- test-js: apps/obsidian/tests/release.test.mjs :: a release is refused when the manifest breaks Obsidian's rules -->
+
+### Requirement: Writing in Obsidian SHALL cost Obsidian's main thread little
+
+The canvas shares Obsidian's main thread, so work done for each save there
+holds up the pen.
+
+#### Scenario: The index note waits for a pause in writing
+- **GIVEN** a note being written in the view
+- **WHEN** the canvas saves again and again while the writer keeps writing
+- **THEN** every save reaches the file at once, the index note is written once writing has paused (2.5 s) with the latest text, a waiting index note is written as soon as the view closes, and nothing is written when nothing is waiting
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: while the writer keeps writing, the index note waits for a pause and is written once -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: saves hand the file to Obsidian without a copy, and the index note waits for writing to pause -->
+
+#### Scenario: A saved file is handed over, not copied
+- **GIVEN** the canvas saving its note
+- **WHEN** it sends the file to the plugin
+- **THEN** the file's buffer is transferred, and the session writes it to the vault without another copy
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: saves hand the file to Obsidian without a copy, and the index note waits for writing to pause -->
+
+#### Scenario: The WebAssembly is compiled once while the plugin runs
+- **GIVEN** the plugin running, with notes opened one after another
+- **WHEN** each canvas starts
+- **THEN** it asks the plugin for the compiled WebAssembly (`wasm`) and gets the module the plugin compiled soon after Obsidian started (or for the first note), compiles nothing itself, and passes it on to its save worker; with no module it compiles its own; a reloaded plugin compiles afresh
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the WebAssembly is compiled once while the plugin runs, and the session hands it to each canvas -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the WebAssembly is compiled once for all notes; each canvas and its save worker reuse it -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: soon after Obsidian starts, the WebAssembly is compiled once, ready for the first note -->
+
+### Requirement: The note's name in the header SHALL be its file name
+
+Inside Obsidian the canvas header shows the vault file's name without
+`.bedrock`, and the two are kept the same in both directions.
+
+#### Scenario: The header shows the file name
+- **GIVEN** a new note `Handwritten note.bedrock`, and a note `Forces.bedrock` whose stored title is "Old title"
+- **WHEN** each is opened in the view
+- **THEN** the header shows "Handwritten note" and "Forces", and the next save stores the file name as the title
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the header shows the note's file name, and naming the note there renames the file -->
+
+#### Scenario: Naming the note in the header renames the file
+- **GIVEN** a note open in the view
+- **WHEN** a new name is typed in the header and finished (Enter, or leaving the box)
+- **THEN** the vault file is renamed once, in its folder, with Obsidian's `fileManager.renameFile` (so links to it are updated), and the index note or sidecar and the camera follow; typing alone renames nothing
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the header shows the note's file name, and naming the note there renames the file -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: naming a note in the header renames its file with Obsidian's file manager, in its folder -->
+
+#### Scenario: Names a file cannot have
+- **GIVEN** a name typed in the header
+- **WHEN** it holds characters a file name or an Obsidian link cannot (`\ / : * ? " < > | # ^ [ ]`), is empty, or another file in the folder already has it
+- **THEN** those characters become spaces; an empty name or a clash leaves the file as it is (a clash with a notice) and the header goes back to the file name
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a title becomes a file name Obsidian can link to -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the app can ask to rename the note; empty and unchanged names rename nothing -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: a header name another file already has renames nothing and says so -->
+
+#### Scenario: Renaming the file in Obsidian updates the header
+- **GIVEN** a note open in the view
+- **WHEN** its file is renamed or moved in Obsidian
+- **THEN** the view sends `renamed { name }` and the header shows the new name, which the next save stores as the title
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: renaming the file in Obsidian puts the new name in the header -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: the view tells the canvas when Obsidian renames its file -->
+
+### Requirement: The link picker SHALL find the words of notes in every format version
+
+#### Scenario: A note with its samples in points.bin
+- **GIVEN** another Bedrock note saved as format version 2 (samples in `points.bin`), or an older one with every sample in `note.json`, or one that mixes both
+- **WHEN** it is opened in the link picker
+- **THEN** its words are marked in the same places either way, and a damaged `points.bin` marks no words instead of failing
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the link picker finds the words of notes with their samples in points.bin, and of older notes -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: the link picker opens another Bedrock note to link one of its words, or the whole note -->
+
+### Requirement: The ink SHALL be locked in Obsidian on a computer
+
+In Obsidian's desktop app (Mac, Windows, Linux) a Bedrock note opens "view
+only": it can be looked at, moved, zoomed and searched, its links followed,
+its tags edited and what the recogniser read corrected, but its ink,
+pictures and text boxes never change. On the iPad and phones notes are
+edited as before.
+
+#### Scenario: Pen, mouse and fingers move the page and never draw
+- **GIVEN** a note open view only
+- **WHEN** the pen, the mouse or a finger is dragged across it (with "Draw with finger" on too), or two or three fingers double-tap
+- **THEN** the page moves and nothing is drawn, erased, selected, undone or redone
+<!-- test: view_only_pen_and_mouse_move_the_page_and_never_draw -->
+<!-- test: view_only_ignores_undo_redo_and_eraser_taps -->
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: Scrolling zooms
+- **GIVEN** a note open view only
+- **WHEN** the mouse wheel turns, or two fingers scroll on a trackpad
+- **THEN** the page zooms around the pointer (in when scrolling up, about a fifth per wheel notch) instead of moving; a trackpad pinch zooms as before
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: Only what leaves the ink alone is offered
+- **GIVEN** a note written on the iPad, with words, a tag and a link of the whole note, opened view only
+- **WHEN** it is shown
+- **THEN** the toolbar, undo, redo, inserting, pasting, importing and the pen's settings are hidden, the header says "View only" and its name cannot be edited; a word's menu says what the word was read as, corrects it ("This is right", "Correct the text…", maths or text, "Not a word") and copies a link to it, but does not link, group, recolour, duplicate or delete; "Tags and links…" adds and removes tags, and lists the links and opens one, with nothing to add or remove; "Show all ink" stays
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: Tags and corrections are saved; nothing else is
+- **GIVEN** a note open view only
+- **WHEN** keys for undo, redo, tools or delete are pressed, text is pasted, the recogniser reads, and the view saves and closes; then a reading is corrected and tags are added and removed
+- **THEN** the first changes nothing and writes nothing (no autosave, so opening a note on a computer never writes it); each correction and tag change is saved at once with the ink exactly as it was, and reaches the index note
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: on a computer the ink is locked: pen and mouse move the page, scrolling zooms, nothing is drawn; tags and readings are edited and saved -->
+
+#### Scenario: The plugin refuses changed ink
+- **GIVEN** a view-only canvas asks to write its file
+- **WHEN** the new file adds, removes or changes strokes (their samples or brush), pictures or text boxes, or cannot be read
+- **THEN** the plugin refuses it and the file keeps its bytes; a file whose ink, pictures and text boxes are as they were (tags, readings, links of the whole note) is written, and a note from before `points.bin` may be written with its samples moved there; the file is never renamed
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only with its ink exactly as it was -->
+
+#### Scenario: New notes are made on a computer, and written on the iPad
+- **GIVEN** the plugin in Obsidian's desktop app
+- **WHEN** it loads, and "New Bedrock note" (ribbon, folder menu, command) or "New handwritten note linking here" (note, PDF or editor menu, command) is chosen
+- **THEN** the empty note is made as on the iPad and opens view only (`BEDROCK_VIEW_ONLY`); the header cannot rename it
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: on a desktop computer notes are view only, and new notes are still made; the iPad edits -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the canvas pages are written with their files handed over as blob: URLs, never loaded by address -->
+
+#### Scenario: A note made about a page keeps its link on a computer
+- **GIVEN** a note made on a computer with "New handwritten note linking here"
+- **WHEN** its view-only canvas starts
+- **THEN** it asks for the starting link and saves it at once, as on the iPad; after that the ink is locked
+<!-- test-js: apps/obsidian/tests/host.test.mjs :: a note made on a computer about a page keeps its link, and is view only after that -->
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: a view-only session never renames the file, and writes it only with its ink exactly as it was -->
+
+### Requirement: The plugin SHALL offer a graph filter that shows each note once, without the #bedrock tag
+
+Obsidian gives plugins no way to set the graph's filters, so the plugin
+hands the writer one to paste into the graph's "Search files":
+`-file:/\.bedrock$/ -(#bedrock)`. `-file:/\.bedrock$/` hides the `.bedrock`
+files, so each handwritten note is one node, its index note (sidecars end
+in `.bedrock.md` and stay). `-(#bedrock)` hides the `#bedrock` tag node
+and keeps the notes that carry the tag. With "Attachments" on, PDFs show,
+and a note linking a PDF page is an edge from its index note to the PDF.
+
+#### Scenario: What the filter hides and keeps
+- **GIVEN** a handwritten note with a tag and a link to a PDF page, its index note, a sidecar and the PDF
+- **WHEN** the graph's search is the plugin's filter
+- **THEN** the `.bedrock` file matches `-file:/\.bedrock$/` and the index note, sidecar and PDF do not; the index note says `bedrock` only in its front matter tags, never `#bedrock` in its text, and keeps its link to the PDF page
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the graph filter hides .bedrock files and the #bedrock tag node, and keeps index notes, sidecars and PDFs -->
+
+#### Scenario: Copying the filter
+- **GIVEN** the plugin is loaded, on a computer or an iPad
+- **WHEN** "Copy graph filter that hides .bedrock files and the #bedrock tag" is run, or "Copy filter" is pressed in the settings
+- **THEN** the filter is on the clipboard and a notice says to turn on "Attachments" and paste it into "Search files"; where the clipboard is refused the notice shows the filter itself
+<!-- test-js: apps/obsidian/tests/unit.test.mjs :: the graph filter goes on the clipboard, or is shown where the clipboard is refused -->
+<!-- test-js: apps/obsidian/tests/plugin.test.mjs :: registers the .bedrock view, commands and settings, and writes nothing into the plugin folder -->
+
+## Open source used
+
+### Libraries and tools of the plugin
+
+| | PDF.js | esbuild | BRAT, attest-build-provenance, GitHub CLI |
+|---|---|---|---|
+| Version | Obsidian's own copy (`loadPdfJs()`, `window.pdfjsViewer`); [pdfjs-dist](https://www.npmjs.com/package/pdfjs-dist) 4.10.38 in the tests only | [esbuild](https://www.npmjs.com/package/esbuild) 0.28.2, build only | Used to install and release, not bundled |
+| Used for | Drawing a PDF's pages in the link picker and searching them with its find controller. | Bundling the plugin and the web app's module graphs into `main.js`. | Installing beta builds (BRAT), signed provenance for the release files, publishing the release. |
+| Why this one | Obsidian already ships it for its PDF viewer, so nothing is added to the plugin. Firefox's built-in viewer, maintained by Mozilla for over a decade. | The bundler Obsidian's sample plugin uses; fast and with no plugins needed. | The tools Obsidian's docs and release guide recommend. |
+| Licence | Apache-2.0 | MIT | MIT (all three) |
+| Not Rust | JavaScript, already inside Obsidian. | Go, build only. | Not shipped. |

@@ -160,3 +160,13 @@ the network. The app shows the message only then.
 | Licence | MPL-2.0: commercial use allowed; changes to spellbook's own files would have to be published (we make none). | SCOWL's permissive licence (`apps/web/dict/LICENSE-en_US.txt`): use, copying and selling allowed with the notice kept. |
 | Considered | `zspell` (also Hunspell, less complete); Hunspell or Nuspell themselves (C and C++, harder to build for WebAssembly); keeping our own word list checker (no rules, so names and contractions failed unless listed one by one). | Keeping the plain SCOWL word list (no capitals or apostrophes in the packaged list). |
 | Not Rust | No. | Data, not code. |
+
+### Recognition models and runtime
+
+| | TrOCR small and base (handwritten) | Pix2Text MFR 1.5 | Transformers.js | onnxruntime-web (tests only) |
+|---|---|---|---|---|
+| Version | `Xenova/trocr-small-handwritten`, `Xenova/trocr-base-handwritten`: ONNX copies of [microsoft/trocr-base-handwritten](https://huggingface.co/microsoft/trocr-base-handwritten) and its small sibling (`apps/web/src/models.js`) | [breezedeus/pix2text-mfr](https://huggingface.co/breezedeus/pix2text-mfr) 1.5 | [@huggingface/transformers](https://www.npmjs.com/package/@huggingface/transformers) 4.3.1, from jsDelivr at that exact version | 1.31.0-dev.20260914, a nightly build, in `apps/web/package.json` |
+| Used for | Reading handwritten words: small live, base for the careful re-read. | Reading handwritten formulas into LaTeX. | Running both models in the recogniser worker, and their download cache. | Checking the formula model in the browser tests. Not shipped. |
+| Why this one | Open handwriting models that run in a tablet browser; Microsoft's TrOCR is the best known open line recogniser. | One of very few open models that give LaTeX for handwritten maths. | Hugging Face's own ONNX runner for the browser, with the models already converted. | The runtime Transformers.js is built on. |
+| Licence | MIT on the model card. **Open question:** the handwritten models are fine-tuned on the IAM database, which is for non-commercial research only (see the backend's `training-pipeline` spec), and the card does not say whether that limits the weights. Needs Frederik's decision before a commercial launch. | MIT on the model card. The training data is not named. | Apache-2.0. | MIT. |
+| Not Rust | Models are data. | Data. | JavaScript. No approval is recorded; Rust options (`ort`, `tract`, `candle` in WebAssembly) were not compared. | JavaScript, tests only. |
