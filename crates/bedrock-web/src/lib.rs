@@ -1187,6 +1187,13 @@ pub fn edit_saved_note(
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// File name for a new picture in a note, from its bytes (see
+/// `bedrock_core::format::picture_name`).
+#[wasm_bindgen]
+pub fn picture_name(bytes: &[u8], ext: &str) -> String {
+    format::picture_name(bytes, ext)
+}
+
 /// Note title stored in a file, without opening it on the canvas (for the library).
 #[wasm_bindgen]
 pub fn peek_title(bytes: &[u8]) -> Option<String> {

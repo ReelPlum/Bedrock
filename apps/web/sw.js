@@ -8,7 +8,7 @@
 // own cache, served from there first. Only Bedrock's own caches are cleared
 // on an update: Transformers.js keeps the downloaded handwriting models in
 // `transformers-cache`, and they must survive updates to work offline.
-const CACHE = 'bedrock-v39';
+const CACHE = 'bedrock-v40';
 const LIBS = 'bedrock-libs-v1';
 const KEEP = [CACHE, LIBS];
 // Transformers.js at an exact version (x.y.z), as recognizer-worker.js loads it.

@@ -20,6 +20,7 @@ stored with `engine: "user"` and what was read kept in `alternatives`.
 <!-- test: a_word_added_later_joins_its_line -->
 <!-- test: drawings_and_highlights_are_not_words -->
 <!-- test: word_ids_are_stable_and_lookup_works -->
+<!-- test: word_ids_are_blake3_of_the_strokes -->
 <!-- test: one_stroke_names_its_whole_word -->
 <!-- test: layout_of_a_full_page_is_fast -->
 
@@ -168,5 +169,5 @@ the network. The app shows the message only then.
 | Version | `Xenova/trocr-small-handwritten`, `Xenova/trocr-base-handwritten`: ONNX copies of [microsoft/trocr-base-handwritten](https://huggingface.co/microsoft/trocr-base-handwritten) and its small sibling (`apps/web/src/models.js`) | [breezedeus/pix2text-mfr](https://huggingface.co/breezedeus/pix2text-mfr) 1.5 | [@huggingface/transformers](https://www.npmjs.com/package/@huggingface/transformers) 4.3.1, from jsDelivr at that exact version | 1.31.0-dev.20260914, a nightly build, in `apps/web/package.json` |
 | Used for | Reading handwritten words: small live, base for the careful re-read. | Reading handwritten formulas into LaTeX. | Running both models in the recogniser worker, and their download cache. | Checking the formula model in the browser tests. Not shipped. |
 | Why this one | Open handwriting models that run in a tablet browser; Microsoft's TrOCR is the best known open line recogniser. | One of very few open models that give LaTeX for handwritten maths. | Hugging Face's own ONNX runner for the browser, with the models already converted. | The runtime Transformers.js is built on. |
-| Licence | MIT on the model card. **Open question:** the handwritten models are fine-tuned on the IAM database, which is for non-commercial research only (see the backend's `training-pipeline` spec), and the card does not say whether that limits the weights. Needs Frederik's decision before a commercial launch. | MIT on the model card. The training data is not named. | Apache-2.0. | MIT. |
+| Licence | MIT on the model card. **Open question:** the handwritten models are fine-tuned on the IAM database, which is for non-commercial research only (see the backend's `training-pipeline` spec), and the card does not say whether that limits the weights. Needs Frederik's decision before a commercial launch. Parked (Frederik, 2026-11-25): recognition is not to be run for now, as the image models read too poorly, so nothing depends on IAM yet. | MIT on the model card. The training data is not named. | Apache-2.0. | MIT. |
 | Not Rust | Models are data. | Data. | JavaScript. No approval is recorded; Rust options (`ort`, `tract`, `candle` in WebAssembly) were not compared. | JavaScript, tests only. |
