@@ -1306,6 +1306,68 @@ test('all recognition models share one worker (one WebAssembly runtime); out of 
   await ctx.close();
 });
 
+test('the careful model stays loaded between pauses in writing and is freed once writing stops (regression)', async () => {
+  // A report from iPad: handwriting recognition drained the battery. After
+  // every careful pass the larger model was freed, so the next pause in
+  // writing (a few seconds later) loaded it again from the cache: the most
+  // expensive step there is, repeated after nearly every word.
+  const { page, ctx, errors } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const hw = bedrock.handwriting;
+    bedrock.minimap.visible = false;
+    const got = [];
+    const Real = window.Worker;
+    window.Worker = class {
+      postMessage(m) {
+        got.push(m.release ? `release ${m.release}` : m.quality);
+        if (m.release) return;
+        // Answers like the real worker: the engine names the model.
+        const [text, model] = m.quality === 'careful' ? ['world', 'Xenova/trocr-base-handwritten'] : ['wrold', 'Xenova/trocr-small-handwritten'];
+        setTimeout(() => this.onmessage({ data: { id: m.id, text, engine: `${model} (fake)` } }), 0);
+      }
+      terminate() {}
+    };
+    hw.engine = null;
+    hw.dropWorker('all');
+    const word = async (x0, y) => {
+      for (let k = 0; k < 4; k++) {
+        const x = x0 + k * 22;
+        t.ev('pointerdown', 1, 'pen', x, y, { pressure: 0.6 });
+        for (let j = 1; j <= 8; j++) t.ev('pointermove', 1, 'pen', x + j * 2, y - (j % 2) * 26, { pressure: 0.6 });
+        t.ev('pointerup', 1, 'pen', x + 16, y, { pressure: 0 });
+      }
+      await t.frame();
+    };
+    const out = {};
+    out.mode = hw.mode;
+    await word(150, 300);
+    await hw.run();
+    await hw.runCareful();
+    await word(150, 450);
+    await hw.run();
+    await hw.runCareful();
+    await new Promise((res) => setTimeout(res, 50));
+    out.whileWriting = got.slice();
+    out.texts = JSON.parse(bedrock.canvas.words_json()).map((w) => w.text);
+    // The writer stops: the model's memory is given back, once.
+    hw.releaseMs = 30;
+    await hw.runCareful(); // nothing left to read: no release from this
+    await word(150, 600);
+    await hw.run();
+    await hw.runCareful();
+    await new Promise((res) => setTimeout(res, 150));
+    out.after = got.slice(out.whileWriting.length);
+    window.Worker = Real;
+    return out;
+  });
+  assert.equal(r.mode, 'both');
+  assert.deepEqual(r.whileWriting, ['fast', 'careful', 'fast', 'careful'], 'no release between two pauses in writing');
+  assert.deepEqual(r.texts, ['world', 'world'], 'results are the same: the careful reading wins');
+  assert.deepEqual(r.after, ['fast', 'careful', 'release text-careful'], 'freed once the writer stops');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 test('recognition reads one word at a time, newest words first, and times each word from when the recogniser starts on it (regression)', async () => {
   // A report from iPad Safari: up to 10 "recognize" jobs ran at once for
   // 37 s to 92 s. Every unread word was sent at the same moment, and each

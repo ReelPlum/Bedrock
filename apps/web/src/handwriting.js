@@ -18,6 +18,11 @@ import { asset } from './assets.js';
 
 const IDLE_MS = 700; // recognise once the pen has rested this long
 const CAREFUL_IDLE_MS = 4000; // the careful re-read starts after this long
+// The careful model is kept loaded between careful passes and its memory
+// given back only once no careful pass has started for this long. Loading
+// it (reading the model from the cache and building its ONNX session) costs
+// far more power than reading a word, so it is not reloaded at every pause.
+const CAREFUL_RELEASE_MS = 60_000;
 const LETTER_PX = 40; // letter height in the image sent to the recogniser
 const PAD_PX = 12;
 // A recogniser that has said nothing for this long (no answer, no download
@@ -78,6 +83,8 @@ export class Handwriting {
     this.timing = null; // the `recognize` job of the word being read
     this.watchdog = null;
     this.hangMs = HANG_MS;
+    this.releaseTimer = null; // gives the careful model's memory back
+    this.releaseMs = CAREFUL_RELEASE_MS;
   }
 
   /** Load the spell-check dictionary: a Hunspell `.aff` file of rules and
@@ -156,13 +163,30 @@ export class Handwriting {
     const run = this.carefulRun;
     const words = JSON.parse(this.canvas.words_json());
     const todo = words.filter((w) => w.kind !== 'drawing' && !this.isCareful(w) && !this.inFlight.has(w.id) && this._tries('careful', w.id) < 2);
-    for (const w of todo) {
-      if (run !== this.carefulRun || !this.enabled || this.canvas.is_drawing()) return;
-      await this._recognise(w, 'careful');
+    if (!todo.length) return;
+    // Writing goes on in bursts with pauses: the next pass is a few seconds
+    // away, so the model stays loaded rather than being loaded again.
+    clearTimeout(this.releaseTimer);
+    this.releaseTimer = null;
+    try {
+      for (const w of todo) {
+        if (run !== this.carefulRun || !this.enabled || this.canvas.is_drawing()) return;
+        await this._recognise(w, 'careful');
+      }
+    } finally {
+      // Give the larger model's memory back once the writer has stopped for
+      // a while, unless it is the only model in use.
+      if (this.mode === 'both') this._releaseLater();
     }
-    // Pass finished: give the larger model's memory back until next time,
-    // unless it is the only model in use.
-    if (todo.length && this.mode === 'both') this.releaseModel('text-careful');
+  }
+
+  /** Frees the careful model `releaseMs` after the last careful pass. */
+  _releaseLater() {
+    clearTimeout(this.releaseTimer);
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      this.releaseModel('text-careful');
+    }, this.releaseMs);
   }
 
   async _recognise(word, quality = 'fast') {
