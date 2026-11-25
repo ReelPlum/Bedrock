@@ -125,6 +125,21 @@ the network. The app shows the message only then.
 - **THEN** the larger model re-reads words and its answer replaces the quick one, a word it read is not read again, it stops when writing resumes, and the mode is remembered
 <!-- test-js: apps/web/tests/app.test.mjs :: careful reading: the larger model re-reads words after a pause, stops when writing resumes, and follows the menu mode -->
 
+#### Scenario: The careful model is not reloaded at every pause (regression)
+On iPad, handwriting recognition drained the battery. With both models on
+(the default), every careful pass ended by freeing the larger model, and the
+next pause in writing, a few seconds later, loaded it again: reading it from
+the browser's cache and building its ONNX session, by far the most costly
+step, repeated after nearly every word. Now the careful model stays loaded
+while the person writes and is freed once no careful pass has started for
+60 s. A pass with nothing to read loads and frees nothing. The memory used
+at its peak is the same as before (both models were already loaded during
+every careful pass), and every word is read by the same models as before.
+- **GIVEN** both models on, and words written with a pause after each
+- **WHEN** each pause runs a careful pass
+- **THEN** the careful model is not freed between the passes, each word gets the same reading as before, and the model is freed once, after the writer stops
+<!-- test-js: apps/web/tests/app.test.mjs :: the careful model stays loaded between pauses in writing and is freed once writing stops (regression) -->
+
 #### Scenario: The recogniser view
 - **GIVEN** written words
 - **WHEN** the recogniser view is opened from the menu
