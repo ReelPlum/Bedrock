@@ -127,6 +127,29 @@ test('pressure changes the line width', async () => {
   await ctx.close();
 });
 
+// Bug: "pressure changes the line width" failed on slow CI runners only
+// (PR #73, heavy 3px vs light 4px). t.line's events carried the time the
+// browser made them; a slow runner took long enough between them for the
+// app to treat the line as timed and very fast, so it thinned it, and a
+// fast runner did not. A line drawn by the tests must not depend on that.
+test('bug: a test line is drawn the same on a slow computer as on a fast one', async () => {
+  const { page, ctx } = await openApp(env);
+  const r = await page.evaluate(async () => {
+    const fast = async (y) => { await t.line(200, y, 700, y, { pressure: 1.0 }); };
+    // A slow computer: each pen move takes 2 ms to reach the app.
+    const stall = () => { const end = performance.now() + 2; while (performance.now() < end); };
+    const stage = document.getElementById('stage');
+    await fast(200);
+    stage.addEventListener('pointermove', stall, { capture: true });
+    await fast(400);
+    stage.removeEventListener('pointermove', stall, { capture: true });
+    await t.frame();
+    return { quick: t.thickness(450, 185, 215), slow: t.thickness(450, 385, 415) };
+  });
+  assert.equal(r.slow, r.quick, `slow ${r.slow}px, quick ${r.quick}px`);
+  await ctx.close();
+});
+
 test('pen pressure feel: soft draws light touches wider, is remembered, and redraws old ink', async () => {
   const { page, ctx } = await openApp(env);
   const r = await page.evaluate(async () => {

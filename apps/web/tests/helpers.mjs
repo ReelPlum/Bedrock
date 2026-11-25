@@ -72,18 +72,27 @@ export async function installPointerHelpers(page) {
     window.t = {
       ev,
       frame,
-      /** Draw a straight pen line in `steps` moves. */
-      async line(x0, y0, x1, y1, { id = 1, type = 'pen', pressure = 0.5, steps = 20, tiltX = 0 } = {}) {
-        ev('pointerdown', id, type, x0, y0, { pressure, tiltX });
+      /** Draw a straight pen line in `steps` moves, `stepMs` apart.
+       *  Every event carries a time it was given, never the time the
+       *  browser happened to make it: with those, a slow computer spread
+       *  the samples over enough milliseconds for the app to judge the
+       *  line timed (and very fast, so thinner) where a fast one did not
+       *  (CI: "pressure changes the line width"). The default, 0, is a
+       *  line without timing, as the tests were written against. */
+      async line(x0, y0, x1, y1, { id = 1, type = 'pen', pressure = 0.5, steps = 20, tiltX = 0, stepMs = 0 } = {}) {
+        const t0 = performance.now();
+        ev('pointerdown', id, type, x0, y0, { pressure, tiltX, time: t0 });
         for (let i = 1; i <= steps; i++) {
           const f = i / steps;
-          ev('pointermove', id, type, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, { pressure, tiltX });
+          ev('pointermove', id, type, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, { pressure, tiltX, time: t0 + i * stepMs });
         }
-        ev('pointerup', id, type, x1, y1, { pressure: 0 });
+        ev('pointerup', id, type, x1, y1, { pressure: 0, time: t0 + steps * stepMs });
         await frame();
       },
-      /** Count dark-ish pixels along a vertical scanline at x between y0..y1. */
-      thickness(x, y0, y1, threshold = 700) {
+      /** Count ink pixels along a vertical scanline at x between y0..y1.
+       *  The threshold sits below the lines of grid paper (670 here), the
+       *  paper of new notes, which were otherwise counted as ink too. */
+      thickness(x, y0, y1, threshold = 600) {
         const c = window.bedrock.canvas;
         let n = 0;
         for (let y = y0; y <= y1; y++) {

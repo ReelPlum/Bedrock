@@ -5,7 +5,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { launch } from './helpers.mjs';
+import { gunzipSync } from 'node:zlib';
+import { launch, installPointerHelpers } from './helpers.mjs';
 
 let env;
 before(async () => { env = await launch(); });
@@ -31,12 +32,16 @@ async function context({ address = API, state = null } = {}) {
     if (server.down) return route.abort();
     const path = new URL(req.url()).pathname;
     const auth = req.headers().authorization;
-    server.requests.push({ method: req.method(), path, auth });
+    // Uploads come gzipped (Content-Encoding: gzip), as to the real backend.
+    const raw = req.postDataBuffer();
+    const sent = raw ? JSON.parse((req.headers()['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString()) : null;
+    server.requests.push({ method: req.method(), path, auth, body: sent });
     const ok = !server.refuseAll && auth === `Bearer ${CODE}`;
     const body = !ok ? { error: 'code', detail: 'not accepted' }
       : path === '/v1/stats' ? { samples: 0 }
       : path === '/v1/prompts' ? { words: [], sentences: [], paragraphs: [] }
-      : { accepted: (req.postDataJSON()?.samples || []).map((x) => x.id), refused: [] };
+      : path === '/v1/notes' ? { accepted: (sent?.notes || []).map((x) => x.id), refused: [] }
+      : { accepted: (sent?.samples || []).map((x) => x.id), refused: [] };
     return route.fulfill({ status: ok ? 200 : 401, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   });
   return { ctx, server };
@@ -215,5 +220,31 @@ test('agreeing in another window of the app closes the gate in this one', async 
   await a.page.waitForFunction(() => !document.getElementById('launch-gate'));
   assert.equal(await a.page.isChecked('#mirror-notes'), true, 'and this window knows mirroring is on');
   assert.deepEqual([...a.errors, ...b.errors], []);
+  await ctx.close();
+});
+
+// Bug (CI runs 209, 210, 212 and 214): agreeing turns on "Mirror my notes",
+// and the gzipped mirror upload made this file's pretend backend throw
+// ("POST data is not a valid JSON object"). Whether it came before the
+// test closed its window depended on timing, so the file failed only
+// sometimes, with an unhandled rejection after the tests had passed.
+// Before the fix the upload was never answered, so the test hung: it has a
+// time limit to fail instead.
+test('bug: after agreeing, the notes written are mirrored to the server', { timeout: 30000 }, async () => {
+  const { ctx, server } = await context();
+  const { page, errors } = await openApp(ctx);
+  await fillGate(page);
+  await page.waitForFunction(() => !document.getElementById('launch-gate'));
+  await installPointerHelpers(page);
+  await page.evaluate(async () => {
+    bedrock.handwriting.enabled = false;
+    await t.line(200, 300, 600, 300, { pressure: 0.6 });
+    await bedrock.mirrorOpen(true);
+    await bedrock.mirrors.flush();
+  });
+  const uploads = server.requests.filter((r) => r.path === '/v1/notes');
+  assert.ok(uploads.length >= 1, 'the note was sent');
+  assert.equal(uploads.at(-1).body.notes[0].add.length, 1, 'with its one stroke');
+  assert.deepEqual(errors, []);
   await ctx.close();
 });
