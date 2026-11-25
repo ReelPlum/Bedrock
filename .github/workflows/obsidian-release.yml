@@ -56,7 +56,7 @@ jobs:
       - name: Build the plugin
         working-directory: apps/obsidian
         run: |
-          npm install --no-package-lock
+          npm ci
           npm run build
       - name: Unit tests
         working-directory: apps/obsidian

@@ -217,10 +217,24 @@ pub struct Scene {
 /// Keep at most this many strokes' geometry cached between syncs.
 const CACHE_STROKES: usize = 4096;
 
-fn fnv(hash: &mut u64, v: u64) {
-    for b in v.to_le_bytes() {
-        *hash ^= b as u64;
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+/// A chunk's key: plain BLAKE3 (`docs/security.md`) of the ids of its
+/// strokes, in order, cut to 64 bits. Kept in memory only.
+struct Key(blake3::Hasher);
+
+impl Key {
+    fn new(domain: &[u8]) -> Key {
+        let mut h = blake3::Hasher::new();
+        h.update(domain);
+        Key(h)
+    }
+
+    fn push(&mut self, v: u64) {
+        self.0.update(&v.to_le_bytes());
+    }
+
+    fn finish(&self) -> u64 {
+        let out = self.0.finalize();
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().expect("8 bytes"))
     }
 }
 
@@ -255,10 +269,11 @@ impl Scene {
     /// Like [`Scene::sync`], leaving out `hidden` strokes (e.g. a selection
     /// being dragged, which is drawn elsewhere meanwhile).
     pub fn sync_hiding(&mut self, doc: &Document, hidden: &[StrokeId]) -> SceneDiff {
-        let mut hidden_key = 0xcbf2_9ce4_8422_2325u64;
+        let mut key = Key::new(b"hidden");
         for id in hidden {
-            fnv(&mut hidden_key, id.0);
+            key.push(id.0);
         }
+        let hidden_key = key.finish();
         if self.revision == Some((doc.revision(), hidden_key)) {
             return SceneDiff::default();
         }
@@ -268,14 +283,14 @@ impl Scene {
         let mut groups: Vec<(u64, bool, Vec<usize>)> = Vec::new();
         for highlight_pass in [true, false] {
             let mut current: Vec<usize> = Vec::new();
-            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            let mut hash = Key::new(b"chunk");
             let mut verts = 0usize;
             let mut origin = Vec2::ZERO;
-            let close = |current: &mut Vec<usize>, hash: &mut u64, verts: &mut usize, groups: &mut Vec<_>| {
+            let close = |current: &mut Vec<usize>, hash: &mut Key, verts: &mut usize, groups: &mut Vec<_>| {
                 if !current.is_empty() {
-                    groups.push((*hash, false, std::mem::take(current)));
+                    groups.push((hash.finish(), false, std::mem::take(current)));
                 }
-                *hash = 0xcbf2_9ce4_8422_2325;
+                *hash = Key::new(b"chunk");
                 *verts = 0;
             };
             for (i, s) in strokes.iter().enumerate() {
@@ -287,9 +302,9 @@ impl Scene {
                 }
                 if is_translucent(s) {
                     close(&mut current, &mut hash, &mut verts, &mut groups);
-                    let mut h = 0x9e37_79b9_7f4a_7c15u64;
-                    fnv(&mut h, s.id.0);
-                    groups.push((h, true, vec![i]));
+                    let mut h = Key::new(b"translucent");
+                    h.push(s.id.0);
+                    groups.push((h.finish(), true, vec![i]));
                     continue;
                 }
                 let p0 = s.points[0].pos();
@@ -300,7 +315,7 @@ impl Scene {
                     origin = p0;
                 }
                 current.push(i);
-                fnv(&mut hash, s.id.0);
+                hash.push(s.id.0);
                 verts += s.points.len() + 1;
                 if s.id.0 % BOUNDARY_EVERY == 0 || verts > MAX_CHUNK_SEGMENTS {
                     close(&mut current, &mut hash, &mut verts, &mut groups);
