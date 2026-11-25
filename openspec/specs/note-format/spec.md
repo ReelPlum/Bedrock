@@ -91,6 +91,26 @@ same bytes.
 - **AND** the recognition is empty and one warning says why
 <!-- test: damaged_recognition_never_loses_ink -->
 
+#### Scenario: Text saved with older word ids
+- **GIVEN** a note whose `recognized.json` ids were written before word ids moved to BLAKE3 (FNV-1a)
+- **WHEN** it is opened, and the word is read again
+- **THEN** the text is shown, found by its strokes, the old id is kept until then, and the new reading replaces it instead of adding a second item
+<!-- test: text_saved_with_old_word_ids_is_kept -->
+
+### Requirement: New pictures SHALL be named by the BLAKE3 hash of their bytes
+
+A picture added to a note SHALL be stored as `images/<hash>.<ext>`, with
+the first 128 bits of the BLAKE3 hash of its bytes in hex
+(`docs/security.md`), so one picture used twice is stored once. A picture
+name is only looked up, never checked against its bytes, so notes that name
+pictures by SHA-256 (before 25 November 2026) or anything else keep opening.
+
+#### Scenario: Naming a picture
+- **GIVEN** the bytes of a picture
+- **WHEN** it is added to a note
+- **THEN** its name is the BLAKE3 hash of the bytes, the same for the same bytes and different for different ones
+<!-- test: pictures_are_named_by_blake3 -->
+
 ### Requirement: Readers SHALL recover what they can instead of failing
 
 #### Scenario: Damaged strokes are skipped, not fatal

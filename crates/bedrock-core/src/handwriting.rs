@@ -354,6 +354,39 @@ mod tests {
         assert_eq!(hw.whole_words(&doc, &[far, StrokeId(0xdead)]), vec![far]);
     }
 
+    /// Notes saved before word ids moved to BLAKE3 carry the old FNV ids in
+    /// `recognized.json`. Their text is still found (by its strokes), and
+    /// reading the word again replaces it instead of adding a second entry.
+    #[test]
+    fn text_saved_with_old_word_ids_is_kept() {
+        let mut doc = Document::new(1);
+        let x = line(&mut doc, 0.0, 100.0, 3);
+        line(&mut doc, x, 100.0, 4);
+        let mut hw = Handwriting::new();
+        let w = hw.words(&doc);
+        assert!(hw.set_text(&mut doc, w[0].id, "the", Kind::Text, "test", None));
+        let fnv = |ids: &[StrokeId]| {
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for b in ids.iter().flat_map(|id| id.0.to_le_bytes()) {
+                h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3);
+            }
+            h
+        };
+        let old_id = format!("{:016x}", fnv(&w[0].strokes));
+        assert_ne!(old_id, format!("{:016x}", w[0].id), "the id did change");
+        doc.recognition[0].id = old_id.clone();
+        let saved = crate::format::load_bytes(&crate::format::to_bedrock(&doc), 2).unwrap();
+        assert!(saved.warnings.is_empty(), "{:?}", saved.warnings);
+        let mut doc = saved.doc;
+        assert_eq!(doc.recognition[0].id, old_id, "the stored id is kept as it was");
+        let mut hw = Handwriting::new();
+        let w = hw.words(&doc);
+        assert_eq!(w[0].text.as_deref(), Some("the"));
+        assert!(hw.set_text(&mut doc, w[0].id, "then", Kind::Text, "test", None));
+        assert_eq!(doc.recognition.len(), 1);
+        assert_eq!(doc.recognition[0].id, format!("{:016x}", w[0].id));
+    }
+
     #[test]
     fn stores_text_marks_misspellings_and_forgets_changed_words() {
         let mut doc = Document::new(1);

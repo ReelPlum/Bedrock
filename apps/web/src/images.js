@@ -4,6 +4,8 @@
 // file, and decodes the files of an open note for drawing (the Rust core
 // draws them with WebGL, under the ink).
 
+import { picture_name } from '../pkg/bedrock_web.js';
+
 /** Longest side a stored picture keeps; larger photos are scaled down. */
 export const MAX_STORED_PX = 2560;
 /** Files up to this size in a common format are kept byte for byte. */
@@ -12,11 +14,6 @@ const KEEP_BYTES = 3 * 1024 * 1024;
 const MAX_TEXTURE_PX = 4096;
 
 const KEEP_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
-
-async function hashName(bytes) {
-  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(d.slice(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 function scaled(w, h, max) {
   const k = Math.min(1, max / Math.max(w, h));
@@ -48,7 +45,7 @@ export async function preparePicture(blob) {
       ext = png ? 'png' : 'jpg';
       bytes = new Uint8Array(await out.arrayBuffer());
     }
-    return { file: `images/${await hashName(bytes)}.${ext}`, bytes, width, height };
+    return { file: picture_name(bytes, ext), bytes, width, height };
   } finally {
     bmp.close?.();
   }

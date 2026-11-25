@@ -238,15 +238,20 @@ pub fn layout(doc: &Document) -> Layout {
 }
 
 /// A word's id: a hash of its strokes, so it changes when they do.
+///
+/// BLAKE3 (`docs/security.md`), cut to 64 bits. The id only names a word
+/// while a note is open and in `recognized.json`; recognised text is found
+/// again by its strokes, never by this id, so notes saved with the earlier
+/// FNV ids keep their text.
 pub(crate) fn word_id(ids: &[StrokeId]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut h = blake3::Hasher::new();
+    h.update(b"bedrock word id");
     for id in ids {
-        for b in id.0.to_le_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
-        }
+        h.update(&id.0.to_le_bytes());
     }
-    h
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&h.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(out)
 }
 
 /// The writer's own words (strokes they made into one word) override the
@@ -430,6 +435,18 @@ mod tests {
         assert_eq!(a.words[1].id, b.words[1].id);
         assert_eq!(word_at(&b, Vec2::new(10.0, 90.0), 2.0).map(|w| w.id), Some(a.words[0].id));
         assert!(word_at(&b, Vec2::new(10.0, 250.0), 2.0).is_none());
+    }
+
+    #[test]
+    fn word_ids_are_blake3_of_the_strokes() {
+        let ids = [StrokeId(1), StrokeId(0x0123_4567_89ab_cdef)];
+        let mut bytes = b"bedrock word id".to_vec();
+        for id in &ids {
+            bytes.extend_from_slice(&id.0.to_le_bytes());
+        }
+        let want = u64::from_le_bytes(blake3::hash(&bytes).as_bytes()[..8].try_into().unwrap());
+        assert_eq!(word_id(&ids), want);
+        assert_ne!(word_id(&ids), word_id(&[ids[1], ids[0]]), "order counts");
     }
 
     #[test]

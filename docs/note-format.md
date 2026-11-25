@@ -22,7 +22,7 @@ afternoon without Bedrock's code. The machine readable schema for
 | `recognized.json` | Text recognised from handwriting, linked to stroke ids. Kept separate so recognition can never damage ink. |
 | `links.md` | The note's links as Markdown (`[[Note]]`, `[text](https://…)`), for tools such as Obsidian's graph. Generated from `links` in `note.json`. |
 | `preview.svg` | The note rendered as vector paths, outline points to 0.1 units. Opens in any browser, forever. A picture only: the ink is in `note.json` and `points.bin`. |
-| `images/<hash>.<ext>` | Pictures placed on the page, as ordinary PNG, JPEG, WebP or GIF files (stored, not compressed again). Named by their content's SHA-256, so one picture used twice is stored once. |
+| `images/<hash>.<ext>` | Pictures placed on the page, as ordinary PNG, JPEG, WebP or GIF files (stored, not compressed again). Named by the first 128 bits of their content's BLAKE3 hash, in hex, so one picture used twice is stored once. Notes from before 25 November 2026 name pictures by SHA-256; a name is only looked up, so any name works. |
 | `README.txt` | A short human explanation of the above. |
 
 Readers must ignore entries they do not know, so later versions can add
@@ -164,6 +164,11 @@ A reader in any language is about 30 lines; Bedrock's is
   ]
 }
 ```
+
+`id` names the item; readers must not depend on its value. Bedrock writes
+the word's id, the first 64 bits of BLAKE3 over `bedrock word id` and the
+stroke ids, as 16 hex digits (earlier versions used FNV-1a), and finds text
+again by its strokes, never by `id`.
 
 Each item names the strokes it was recognised from, in writing order. When
 any of those strokes is erased, Bedrock drops the item so text never points at

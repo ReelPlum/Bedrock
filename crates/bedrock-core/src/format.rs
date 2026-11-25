@@ -698,6 +698,15 @@ pub const LINKS_MD: &str = "links.md";
 /// Folder of picture files in a `.bedrock`.
 pub const IMAGES_DIR: &str = "images/";
 
+/// Name for a new picture file: `images/<hash>.<ext>`, the first 128 bits
+/// of the BLAKE3 hash of its bytes (`docs/security.md`), so one picture used
+/// twice is stored once. Older notes name pictures by SHA-256; a name is
+/// only looked up, never checked against the bytes, so they open as before.
+pub fn picture_name(bytes: &[u8], ext: &str) -> String {
+    let hex = blake3::hash(bytes).to_hex();
+    format!("{IMAGES_DIR}{}.{ext}", &hex.as_str()[..32])
+}
+
 const README: &str = "This is a Bedrock note: an ordinary ZIP archive.\n\n\
 preview.svg      the note as a picture; opens in any web browser\n\
 note.json        every pen stroke: brush, times, and which channels it records\n\
@@ -906,6 +915,14 @@ pub fn load_bytes(bytes: &[u8], seed: u64) -> Result<Loaded, FormatError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pictures_are_named_by_blake3() {
+        // The BLAKE3 test vector for empty input.
+        assert_eq!(super::picture_name(b"", "png"), "images/af1349b9f5f9a1a6a0404dea36dcc949.png");
+        assert_eq!(super::picture_name(b"same", "jpg"), super::picture_name(b"same", "jpg"));
+        assert_ne!(super::picture_name(b"one", "png"), super::picture_name(b"two", "png"));
+    }
+
     use super::*;
 
     fn sample_doc() -> Document {

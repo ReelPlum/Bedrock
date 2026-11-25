@@ -38,15 +38,17 @@ the same rules for its side in Bedrock-Backend's `docs/security.md`.
 None in the apps yet. The backend no longer accepts plain SHA-256 hashes of
 invite codes and admin keys. It now uses keyed BLAKE3.
 
+## Done after the November 2026 review
+
+- **Word ids and picture names** moved to BLAKE3 on 25 November 2026
+  (change `blake3-word-ids-and-picture-names`). Notes with the older FNV
+  word ids and SHA-256 picture names open as before: neither value is
+  checked, only looked up.
+
 ## Open items from the November 2026 review
 
 Each of these needs Frederik's decision before it changes:
 
-- **Picture names in notes use SHA-256** (`images/<hash>.<ext>`,
-  `apps/web/src/images.js`). They only name a picture by its content, so
-  one picture used twice is stored once. They protect no secret. Moving new
-  pictures to BLAKE3 names is a note format change. Existing notes would
-  keep opening, because a name is only looked up.
 - **The Obsidian build** hashes the packed web app with SHA-256
   (`apps/obsidian/build.mjs`). This can move to BLAKE3 with no format
   change.
